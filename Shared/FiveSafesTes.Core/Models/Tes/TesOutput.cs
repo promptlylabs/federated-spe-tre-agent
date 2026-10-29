@@ -31,13 +31,13 @@ namespace FiveSafesTes.Core.Models.Tes
         /// Gets or Sets Name
         /// </summary>
         [DataMember(Name = "name")]
-        public string Name { get; set; }
+        public string? Name { get; set; }
 
         /// <summary>
         /// Gets or Sets Description
         /// </summary>
         [DataMember(Name = "description")]
-        public string Description { get; set; }
+        public string? Description { get; set; }
 
         /// <summary>
         /// URL in long term storage, for example: s3://my-object-store/file1 gs://my-bucket/file2 file:///path/to/my/file /path/to/my/file etc...
