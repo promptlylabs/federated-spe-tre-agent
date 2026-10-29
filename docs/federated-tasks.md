@@ -87,7 +87,7 @@ The result is in `logs[0].metadata`.
 
 ### Bucket and policy
 
-Agent.Api creates both at startup. Settings are in `FederatedTaskSettings` in `Agent/Agent.Api/appsettings.json`.
+Agent.Api creates both at startup. Settings are in the `FederatedTaskSettings` section of `Agent/Agent.Api/appsettings.json`. Keys that are not set there use the defaults below.
 
 | Setting | Default |
 |---|---|
@@ -141,6 +141,8 @@ Two things to check in Keycloak:
 3. Use one folder per dataset under `dataset/`. Name it with the GOV-12 dataset name, for example `dataset/cohort_2024/`.
 4. Put exactly one lowercase `.csv` file in the folder.
 5. To replace a dataset, upload a file with the same name. It overwrites the old one.
+6. Numbers use `.` as the decimal point, with no thousands separators and no exponent. Any other format fails with `non_numeric_value`.
+7. Only files directly in the dataset folder count. Subfolders are ignored.
 
 You cannot delete files. Ask a RustFS admin if one must be removed. If a folder holds two `.csv` files, tasks fail with `ambiguous_dataset`.
 
