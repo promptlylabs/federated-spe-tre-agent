@@ -39,7 +39,7 @@ namespace Agent.Api.FederatedTasks
                     // With a column, rows whose value is empty are not counted.
                     var count = columnIndex < 0
                         ? matching.Count
-                        : matching.Count(row => !string.IsNullOrEmpty(Cell(row, columnIndex)));
+                        : matching.Count(row => !string.IsNullOrWhiteSpace(Cell(row, columnIndex)));
                     return new OperationResult(count, count, null, null);
 
                 case "mean":
@@ -60,7 +60,7 @@ namespace Agent.Api.FederatedTasks
             foreach (var row in rows)
             {
                 var raw = Cell(row, columnIndex);
-                if (string.IsNullOrEmpty(raw))
+                if (string.IsNullOrWhiteSpace(raw))
                     continue;
                 if (!TryParse(raw, out var number))
                     return Fail(FederatedTaskErrorCodes.NonNumericValue, $"column '{column}' contains a non-numeric value");
@@ -101,7 +101,7 @@ namespace Agent.Api.FederatedTasks
             index < row.Count ? row[index] : null;
 
         private static bool TryParse(string value, out decimal number) =>
-            decimal.TryParse(value, NumberStyles.Number, CultureInfo.InvariantCulture, out number);
+            decimal.TryParse(value, NumberStyles.AllowLeadingWhite | NumberStyles.AllowTrailingWhite | NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out number);
 
         private static OperationResult Fail(string code, string message) => new(null, 0, code, message);
     }

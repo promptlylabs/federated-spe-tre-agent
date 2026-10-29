@@ -90,4 +90,56 @@ public class FederatedOperationExecutorTests
         Assert.Equal(2, result.RowCount);
         Assert.Equal(2m, result.Value);
     }
+
+    [Theory]
+    [InlineData("1,5")]
+    [InlineData("5-")]
+    [InlineData("1e3")]
+    public void Mean_NonStrictNumber_IsNonNumeric(string value)
+    {
+        var table = Table(["1", "34", "F"], ["2", value, "M"]);
+
+        var result = FederatedOperationExecutor.Execute(Spec("mean", "age"), table);
+
+        Assert.Equal(FederatedTaskErrorCodes.NonNumericValue, result.ErrorCode);
+    }
+
+    [Fact]
+    public void Filter_ThousandsSeparatorValue_IsNonNumeric()
+    {
+        var table = Table(["1", "1,000", "F"], ["2", "7", "M"]);
+
+        var cellSide = FederatedOperationExecutor.Execute(
+            Spec("count", null, new TaskFilter("age", "gt", "5")), table);
+        var operandSide = FederatedOperationExecutor.Execute(
+            Spec("count", null, new TaskFilter("age", "gt", "1,000")), Cohort());
+
+        Assert.Equal(1, cellSide.RowCount);
+        Assert.Equal(0, operandSide.RowCount);
+    }
+
+    [Fact]
+    public void Mean_NegativeDecimal_Parses()
+    {
+        var table = Table(["1", "-2.5", "F"], ["2", " 1.5 ", "M"]);
+
+        var result = FederatedOperationExecutor.Execute(Spec("mean", "age"), table);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(-0.5m, result.Value);
+    }
+
+    [Fact]
+    public void WhitespaceOnlyCells_TreatedAsEmpty()
+    {
+        var table = Table(["1", "34", "F"], ["2", "  ", "M"], ["3", "\t", "F"]);
+
+        var count = FederatedOperationExecutor.Execute(Spec("count", "age"), table);
+        var mean = FederatedOperationExecutor.Execute(Spec("mean", "age"), table);
+
+        Assert.Equal(1, count.RowCount);
+        Assert.True(mean.IsSuccess);
+        Assert.Equal(34m, mean.Value);
+        Assert.Equal(1, mean.RowCount);
+    }
 }
