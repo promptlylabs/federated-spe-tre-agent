@@ -80,4 +80,27 @@ public class DatasetReaderTests
         Assert.True(result.IsSuccess);
         Assert.Equal(["x"], result.Table!.Columns);
     }
+
+    [Fact]
+    public async Task Read_IgnoresSubfolders()
+    {
+        var store = new FakeDatasetStore()
+            .Add("dataset/cohort_2024/archive/old.csv", "z\n9\n")
+            .Add("dataset/cohort_2024/cohort.csv", "x\n1\n");
+
+        var result = await Reader(store).ReadAsync("cohort_2024", CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(["x"], result.Table!.Columns);
+    }
+
+    [Fact]
+    public async Task Read_OnlySubfolderFile_ReturnsDatasetNotFound()
+    {
+        var store = new FakeDatasetStore().Add("dataset/x/sub/a.csv", "a\n1\n");
+
+        var result = await Reader(store).ReadAsync("x", CancellationToken.None);
+
+        Assert.Equal("dataset_not_found", result.ErrorCode);
+    }
 }

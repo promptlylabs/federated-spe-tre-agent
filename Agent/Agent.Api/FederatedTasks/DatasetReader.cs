@@ -29,6 +29,7 @@ namespace Agent.Api.FederatedTasks
             // Trailing slash so "cohort" does not match "cohort_2024/...".
             var prefix = $"{_settings.DatasetPrefix}{datasetName}/";
             var keys = (await _store.ListKeysAsync(prefix, ct))
+                .Where(k => k.IndexOf('/', prefix.Length) < 0) // direct children only
                 .Where(k => _settings.AllowedExtensions.Any(ext => k.EndsWith("." + ext, StringComparison.Ordinal)))
                 .ToList();
 
