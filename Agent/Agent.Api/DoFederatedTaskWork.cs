@@ -9,6 +9,7 @@ namespace Agent.Api
     public interface IDoFederatedTaskWork
     {
         [AutomaticRetry(Attempts = 0)]
+        [DisableConcurrentExecution(timeoutInSeconds: 300)]
         Task Execute();
     }
 
