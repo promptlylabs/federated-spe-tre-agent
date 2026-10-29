@@ -62,7 +62,7 @@ public class FederatedTaskTests
         var entity = Make(TesState.EXECUTORERROREnum);
         entity.CompletedAt = Completed;
         entity.ErrorCode = "dataset_not_found";
-        entity.ErrorMessage = "no such dataset";
+        entity.ResultErrorMessage = "no such dataset";
 
         var log = Assert.Single(entity.ToTesTask().Logs!);
 

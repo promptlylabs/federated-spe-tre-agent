@@ -30,7 +30,7 @@ namespace Submission.Api.Migrations
                     ResultValue = table.Column<decimal>(type: "numeric", nullable: true),
                     ResultRowCount = table.Column<int>(type: "integer", nullable: true),
                     ErrorCode = table.Column<string>(type: "text", nullable: true),
-                    ErrorMessage = table.Column<string>(type: "text", nullable: true),
+                    ResultErrorMessage = table.Column<string>(type: "text", nullable: true),
                     ManifestHash = table.Column<string>(type: "text", nullable: true),
                     SiteToken = table.Column<string>(type: "text", nullable: true),
                     ApprovalReference = table.Column<string>(type: "text", nullable: true)

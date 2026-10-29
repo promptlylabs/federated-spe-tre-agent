@@ -28,7 +28,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         public decimal? ResultValue { get; set; }
         public int? ResultRowCount { get; set; }
         public string? ErrorCode { get; set; }
-        public string? ErrorMessage { get; set; }
+        public string? ResultErrorMessage { get; set; }
 
         /// <summary>Reserved for VER-3.</summary>
         public string? ManifestHash { get; set; }
@@ -56,7 +56,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
                 TesState.EXECUTORERROREnum or TesState.SYSTEMERROREnum => new Dictionary<string, string>
                 {
                     ["error_code"] = ErrorCode ?? "",
-                    ["error_message"] = ErrorMessage ?? ""
+                    ["error_message"] = ResultErrorMessage ?? ""
                 },
                 _ => null
             };

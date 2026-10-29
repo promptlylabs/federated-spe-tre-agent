@@ -97,7 +97,7 @@ namespace Submission.Api.Migrations
                     b.Property<string>("ErrorCode")
                         .HasColumnType("text");
 
-                    b.Property<string>("ErrorMessage")
+                    b.Property<string>("ResultErrorMessage")
                         .HasColumnType("text");
 
                     b.Property<string>("ManifestHash")

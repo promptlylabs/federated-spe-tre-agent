@@ -140,7 +140,7 @@ namespace Submission.Api.Controllers
             else
             {
                 task.ErrorCode = report.ErrorCode;
-                task.ErrorMessage = report.ErrorMessage;
+                task.ResultErrorMessage = report.ErrorMessage;
             }
 
             await _DbContext.SaveChangesAsync(cancellationToken);
