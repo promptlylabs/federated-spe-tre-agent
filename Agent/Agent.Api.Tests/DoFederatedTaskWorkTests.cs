@@ -3,6 +3,7 @@ using Agent.Api.Models;
 using Agent.Api.Tests.FederatedTasks;
 using FiveSafesTes.Core.Models.FederatedTasks;
 using FiveSafesTes.Core.Models.Tes;
+using Microsoft.Extensions.Configuration;
 using Xunit;
 
 namespace Agent.Api.Tests;
@@ -40,8 +41,13 @@ public class DoFederatedTaskWorkTests
         return task;
     }
 
-    private static DoFederatedTaskWork Work(FakeClient client, FakeDatasetStore store) =>
-        new(client, new DatasetReader(store, new FederatedTaskSettings()));
+    private static DoFederatedTaskWork Work(FakeClient client, FakeDatasetStore store, string? treName = "tre-a")
+    {
+        var config = new ConfigurationBuilder()
+            .AddInMemoryCollection(new Dictionary<string, string?> { ["TreName"] = treName })
+            .Build();
+        return new DoFederatedTaskWork(client, new DatasetReader(store, new FederatedTaskSettings()), config);
+    }
 
     [Fact]
     public async Task Execute_ValidMean_ReportsComplete()
@@ -124,6 +130,49 @@ public class DoFederatedTaskWorkTests
         client.Pending.Add(PendingTask("t1", "cohort_2024", "count", null));
 
         await Work(client, Store()).Execute();
+
+        Assert.Equal(0, client.GetPendingCalls);
+        Assert.Empty(client.Reports);
+    }
+
+    [Fact]
+    public async Task Execute_TaskForOtherTre_ReportsInvalidTask()
+    {
+        var store = Store();
+        var client = new FakeClient();
+        var task = PendingTask("t1", "cohort_2024", "count", null);
+        task.Tags!["tres"] = "tre-b";
+        client.Pending.Add(task);
+
+        await Work(client, store).Execute();
+
+        var report = Assert.Single(client.Reports);
+        Assert.Equal(TesState.EXECUTORERROREnum, report.State);
+        Assert.Equal("invalid_task", report.ErrorCode);
+        Assert.Equal("task is for TRE 'tre-b' but this agent is 'tre-a'", report.ErrorMessage);
+        Assert.Equal(0, store.ListCalls);
+    }
+
+    [Fact]
+    public async Task Execute_TreNameMatchesCaseInsensitively()
+    {
+        var client = new FakeClient();
+        client.Pending.Add(PendingTask("t1", "cohort_2024", "count", null));
+
+        await Work(client, Store(), " TRE-A ").Execute();
+
+        Assert.Equal(TesState.COMPLETEEnum, Assert.Single(client.Reports).State);
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData("  ")]
+    public async Task Execute_TreNameNotConfigured_DoesNothing(string? treName)
+    {
+        var client = new FakeClient();
+        client.Pending.Add(PendingTask("t1", "cohort_2024", "count", null));
+
+        await Work(client, Store(), treName).Execute();
 
         Assert.Equal(0, client.GetPendingCalls);
         Assert.Empty(client.Reports);

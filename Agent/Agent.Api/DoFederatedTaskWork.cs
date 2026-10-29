@@ -2,6 +2,7 @@ using Agent.Api.FederatedTasks;
 using FiveSafesTes.Core.Models.FederatedTasks;
 using FiveSafesTes.Core.Models.Tes;
 using Hangfire;
+using Microsoft.Extensions.Configuration;
 using Serilog;
 
 namespace Agent.Api
@@ -20,17 +21,27 @@ namespace Agent.Api
     {
         private readonly IFederatedTaskClient _client;
         private readonly IDatasetReader _reader;
+        private readonly IConfiguration _config;
 
-        public DoFederatedTaskWork(IFederatedTaskClient client, IDatasetReader reader)
+        public DoFederatedTaskWork(IFederatedTaskClient client, IDatasetReader reader, IConfiguration config)
         {
             _client = client;
             _reader = reader;
+            _config = config;
         }
 
         public async Task Execute()
         {
             // Don't execute if no credentials have been uploaded.
             if (!_client.IsConfigured) return;
+
+            // Without its own name the agent cannot tell which tasks are addressed to it; leave them QUEUED.
+            var treName = _config["TreName"];
+            if (string.IsNullOrWhiteSpace(treName))
+            {
+                Log.Error("Federated tasks: TreName is not configured, not running any task");
+                return;
+            }
 
             var pending = await _client.GetPendingAsync() ?? new List<TesTask>();
             if (pending.Count == 0) return;
@@ -39,7 +50,7 @@ namespace Agent.Api
 
             foreach (var task in pending)
             {
-                var report = await RunAsync(task);
+                var report = await RunAsync(task, treName.Trim());
                 try
                 {
                     // A task whose report is lost stays QUEUED on the server and is retried on the next poll.
@@ -55,7 +66,7 @@ namespace Agent.Api
             }
         }
 
-        private async Task<FederatedTaskResultReport> RunAsync(TesTask task)
+        private async Task<FederatedTaskResultReport> RunAsync(TesTask task, string treName)
         {
             var taskId = task.Id ?? string.Empty;
             try
@@ -64,6 +75,11 @@ namespace Agent.Api
                 var parsed = FederatedTesProfile.Parse(task);
                 if (!parsed.IsSuccess)
                     return Error(taskId, parsed.ErrorCode!, parsed.ErrorMessage);
+
+                // Tasks are polled per TRE, so a mismatch means a misrouted task: refuse it without reading data.
+                if (!string.Equals(parsed.Spec!.TreName, treName, StringComparison.OrdinalIgnoreCase))
+                    return Error(taskId, FederatedTaskErrorCodes.InvalidTask,
+                        $"task is for TRE '{parsed.Spec.TreName}' but this agent is '{treName}'");
 
                 var dataset = await _reader.ReadAsync(parsed.Spec!.Dataset, CancellationToken.None);
                 if (!dataset.IsSuccess)
