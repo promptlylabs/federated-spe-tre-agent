@@ -1010,35 +1010,42 @@ namespace FiveSafesTes.Core.Services
         /// </summary>
         public async Task<bool> PutCannedPolicyAsync(string policyName, string policyJson)
         {
-            var signer = new AWS4RequestSigner(_minioSettings.AccessKey, _minioSettings.SecretKey);
-
-            var baseUrl = _minioSettings.Url.TrimEnd('/');
-            var encodedPolicyName = Uri.EscapeDataString(policyName);
-            var adminApiPath = "/rustfs/admin/v3/add-canned-policy";
-
-            using var client = new HttpClient();
-            using var content = new StringContent(policyJson, Encoding.UTF8, "application/json");
-            using var request = new HttpRequestMessage
+            try
             {
-                Method = HttpMethod.Put,
-                RequestUri = new Uri($"{baseUrl}{adminApiPath}?name={encodedPolicyName}"),
-                Content = content
-            };
+                var signer = new AWS4RequestSigner(_minioSettings.AccessKey, _minioSettings.SecretKey);
 
-            var signedRequest = await signer.Sign(request, _minioSettings.AWSService, _minioSettings.AWSRegion);
-            using var response = await client.SendAsync(signedRequest);
+                var baseUrl = _minioSettings.Url.TrimEnd('/');
+                var encodedPolicyName = Uri.EscapeDataString(policyName);
+                var adminApiPath = "/rustfs/admin/v3/add-canned-policy";
 
-            if (response.StatusCode == HttpStatusCode.OK)
-            {
-                return true;
+                using var client = new HttpClient();
+                using var content = new StringContent(policyJson, Encoding.UTF8, "application/json");
+                using var request = new HttpRequestMessage
+                {
+                    Method = HttpMethod.Put,
+                    RequestUri = new Uri($"{baseUrl}{adminApiPath}?name={encodedPolicyName}"),
+                    Content = content
+                };
+
+                var signedRequest = await signer.Sign(request, _minioSettings.AWSService, _minioSettings.AWSRegion);
+                using var response = await client.SendAsync(signedRequest);
+
+                if (response.StatusCode == HttpStatusCode.OK)
+                {
+                    return true;
+                }
+
+                var responseBody = await response.Content.ReadAsStringAsync();
+                Log.Warning(
+                    "PutCannedPolicyAsync failed for {PolicyName}. Status: {StatusCode}. Response: {ResponseBody}",
+                    policyName,
+                    response.StatusCode,
+                    responseBody);
             }
-
-            var responseBody = await response.Content.ReadAsStringAsync();
-            Log.Warning(
-                "PutCannedPolicyAsync failed for {PolicyName}. Status: {StatusCode}. Response: {ResponseBody}",
-                policyName,
-                response.StatusCode,
-                responseBody);
+            catch (Exception ex)
+            {
+                Log.Error(ex, "PutCannedPolicyAsync failed for {PolicyName}", policyName);
+            }
 
             return false;
         }

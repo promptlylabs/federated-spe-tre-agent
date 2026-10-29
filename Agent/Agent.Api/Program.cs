@@ -319,7 +319,7 @@ using (var scope = app.Services.CreateScope())
     credDb.Database.Migrate();
 
     // Federated tasks read their datasets from a dedicated TRE bucket. Don't fail startup if
-    // storage is unreachable: tasks will reject with dataset_not_found until it is back.
+    // storage is unreachable: tasks report internal_error until it is back.
     var minioTreHelper = scope.ServiceProvider.GetRequiredService<IMinioTreHelper>();
     if (!await minioTreHelper.CreateBucket(federatedTaskSettings.DatasetBucket))
     {
