@@ -138,22 +138,22 @@ public class DoFederatedTaskWorkTests
     }
 
     [Fact]
-    public async Task Execute_TaskForOtherTre_ReportsInvalidTask()
+    public async Task Execute_TaskForOtherTre_NotRunAndNotReported()
     {
         var store = Store();
         var client = new FakeClient();
         var task = PendingTask("t1", "cohort_2024", "count", null);
         task.Tags!["tres"] = "tre-b";
         client.Pending.Add(task);
+        client.Pending.Add(PendingTask("t2", "cohort_2024", "count", null));
 
         await Work(client, store).Execute();
 
+        // t1 stays QUEUED on the server; t2 still runs.
         var report = Assert.Single(client.Reports);
-        Assert.Equal(TesState.EXECUTORERROREnum, report.State);
-        Assert.Equal("invalid_task", report.ErrorCode);
-        Assert.Equal("task is for TRE 'tre-b' but this agent is 'tre-a'", report.ErrorMessage);
-        Assert.Equal(0, store.ListCalls);
-        Assert.Null(report.DatasetSha256);
+        Assert.Equal("t2", report.TaskId);
+        Assert.Equal(TesState.COMPLETEEnum, report.State);
+        Assert.Equal(1, store.ListCalls);
     }
 
     [Fact]

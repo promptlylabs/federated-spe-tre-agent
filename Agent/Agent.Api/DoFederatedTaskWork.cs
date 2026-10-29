@@ -51,6 +51,7 @@ namespace Agent.Api
             foreach (var task in pending)
             {
                 var report = await RunAsync(task, treName.Trim());
+                if (report == null) continue;
                 try
                 {
                     // A task whose report is lost stays QUEUED on the server and is retried on the next poll.
@@ -66,7 +67,10 @@ namespace Agent.Api
             }
         }
 
-        private async Task<FederatedTaskResultReport> RunAsync(TesTask task, string treName)
+        /// <summary>
+        /// Runs one task and returns its result, or null when the task must stay QUEUED without a report.
+        /// </summary>
+        private async Task<FederatedTaskResultReport?> RunAsync(TesTask task, string treName)
         {
             var taskId = task.Id ?? string.Empty;
             try
@@ -76,10 +80,14 @@ namespace Agent.Api
                 if (!parsed.IsSuccess)
                     return Error(taskId, parsed.ErrorCode!, parsed.ErrorMessage);
 
-                // Tasks are polled per TRE, so a mismatch means a misrouted task: refuse it without reading data.
+                // Tasks are polled per TRE, so a mismatch means this agent's TreName disagrees with the TRE's name
+                // in Submission. Don't read data, and don't report: the task stays QUEUED and runs once config is fixed.
                 if (!string.Equals(parsed.Spec!.TreName, treName, StringComparison.OrdinalIgnoreCase))
-                    return Error(taskId, FederatedTaskErrorCodes.InvalidTask,
-                        $"task is for TRE '{parsed.Spec.TreName}' but this agent is '{treName}'");
+                {
+                    Log.Error("Federated tasks: task {TaskId} is for TRE '{TaskTre}' but this agent's TreName is '{TreName}'; not running it",
+                        taskId, parsed.Spec.TreName, treName);
+                    return null;
+                }
 
                 var dataset = await _reader.ReadAsync(parsed.Spec!.Dataset, CancellationToken.None);
                 if (!dataset.IsSuccess)

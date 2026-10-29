@@ -68,7 +68,7 @@ The result is in `logs[0].metadata`.
 
 - On success: `value` and `row_count`. `value` is an invariant decimal. It is empty when there are no rows.
 - On error: `error_code` and `error_message`.
-- `dataset_sha256` is added whenever the Agent read the dataset file, on success and on errors raised after the read. It is the lowercase hex SHA-256 of the exact bytes of the CSV. It is absent when the file was not read (`invalid_task`, `dataset_not_found`, `ambiguous_dataset`, `invalid_dataset_name`, and `internal_error` before the read).
+- `dataset_sha256` is added whenever the Agent read the dataset file, on success and on errors raised after the read. It is the lowercase hex SHA-256 of the exact bytes of the CSV. It is absent when the file was not read (`invalid_task`, `dataset_not_found` for a missing file, `ambiguous_dataset`, `invalid_dataset_name`, and `internal_error` before the read). An empty file gives `dataset_not_found` with the hash.
 
 ### Error codes
 
@@ -76,7 +76,7 @@ The result is in `logs[0].metadata`.
 |---|---|
 | `invalid_task` | The task does not follow the profile, or its `tres` is not the TRE of the Agent that polled it. The message says which rule failed. |
 | `invalid_dataset_name` | The name does not match `^[a-z0-9][a-z0-9_-]{0,62}$`. |
-| `dataset_not_found` | No `.csv` file under `dataset/<name>/`. |
+| `dataset_not_found` | No `.csv` file under `dataset/<name>/`, or the file is empty. |
 | `ambiguous_dataset` | More than one `.csv` file under `dataset/<name>/`. |
 | `unknown_operation` | The operation is not `count` or `mean`. |
 | `invalid_filter` | The operator is not `eq`, `gt`, `lt`, `gte` or `lte`, or the filter is not `<column>:<op>:<value>`. |
@@ -88,7 +88,9 @@ The result is in `logs[0].metadata`.
 
 ### TRE name
 
-The Agent refuses a task whose `tres` is not its own `TreName`. It reports `invalid_task` and does not read the dataset. Set `TreName` to the name of the TRE as registered in Submission. The comparison ignores case. If `TreName` is empty, the Agent logs an error and runs no task; tasks stay `QUEUED`.
+Set `TreName` in the Agent's settings to the name of the TRE as registered in Submission. The shipped default is `SAIL`, so every other site must override it. The comparison ignores case.
+
+The Agent does not run a task whose `tres` is not its own `TreName`. It logs an error, does not read the dataset, and does not report, so the task stays `QUEUED` and runs once `TreName` is fixed. If `TreName` is empty, the Agent logs an error and runs no task.
 
 ### Bucket and policy
 
