@@ -1,5 +1,6 @@
 using Agent.Api.FederatedTasks;
 using Agent.Api.Models;
+using System.Security.Cryptography;
 using Xunit;
 
 namespace Agent.Api.Tests.FederatedTasks;
@@ -19,6 +20,17 @@ public class DatasetReaderTests
         Assert.Equal(["person_id", "age", "sex"], result.Table!.Columns);
         Assert.Equal(2, result.Table.Rows.Count);
         Assert.Equal(["2", "51", "M"], result.Table.Rows[1]);
+    }
+
+    [Fact]
+    public async Task Read_ValidCsv_ReturnsSha256OfFileBytes()
+    {
+        var bytes = System.Text.Encoding.UTF8.GetBytes("person_id,age\n1,34\n2,51\n");
+        var store = new FakeDatasetStore().Add("dataset/cohort_2024/cohort.csv", bytes);
+
+        var result = await Reader(store).ReadAsync("cohort_2024", CancellationToken.None);
+
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(), result.Sha256);
     }
 
     [Fact]

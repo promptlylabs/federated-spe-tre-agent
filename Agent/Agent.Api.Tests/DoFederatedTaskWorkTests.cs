@@ -1,3 +1,5 @@
+using System.Security.Cryptography;
+using System.Text;
 using Agent.Api.FederatedTasks;
 using Agent.Api.Models;
 using Agent.Api.Tests.FederatedTasks;
@@ -151,6 +153,7 @@ public class DoFederatedTaskWorkTests
         Assert.Equal("invalid_task", report.ErrorCode);
         Assert.Equal("task is for TRE 'tre-b' but this agent is 'tre-a'", report.ErrorMessage);
         Assert.Equal(0, store.ListCalls);
+        Assert.Null(report.DatasetSha256);
     }
 
     [Fact]
@@ -176,5 +179,40 @@ public class DoFederatedTaskWorkTests
 
         Assert.Equal(0, client.GetPendingCalls);
         Assert.Empty(client.Reports);
+    }
+
+    [Fact]
+    public async Task Execute_Complete_ReportsDatasetSha256()
+    {
+        var client = new FakeClient();
+        client.Pending.Add(PendingTask("t1", "cohort_2024", "count", null));
+
+        await Work(client, Store()).Execute();
+
+        var expected = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Csv))).ToLowerInvariant();
+        Assert.Equal(expected, Assert.Single(client.Reports).DatasetSha256);
+    }
+
+    [Fact]
+    public async Task Execute_ColumnNotFound_ReportsDatasetSha256()
+    {
+        var client = new FakeClient();
+        client.Pending.Add(PendingTask("t1", "cohort_2024", "mean", "height"));
+
+        await Work(client, Store()).Execute();
+
+        var expected = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Csv))).ToLowerInvariant();
+        Assert.Equal(expected, Assert.Single(client.Reports).DatasetSha256);
+    }
+
+    [Fact]
+    public async Task Execute_DatasetNotFound_ReportsNullDatasetSha256()
+    {
+        var client = new FakeClient();
+        client.Pending.Add(PendingTask("t1", "nope", "count", null));
+
+        await Work(client, Store()).Execute();
+
+        Assert.Null(Assert.Single(client.Reports).DatasetSha256);
     }
 }

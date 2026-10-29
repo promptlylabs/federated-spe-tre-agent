@@ -1,9 +1,9 @@
 namespace Agent.Api.FederatedTasks
 {
     /// <summary>
-    /// Outcome of reading a dataset: a table, or a federated task error code and message.
+    /// Outcome of reading a dataset: a table and the SHA-256 of the file it came from, or a federated task error code and message.
     /// </summary>
-    public sealed record DatasetReadResult(DatasetTable? Table, string? ErrorCode, string? ErrorMessage)
+    public sealed record DatasetReadResult(DatasetTable? Table, string? ErrorCode, string? ErrorMessage, string? Sha256 = null)
     {
         public bool IsSuccess => Table != null;
 

@@ -13,5 +13,8 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         public int? RowCount { get; set; }
         public string? ErrorCode { get; set; }
         public string? ErrorMessage { get; set; }
+
+        /// <summary>Lowercase hex SHA-256 of the dataset file that was read; null when it was never read.</summary>
+        public string? DatasetSha256 { get; set; }
     }
 }

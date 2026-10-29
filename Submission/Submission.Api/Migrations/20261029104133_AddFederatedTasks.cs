@@ -31,6 +31,7 @@ namespace Submission.Api.Migrations
                     ResultRowCount = table.Column<int>(type: "integer", nullable: true),
                     ErrorCode = table.Column<string>(type: "text", nullable: true),
                     ResultErrorMessage = table.Column<string>(type: "text", nullable: true),
+                    DatasetSha256 = table.Column<string>(type: "character varying(64)", maxLength: 64, nullable: true),
                     ManifestHash = table.Column<string>(type: "text", nullable: true),
                     SiteToken = table.Column<string>(type: "text", nullable: true),
                     ApprovalReference = table.Column<string>(type: "text", nullable: true)

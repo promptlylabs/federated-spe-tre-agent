@@ -83,18 +83,19 @@ namespace Agent.Api
 
                 var dataset = await _reader.ReadAsync(parsed.Spec!.Dataset, CancellationToken.None);
                 if (!dataset.IsSuccess)
-                    return Error(taskId, dataset.ErrorCode!, dataset.ErrorMessage);
+                    return Error(taskId, dataset.ErrorCode!, dataset.ErrorMessage, dataset.Sha256);
 
                 var result = FederatedOperationExecutor.Execute(parsed.Spec, dataset.Table!);
                 if (!result.IsSuccess)
-                    return Error(taskId, result.ErrorCode!, result.ErrorMessage);
+                    return Error(taskId, result.ErrorCode!, result.ErrorMessage, dataset.Sha256);
 
                 return new FederatedTaskResultReport
                 {
                     TaskId = taskId,
                     State = TesState.COMPLETEEnum,
                     Value = result.Value,
-                    RowCount = result.RowCount
+                    RowCount = result.RowCount,
+                    DatasetSha256 = dataset.Sha256
                 };
             }
             catch (Exception ex)
@@ -111,7 +112,7 @@ namespace Agent.Api
             }
         }
 
-        private static FederatedTaskResultReport Error(string taskId, string code, string? message)
+        private static FederatedTaskResultReport Error(string taskId, string code, string? message, string? datasetSha256 = null)
         {
             Log.Information("Federated tasks: task {TaskId} failed with {ErrorCode}", taskId, code);
             return new FederatedTaskResultReport
@@ -119,7 +120,8 @@ namespace Agent.Api
                 TaskId = taskId,
                 State = TesState.EXECUTORERROREnum,
                 ErrorCode = code,
-                ErrorMessage = message
+                ErrorMessage = message,
+                DatasetSha256 = datasetSha256
             };
         }
     }

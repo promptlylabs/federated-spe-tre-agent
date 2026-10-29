@@ -70,4 +70,25 @@ public class FederatedTaskTests
         Assert.Equal("no such dataset", log.Metadata["error_message"]);
         Assert.False(log.Metadata.ContainsKey("value"));
     }
+
+    [Theory]
+    [InlineData(TesState.COMPLETEEnum)]
+    [InlineData(TesState.EXECUTORERROREnum)]
+    public void ToTesTask_WithDatasetSha256_EmitsIt(TesState state)
+    {
+        var entity = Make(state);
+        entity.DatasetSha256 = new string('a', 64);
+
+        var log = Assert.Single(entity.ToTesTask().Logs!);
+
+        Assert.Equal(new string('a', 64), log.Metadata!["dataset_sha256"]);
+    }
+
+    [Fact]
+    public void ToTesTask_WithoutDatasetSha256_OmitsIt()
+    {
+        var log = Assert.Single(Make(TesState.COMPLETEEnum).ToTesTask().Logs!);
+
+        Assert.False(log.Metadata!.ContainsKey("dataset_sha256"));
+    }
 }

@@ -100,6 +100,10 @@ namespace Submission.Api.Migrations
                     b.Property<string>("ResultErrorMessage")
                         .HasColumnType("text");
 
+                    b.Property<string>("DatasetSha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
                     b.Property<string>("ManifestHash")
                         .HasColumnType("text");
 

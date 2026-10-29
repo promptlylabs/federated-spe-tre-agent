@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Newtonsoft.Json;
+using System.Text.RegularExpressions;
 using Submission.Api.Attributes;
 using Submission.Api.Repositories.DbContexts;
 using Submission.Api.Services;
@@ -23,6 +24,8 @@ namespace Submission.Api.Controllers
     {
         /// <summary>Upper bound on tasks returned to a TRE Agent in a single poll.</summary>
         private const int MaxPendingTasks = 50;
+
+        private static readonly Regex Sha256Hex = new(@"^[0-9a-f]{64}\z", RegexOptions.Compiled);
 
         private readonly ApplicationDbContext _DbContext;
 
@@ -115,6 +118,11 @@ namespace Submission.Api.Controllers
                 return BadRequest($"{FederatedTaskErrorCodes.InvalidTask}: TaskId must be a GUID");
             }
 
+            if (report.DatasetSha256 is not null && !Sha256Hex.IsMatch(report.DatasetSha256))
+            {
+                return BadRequest($"{FederatedTaskErrorCodes.InvalidTask}: DatasetSha256 must be 64 lowercase hex characters");
+            }
+
             var tre = ControllerHelpers.GetUserTre(User, _DbContext);
 
             // A task that belongs to another TRE is indistinguishable from one that doesn't exist.
@@ -132,6 +140,7 @@ namespace Submission.Api.Controllers
 
             task.State = report.State;
             task.CompletedAt = DateTime.UtcNow;
+            task.DatasetSha256 = report.DatasetSha256;
             if (report.State == TesState.COMPLETEEnum)
             {
                 task.ResultValue = report.Value;

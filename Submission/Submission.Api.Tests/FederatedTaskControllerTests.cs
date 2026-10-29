@@ -195,6 +195,51 @@ namespace Submission.Api.Tests
         }
 
         [Fact]
+        public async Task ReportResult_WithDatasetSha256_StoresIt()
+        {
+            using var db = NewDb();
+            var seeded = SeedTask(db, 1, TesState.QUEUEDEnum);
+            var hash = new string('0', 63) + "f";
+
+            var result = await ControllerFor(db, "tre-a-admin").ReportResult(new FederatedTaskResultReport
+            {
+                TaskId = seeded.TaskId.ToString(),
+                State = TesState.COMPLETEEnum,
+                Value = 1m,
+                RowCount = 1,
+                DatasetSha256 = hash
+            });
+
+            Assert.IsType<OkObjectResult>(result);
+            Assert.Equal(hash, db.FederatedTasks.AsNoTracking().Single().DatasetSha256);
+            var task = await GetTask(db, seeded.TaskId);
+            Assert.Equal(hash, task.Logs![0].Metadata["dataset_sha256"]);
+        }
+
+        [Theory]
+        [InlineData("abc")]
+        [InlineData("ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789")]
+        [InlineData("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")]
+        public async Task ReportResult_BadDatasetSha256_Returns400_AndUnchanged(string hash)
+        {
+            using var db = NewDb();
+            var seeded = SeedTask(db, 1, TesState.QUEUEDEnum);
+
+            var result = await ControllerFor(db, "tre-a-admin").ReportResult(new FederatedTaskResultReport
+            {
+                TaskId = seeded.TaskId.ToString(),
+                State = TesState.COMPLETEEnum,
+                Value = 1m,
+                RowCount = 1,
+                DatasetSha256 = hash
+            });
+
+            var bad = Assert.IsType<BadRequestObjectResult>(result);
+            Assert.StartsWith(FederatedTaskErrorCodes.InvalidTask, Assert.IsType<string>(bad.Value));
+            Assert.Equal(TesState.QUEUEDEnum, db.FederatedTasks.AsNoTracking().Single().State);
+        }
+
+        [Fact]
         public async Task ReportResult_Rejected_ShowsErrorCode()
         {
             using var db = NewDb();

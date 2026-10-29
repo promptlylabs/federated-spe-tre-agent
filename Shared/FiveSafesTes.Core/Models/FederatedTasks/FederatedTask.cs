@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using System.Globalization;
 using FiveSafesTes.Core.Models.Tes;
 using Newtonsoft.Json;
@@ -29,6 +30,10 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         public int? ResultRowCount { get; set; }
         public string? ErrorCode { get; set; }
         public string? ResultErrorMessage { get; set; }
+
+        /// <summary>Lowercase hex SHA-256 of the dataset file the TRE read; null when it was never read.</summary>
+        [MaxLength(64)]
+        public string? DatasetSha256 { get; set; }
 
         /// <summary>Reserved for VER-3.</summary>
         public string? ManifestHash { get; set; }
@@ -63,6 +68,11 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
 
             if (metadata is not null)
             {
+                if (DatasetSha256 is not null)
+                {
+                    metadata["dataset_sha256"] = DatasetSha256;
+                }
+
                 task.Logs =
                 [
                     new TesTaskLog

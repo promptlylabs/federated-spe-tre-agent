@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using Agent.Api.Models;
 using FiveSafesTes.Core.Models.FederatedTasks;
 
@@ -46,7 +47,15 @@ namespace Agent.Api.FederatedTasks
             }
 
             await using var stream = await _store.OpenReadAsync(keys[0], ct);
-            return CsvDatasetParser.Parse(stream);
+
+            // Hash the exact bytes once; the parser then reads the same buffer.
+            var bytes = new MemoryStream();
+            await stream.CopyToAsync(bytes, ct);
+            var sha256 = Convert.ToHexString(SHA256.HashData(bytes.GetBuffer().AsSpan(0, (int)bytes.Length))).ToLowerInvariant();
+            bytes.Position = 0;
+
+            // The hash is kept on failures too: the file was read, so the report must say which file it was.
+            return CsvDatasetParser.Parse(bytes) with { Sha256 = sha256 };
         }
     }
 }
