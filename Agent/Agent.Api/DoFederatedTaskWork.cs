@@ -109,13 +109,14 @@ namespace Agent.Api
             catch (Exception ex)
             {
                 // The dataset reader lets store failures propagate; report them rather than fail the whole poll.
+                // The exception can name buckets, endpoints or hosts, so it stays in the TRE's own log.
                 Log.Error(ex, "Federated tasks: task {TaskId} failed unexpectedly", taskId);
                 return new FederatedTaskResultReport
                 {
                     TaskId = taskId,
                     State = TesState.SYSTEMERROREnum,
-                    ErrorCode = "internal_error",
-                    ErrorMessage = ex.Message
+                    ErrorCode = FederatedTaskErrorCodes.InternalError,
+                    ErrorMessage = "an internal error occurred in the TRE; the TRE admin can find the details in the Agent log"
                 };
             }
         }

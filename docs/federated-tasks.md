@@ -85,7 +85,7 @@ The result is in `logs[0].metadata`.
 | `invalid_filter` | The operator is not `eq`, `gt`, `lt`, `gte` or `lte`, or the filter is not `<column>:<op>:<value>`. |
 | `column_not_found` | The column, or a filter column, is not in the dataset. |
 | `non_numeric_value` | `mean` found a value that is not a number. |
-| `internal_error` | An unexpected failure, for example storage is unreachable. The message has the details. |
+| `internal_error` | An unexpected failure, for example storage is unreachable. The message is generic, so that bucket names and hosts do not leave the TRE. The details are in the Agent log. |
 
 ## Site setup
 

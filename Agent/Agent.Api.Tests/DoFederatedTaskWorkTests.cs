@@ -121,7 +121,7 @@ public class DoFederatedTaskWorkTests
         Assert.Equal(2, client.Reports.Count);
         Assert.Equal(TesState.SYSTEMERROREnum, client.Reports[0].State);
         Assert.Equal("internal_error", client.Reports[0].ErrorCode);
-        Assert.Contains("cannot open dataset/other/other.csv", client.Reports[0].ErrorMessage);
+        Assert.DoesNotContain("dataset/other", client.Reports[0].ErrorMessage);
         Assert.Equal(TesState.COMPLETEEnum, client.Reports[1].State);
     }
 
