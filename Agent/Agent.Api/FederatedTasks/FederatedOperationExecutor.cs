@@ -12,13 +12,15 @@ namespace Agent.Api.FederatedTasks
         {
             var columns = table.Columns.ToList();
 
-            var filterIndexes = new List<int>(spec.Filters.Count);
+            // Resolve each filter's column and parse its value once, not once per row.
+            var filters = new List<ResolvedFilter>(spec.Filters.Count);
             foreach (var filter in spec.Filters)
             {
                 var index = columns.IndexOf(filter.Column);
                 if (index < 0)
                     return Fail(FederatedTaskErrorCodes.ColumnNotFound, $"column '{filter.Column}' not found");
-                filterIndexes.Add(index);
+                var isNumber = TryParse(filter.Value, out var number);
+                filters.Add(new ResolvedFilter(index, filter.Op, filter.Value, isNumber, number));
             }
 
             var columnIndex = -1;
@@ -29,9 +31,12 @@ namespace Agent.Api.FederatedTasks
                     return Fail(FederatedTaskErrorCodes.ColumnNotFound, $"column '{spec.Column}' not found");
             }
 
-            var matching = table.Rows
-                .Where(row => spec.Filters.Select((f, i) => Matches(Cell(row, filterIndexes[i]), f)).All(m => m))
-                .ToList();
+            var matching = new List<IReadOnlyList<string?>>();
+            foreach (var row in table.Rows)
+            {
+                if (MatchesAll(row, filters))
+                    matching.Add(row);
+            }
 
             switch (spec.Operation)
             {
@@ -73,26 +78,35 @@ namespace Agent.Api.FederatedTasks
                 : new OperationResult(sum / count, count, null, null);
         }
 
-        private static bool Matches(string? cell, TaskFilter filter)
+        private static bool MatchesAll(IReadOnlyList<string?> row, List<ResolvedFilter> filters)
+        {
+            for (var i = 0; i < filters.Count; i++)
+            {
+                if (!Matches(Cell(row, filters[i].Index), filters[i]))
+                    return false;
+            }
+            return true;
+        }
+
+        private static bool Matches(string? cell, ResolvedFilter filter)
         {
             var left = cell ?? string.Empty;
             var leftIsNumber = TryParse(left, out var leftNumber);
-            var rightIsNumber = TryParse(filter.Value, out var rightNumber);
 
             if (filter.Op == "eq")
-                return leftIsNumber && rightIsNumber
-                    ? leftNumber == rightNumber
+                return leftIsNumber && filter.IsNumber
+                    ? leftNumber == filter.Number
                     : string.Equals(left, filter.Value, StringComparison.Ordinal);
 
-            if (!leftIsNumber || !rightIsNumber)
+            if (!leftIsNumber || !filter.IsNumber)
                 return false;
 
             return filter.Op switch
             {
-                "gt" => leftNumber > rightNumber,
-                "lt" => leftNumber < rightNumber,
-                "gte" => leftNumber >= rightNumber,
-                "lte" => leftNumber <= rightNumber,
+                "gt" => leftNumber > filter.Number,
+                "lt" => leftNumber < filter.Number,
+                "gte" => leftNumber >= filter.Number,
+                "lte" => leftNumber <= filter.Number,
                 _ => false
             };
         }
@@ -104,5 +118,7 @@ namespace Agent.Api.FederatedTasks
             decimal.TryParse(value, NumberStyles.AllowLeadingWhite | NumberStyles.AllowTrailingWhite | NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out number);
 
         private static OperationResult Fail(string code, string message) => new(null, 0, code, message);
+
+        private readonly record struct ResolvedFilter(int Index, string Op, string Value, bool IsNumber, decimal Number);
     }
 }
