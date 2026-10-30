@@ -44,7 +44,7 @@ namespace Submission.Api.Migrations
                         column: x => x.TreId,
                         principalTable: "Tres",
                         principalColumn: "Id",
-                        onDelete: ReferentialAction.Cascade);
+                        onDelete: ReferentialAction.Restrict);
                 });
 
             migrationBuilder.CreateIndex(

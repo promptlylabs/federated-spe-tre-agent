@@ -554,7 +554,7 @@ namespace Submission.Api.Migrations
                     b.HasOne("FiveSafesTes.Core.Models.Tre", "Tre")
                         .WithMany()
                         .HasForeignKey("TreId")
-                        .OnDelete(DeleteBehavior.Cascade)
+                        .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
 
                     b.Navigation("Tre");

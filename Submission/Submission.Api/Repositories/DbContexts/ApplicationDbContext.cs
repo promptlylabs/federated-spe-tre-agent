@@ -44,6 +44,8 @@ namespace Submission.Api.Repositories.DbContexts
                 b.HasIndex(x => new { x.TreId, x.State });
                 // Reporting a result is a QUEUED -> final transition; the token makes a second, concurrent report fail.
                 b.Property(x => x.State).IsConcurrencyToken();
+                // Task history is the audit record of released results; deleting a TRE must not erase it.
+                b.HasOne(x => x.Tre).WithMany().HasForeignKey(x => x.TreId).OnDelete(DeleteBehavior.Restrict);
             });
         }
     }

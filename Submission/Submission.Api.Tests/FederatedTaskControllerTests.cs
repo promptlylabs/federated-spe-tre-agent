@@ -99,6 +99,16 @@ namespace Submission.Api.Tests
             Assert.Contains("\"state\":\"UNKNOWN\"", db.FederatedTasks.Single().TesTaskJson);
         }
 
+        [Fact]
+        public void TreDelete_IsRestrictedByFederatedTasks()
+        {
+            using var db = NewDb();
+            var fk = db.Model.FindEntityType(typeof(FederatedTask))!.GetForeignKeys()
+                .Single(x => x.PrincipalEntityType.ClrType == typeof(Tre));
+
+            Assert.Equal(DeleteBehavior.Restrict, fk.DeleteBehavior);
+        }
+
         public static IEnumerable<object[]> OutsideProfile()
         {
             var image = MeanTask();
