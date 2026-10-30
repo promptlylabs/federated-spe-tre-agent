@@ -1,0 +1,46 @@
+{
+  "realm": "tre-test",
+  "enabled": true,
+  "sslRequired": "none",
+  "groups": [
+    { "name": "dataset-upload", "path": "/dataset-upload" }
+  ],
+  "clients": [
+    {
+      "clientId": "rustfs-console",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "rustfs-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["http://localhost:9000/*", "http://localhost:9001/*"],
+      "webOrigins": ["http://localhost:9000", "http://localhost:9001"],
+      "protocolMappers": [
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "config": {
+            "claim.name": "groups",
+            "full.path": "false",
+            "id.token.claim": "true",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "uploader",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "uploader@example.org",
+      "firstName": "Data",
+      "lastName": "Uploader",
+      "credentials": [{ "type": "password", "value": "uploader123", "temporary": false }],
+      "groups": ["/dataset-upload"]
+    }
+  ]
+}

@@ -4,6 +4,8 @@ The orchestrator (Submission.Api) queues a GA4GH TES task for one TRE. The TRE A
 
 There is no DAAMS signing or approval gate yet.
 
+To try the flow locally, see [dev/federated](../dev/federated/README.md). It is a Docker Compose stack with both APIs, Keycloak, RustFS and a sample dataset.
+
 ## Flow
 
 1. A `dare-control-admin` user calls `POST /api/FederatedTask/Enqueue` with a TES task. Submission validates it against the federated profile. The task is stored as `QUEUED`. The response holds the task id.

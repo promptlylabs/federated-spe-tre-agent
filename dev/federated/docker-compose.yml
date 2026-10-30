@@ -1,0 +1,195 @@
+# Local stack for trying the federated task flow end to end (see README.md next to this file).
+# Local development only: every password and secret below is a throwaway dev value.
+#
+#   docker compose -f dev/federated/docker-compose.yml up -d --build
+#
+# Browsers and curl on the host use localhost; containers talk to each other by service name.
+# Keycloak's dynamic backchannel lets both work: tokens carry the localhost issuer, and the APIs
+# skip issuer-name checks (KeycloakCommon / Submission JwtBearer), so internal discovery is fine.
+
+name: federated-dev
+
+x-keycloak-urls: &kc-dare-control
+  SubmissionKeyCloakSettings__Authority: http://keycloak:8080/realms/Dare-Control
+  SubmissionKeyCloakSettings__MetadataAddress: http://keycloak:8080/realms/Dare-Control/.well-known/openid-configuration
+  SubmissionKeyCloakSettings__BaseUrl: http://keycloak:8080/realms/Dare-Control
+  SubmissionKeyCloakSettings__ClientId: Dare-Control-API
+  SubmissionKeyCloakSettings__ClientSecret: dev-dare-control-api-secret
+  SubmissionKeyCloakSettings__Server: keycloak:8080
+  SubmissionKeyCloakSettings__Protocol: http
+  SubmissionKeyCloakSettings__RequireHttpsMetadata: "false"
+
+services:
+  postgres:
+    image: postgres:16.4
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "55432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 3s
+      retries: 30
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.8.1
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HOSTNAME: http://localhost:8180
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HTTP_ENABLED: "true"
+      KC_HEALTH_ENABLED: "true"
+    ports:
+      - "8180:8080"
+    volumes:
+      - ./keycloak:/opt/keycloak/data/import:ro
+    healthcheck:
+      # The image has no curl; ask the management port's readiness endpoint over bash's /dev/tcp.
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q '\"UP\"' <&3"]
+      interval: 5s
+      retries: 60
+
+  # The TRE's object store: holds the federated-datasets bucket. Uploaders log in through Keycloak (realm tre-test).
+  rustfs:
+    image: rustfs/rustfs:1.0.4
+    environment:
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_CONSOLE_ADDRESS: ":9001"
+      RUSTFS_CONSOLE_CORS_ALLOWED_ORIGINS: "*"
+      RUSTFS_ACCESS_KEY: rustfsadmin
+      RUSTFS_SECRET_KEY: rustfsadmin123
+      RUSTFS_IDENTITY_OPENID_ENABLE: "on"
+      RUSTFS_IDENTITY_OPENID_CONFIG_URL: http://keycloak:8080/realms/tre-test
+      RUSTFS_IDENTITY_OPENID_CLIENT_ID: rustfs-console
+      RUSTFS_IDENTITY_OPENID_CLIENT_SECRET: rustfs-secret
+      RUSTFS_IDENTITY_OPENID_SCOPES: openid,profile,email
+      RUSTFS_IDENTITY_OPENID_GROUPS_CLAIM: groups
+      RUSTFS_IDENTITY_OPENID_USERNAME_CLAIM: preferred_username
+      RUSTFS_IDENTITY_OPENID_EMAIL_CLAIM: email
+      RUSTFS_IDENTITY_OPENID_REDIRECT_URI: http://localhost:9000/rustfs/admin/v3/oidc/callback/default
+      RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC: "off"
+      RUSTFS_IDENTITY_OPENID_DISPLAY_NAME: TRE Keycloak
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - rustfsdata:/data
+    depends_on:
+      keycloak:
+        condition: service_healthy
+
+  submission-api:
+    build:
+      context: ../..
+      dockerfile: Submission/Submission.Api/Dockerfile
+    environment:
+      <<: *kc-dare-control
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__DefaultConnection: Server=postgres;Port=5432;Database=DARE-Control;User Id=postgres;Password=postgres;Include Error Detail=true
+      KeycloakDemoMode: "true"
+      Features__SeedDemoData: "false"
+      RabbitMQ__HostAddress: rabbitmq-not-used
+    ports:
+      - "5034:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+
+  agent-api:
+    build:
+      context: ../..
+      dockerfile: Agent/Agent.Api/Dockerfile
+    environment:
+      <<: *kc-dare-control
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__DefaultConnection: Server=postgres;Port=5432;Database=DARE-TRE;User Id=postgres;Password=postgres;Include Error Detail=true
+      ConnectionStrings__CredentialsConnection: Server=postgres;Port=5432;Database=TRE_Credentials;User Id=postgres;Password=postgres;Include Error Detail=true
+      KeycloakDemoMode: "true"
+      Features__SeedDemoData: "false" # must stay false: seeding writes to Vault, which this stack doesn't run
+      TreName: my-tre
+      ApiEndpoints__SubmissionApiUrl: http://submission-api:8080
+      # The Agent logs in to Submission as this user (realm Dare-Control, role dare-tre-admin).
+      SubmissionKeyCloakSettings__Username: tre-agent-my-tre
+      SubmissionKeyCloakSettings__PasswordEnc: TreAgent1!
+      TreKeyCloakSettings__Authority: http://keycloak:8080/realms/tre-test
+      TreKeyCloakSettings__MetadataAddress: http://keycloak:8080/realms/tre-test/.well-known/openid-configuration
+      # Admin key: the Agent creates the dataset bucket and the dataset-upload policy at startup.
+      MinioTRESettings__Url: http://rustfs:9000
+      MinioTRESettings__AccessKey: rustfsadmin
+      MinioTRESettings__SecretKey: rustfsadmin123
+      JobSettings__federatedTaskSchedule: "1"
+      # The Agent's other jobs need services this stack doesn't run; switch them off to keep logs readable.
+      JobSettings__syncSchedule: "0"
+      JobSettings__scanSchedule: "0"
+      JobSettings__healthCheckSchedule: "0"
+      JobSettings__bucketCleanupSchedule: "0"
+      HasuraSettings__IsEnabled: "false"
+      RabbitMQ__HostAddress: rabbitmq-not-used
+      Hangfire__Username: admin
+      Hangfire__Password: password
+    ports:
+      - "5269:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+      rustfs:
+        condition: service_started
+      submission-api:
+        condition: service_started
+
+  # One-shot: registers TRE "my-tre" in Submission once its migrations have created the Tres table.
+  seed-tre:
+    image: postgres:16.4
+    environment:
+      PGHOST: postgres
+      PGUSER: postgres
+      PGPASSWORD: postgres
+      PGDATABASE: DARE-Control
+    command:
+      - sh
+      - -c
+      - |
+        until psql -tAc 'SELECT 1 FROM "Tres" LIMIT 1' >/dev/null 2>&1; do echo "waiting for Submission migrations"; sleep 3; done
+        psql -c "INSERT INTO \"Tres\" (\"Name\",\"AdminUsername\",\"About\",\"FormData\",\"LastHeartBeatReceived\")
+                 SELECT 'my-tre','tre-agent-my-tre','Local federated dev TRE','{}',now()
+                 WHERE NOT EXISTS (SELECT 1 FROM \"Tres\" WHERE lower(\"Name\")='my-tre');"
+    depends_on:
+      submission-api:
+        condition: service_started
+    restart: "no"
+
+  # One-shot: uploads the sample dataset dataset/cohort_2024/cohort.csv into the TRE bucket.
+  seed-dataset:
+    image: amazon/aws-cli:2.15.0
+    environment:
+      AWS_ACCESS_KEY_ID: rustfsadmin
+      AWS_SECRET_ACCESS_KEY: rustfsadmin123
+      AWS_DEFAULT_REGION: us-east-1
+    volumes:
+      - ./data:/seed:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        until aws --endpoint-url http://rustfs:9000 s3 ls >/dev/null 2>&1; do echo "waiting for RustFS"; sleep 3; done
+        aws --endpoint-url http://rustfs:9000 s3 mb s3://federated-datasets 2>/dev/null || true
+        aws --endpoint-url http://rustfs:9000 s3 cp /seed/cohort.csv s3://federated-datasets/dataset/cohort_2024/cohort.csv
+    depends_on:
+      rustfs:
+        condition: service_started
+    restart: "no"
+
+volumes:
+  pgdata:
+  rustfsdata:
