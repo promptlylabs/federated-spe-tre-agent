@@ -51,14 +51,12 @@ namespace Agent.Api.FederatedTasks
 
             await using var stream = await _store.OpenReadAsync(keys[0], ct);
 
-            // Hash the exact bytes once; the parser then reads the same buffer.
-            var bytes = new MemoryStream();
-            await stream.CopyToAsync(bytes, ct);
-            var sha256 = Convert.ToHexString(SHA256.HashData(bytes.GetBuffer().AsSpan(0, (int)bytes.Length))).ToLowerInvariant();
-            bytes.Position = 0;
+            // Hash the exact bytes, then rewind so the parser reads the same buffer.
+            var sha256 = Convert.ToHexString(await SHA256.HashDataAsync(stream, ct)).ToLowerInvariant();
+            stream.Position = 0;
 
             // The hash is kept on failures too: the file was read, so the report must say which file it was.
-            return CsvDatasetParser.Parse(bytes) with { Sha256 = sha256 };
+            return CsvDatasetParser.Parse(stream) with { Sha256 = sha256 };
         }
     }
 }
