@@ -86,6 +86,18 @@ namespace Submission.Api.Tests
             Assert.Equal("cohort_2024", row.Dataset);
         }
 
+        [Fact]
+        public async Task Enqueue_StoresDefinedStateInTaskJson()
+        {
+            using var db = NewDb();
+            var task = MeanTask();
+            task.State = TesState.COMPLETEEnum;
+
+            await ControllerFor(db, "dare-admin").Enqueue(task);
+
+            Assert.Contains("\"state\":\"UNKNOWN\"", db.FederatedTasks.Single().TesTaskJson);
+        }
+
         public static IEnumerable<object[]> OutsideProfile()
         {
             var image = MeanTask();

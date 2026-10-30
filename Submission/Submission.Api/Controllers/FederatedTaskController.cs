@@ -59,7 +59,7 @@ namespace Submission.Api.Controllers
 
             // Server-owned fields: callers must not be able to inject state, logs or results into a queued task.
             task.Id = null;
-            task.State = default;
+            task.State = TesState.UNKNOWNEnum;
             task.Logs = null;
             task.CreationTime = null;
 
