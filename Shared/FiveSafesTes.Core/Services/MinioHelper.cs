@@ -964,8 +964,6 @@ namespace FiveSafesTes.Core.Services
             string submissionBucket,
             string outputBucket)
         {
-            var signer = new AWS4RequestSigner(_minioSettings.AccessKey, _minioSettings.SecretKey);
-
             var policyJson = JsonConvert.SerializeObject(new
             {
                 Version = "2012-10-17",
@@ -996,36 +994,58 @@ namespace FiveSafesTes.Core.Services
                 }
             });
 
-            var baseUrl = _minioSettings.Url.TrimEnd('/');
-            var encodedPolicyName = Uri.EscapeDataString(policyName);
-            var adminApiPath = "/rustfs/admin/v3/add-canned-policy";
-
-            using var client = new HttpClient();
-            using var content = new StringContent(policyJson, Encoding.UTF8, "application/json");
-            using var request = new HttpRequestMessage
+            if (!await PutCannedPolicyAsync(policyName, policyJson))
             {
-                Method = HttpMethod.Put,
-                RequestUri = new Uri($"{baseUrl}{adminApiPath}?name={encodedPolicyName}"),
-                Content = content
-            };
-
-            var signedRequest = await signer.Sign(request, _minioSettings.AWSService, _minioSettings.AWSRegion);
-            using var response = await client.SendAsync(signedRequest);
-
-            if (response.StatusCode == HttpStatusCode.OK)
-            {
-                Log.Information(
-                    "Created project S3 access policy {PolicyName} for buckets {SubmissionBucket}/{OutputBucket}",
-                    policyName, submissionBucket, outputBucket);
-                return true;
+                return false;
             }
 
-            var responseBody = await response.Content.ReadAsStringAsync();
-            Log.Warning(
-                "CreateProjectS3AccessPolicyAsync failed for {PolicyName}. Status: {StatusCode}. Response: {ResponseBody}",
-                policyName,
-                response.StatusCode,
-                responseBody);
+            Log.Information(
+                "Created project S3 access policy {PolicyName} for buckets {SubmissionBucket}/{OutputBucket}",
+                policyName, submissionBucket, outputBucket);
+            return true;
+        }
+
+        /// <summary>
+        /// Creates or replaces a canned IAM policy on the object store via the signed admin API.
+        /// </summary>
+        public async Task<bool> PutCannedPolicyAsync(string policyName, string policyJson)
+        {
+            try
+            {
+                var signer = new AWS4RequestSigner(_minioSettings.AccessKey, _minioSettings.SecretKey);
+
+                var baseUrl = _minioSettings.Url.TrimEnd('/');
+                var encodedPolicyName = Uri.EscapeDataString(policyName);
+                var adminApiPath = "/rustfs/admin/v3/add-canned-policy";
+
+                using var client = new HttpClient();
+                using var content = new StringContent(policyJson, Encoding.UTF8, "application/json");
+                using var request = new HttpRequestMessage
+                {
+                    Method = HttpMethod.Put,
+                    RequestUri = new Uri($"{baseUrl}{adminApiPath}?name={encodedPolicyName}"),
+                    Content = content
+                };
+
+                var signedRequest = await signer.Sign(request, _minioSettings.AWSService, _minioSettings.AWSRegion);
+                using var response = await client.SendAsync(signedRequest);
+
+                if (response.StatusCode == HttpStatusCode.OK)
+                {
+                    return true;
+                }
+
+                var responseBody = await response.Content.ReadAsStringAsync();
+                Log.Warning(
+                    "PutCannedPolicyAsync failed for {PolicyName}. Status: {StatusCode}. Response: {ResponseBody}",
+                    policyName,
+                    response.StatusCode,
+                    responseBody);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "PutCannedPolicyAsync failed for {PolicyName}", policyName);
+            }
 
             return false;
         }

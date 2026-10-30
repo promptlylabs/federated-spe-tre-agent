@@ -31,20 +31,20 @@ namespace FiveSafesTes.Core.Models.Tes
         /// Gets or Sets Name
         /// </summary>
         [DataMember(Name = "name")]
-        public string Name { get; set; }
+        public string? Name { get; set; }
 
         /// <summary>
         /// Gets or Sets Description
         /// </summary>
         [DataMember(Name = "description")]
-        public string Description { get; set; }
+        public string? Description { get; set; }
 
         /// <summary>
         /// REQUIRED, unless \&quot;content\&quot; is set.  URL in long term storage, for example: s3://my-object-store/file1 gs://my-bucket/file2 file:///path/to/my/file /path/to/my/file etc...
         /// </summary>
         /// <value>REQUIRED, unless \&quot;content\&quot; is set.  URL in long term storage, for example: s3://my-object-store/file1 gs://my-bucket/file2 file:///path/to/my/file /path/to/my/file etc...</value>
         [DataMember(Name = "url")]
-        public string Url { get; set; }
+        public string? Url { get; set; }
 
         /// <summary>
         /// Path of the file inside the container. Must be an absolute path.
@@ -64,7 +64,7 @@ namespace FiveSafesTes.Core.Models.Tes
         /// </summary>
         /// <value>File content literal.  Implementations should support a minimum of 128 KiB in this field and may define its own maximum. UTF-8 encoded  If content is not empty, \&quot;url\&quot; must be ignored.</value>
         [DataMember(Name = "content")]
-        public string Content { get; set; }
+        public string? Content { get; set; }
 
         /// <summary>
         /// Returns the string presentation of the object
