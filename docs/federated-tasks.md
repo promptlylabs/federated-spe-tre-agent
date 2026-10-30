@@ -76,7 +76,7 @@ The result is in `logs[0].metadata`.
 
 | Code | Meaning |
 |---|---|
-| `invalid_task` | The task does not follow the profile, or its `tres` is not the TRE of the Agent that polled it. The message says which rule failed. |
+| `invalid_task` | The task does not follow the profile. The message says which rule failed. |
 | `invalid_dataset_name` | The name does not match `^[a-z0-9][a-z0-9_-]{0,62}$`. |
 | `dataset_not_found` | No `.csv` file under `dataset/<name>/`, or the file is empty. |
 | `ambiguous_dataset` | More than one `.csv` file under `dataset/<name>/`. |
@@ -171,6 +171,10 @@ SQL dump datasets are not supported yet. The plan for later:
 - The dump loads into an isolated in-memory SQLite database. Uploaded SQL never runs against a real database, and never as a query.
 - A plain `pg_dump` will not pass. Export with `--inserts` and remove the `SET` and `SELECT` lines.
 - To turn it on: add `sql` to `FederatedTaskSettings:AllowedExtensions` (this also widens the upload policy) and add a `.sql` branch to the dataset reader.
+
+## Known limitation: no small-number suppression
+
+Results are released as computed. There is no minimum cell count and no other disclosure control. A narrow filter can therefore give a `count` of 1 or the exact value of one person in a `mean`. Until this is added, the orchestrator side must only enqueue tasks that are safe to release.
 
 ## Known issue: RustFS console loop
 
