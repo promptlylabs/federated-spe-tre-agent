@@ -9,6 +9,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         public const string InvalidDatasetName = "invalid_dataset_name";
         public const string DatasetNotFound = "dataset_not_found";
         public const string AmbiguousDataset = "ambiguous_dataset";
+        public const string InvalidDataset = "invalid_dataset";
         public const string UnknownOperation = "unknown_operation";
         public const string InvalidFilter = "invalid_filter";
         public const string ColumnNotFound = "column_not_found";

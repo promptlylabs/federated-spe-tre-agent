@@ -34,6 +34,18 @@ public class DatasetReaderTests
     }
 
     [Fact]
+    public async Task Read_MalformedCsv_ReturnsInvalidDatasetWithSha256()
+    {
+        var bytes = System.Text.Encoding.UTF8.GetBytes("id,name\n1,O\"Brien\n");
+        var store = new FakeDatasetStore().Add("dataset/cohort_2024/cohort.csv", bytes);
+
+        var result = await Reader(store).ReadAsync("cohort_2024", CancellationToken.None);
+
+        Assert.Equal("invalid_dataset", result.ErrorCode);
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant(), result.Sha256);
+    }
+
+    [Fact]
     public async Task Read_ReadsOnlyCsv_WhateverTheUploadExtensions()
     {
         var store = new FakeDatasetStore()

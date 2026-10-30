@@ -41,6 +41,15 @@ public class CsvDatasetParserTests
     }
 
     [Fact]
+    public void Parse_MalformedCsv_ReturnsInvalidDatasetWithoutTheData()
+    {
+        var result = CsvDatasetParser.Parse(new MemoryStream(Encoding.UTF8.GetBytes("id,name\n1,ok\n2,O\"Secret\n")));
+
+        Assert.Equal("invalid_dataset", result.ErrorCode);
+        Assert.Equal("dataset file is not valid CSV near line 3", result.ErrorMessage);
+    }
+
+    [Fact]
     public void Parse_HeaderOnly_ReturnsEmptyTable()
     {
         var result = CsvDatasetParser.Parse(new MemoryStream(Encoding.UTF8.GetBytes("a,b\n")));
