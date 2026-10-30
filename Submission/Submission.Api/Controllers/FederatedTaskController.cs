@@ -152,7 +152,16 @@ namespace Submission.Api.Controllers
                 task.ResultErrorMessage = report.ErrorMessage;
             }
 
-            await _DbContext.SaveChangesAsync(cancellationToken);
+            try
+            {
+                await _DbContext.SaveChangesAsync(cancellationToken);
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // Another report for this task was saved after this one read it as QUEUED.
+                return Conflict();
+            }
+
             return Ok(new BoolReturn { Result = true });
         }
 

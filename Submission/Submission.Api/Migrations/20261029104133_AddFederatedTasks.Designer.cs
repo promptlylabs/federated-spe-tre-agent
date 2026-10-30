@@ -121,6 +121,7 @@ namespace Submission.Api.Migrations
                         .HasColumnType("text");
 
                     b.Property<int>("State")
+                        .IsConcurrencyToken()
                         .HasColumnType("integer");
 
                     b.Property<string>("StudyId")

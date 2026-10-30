@@ -42,6 +42,8 @@ namespace Submission.Api.Repositories.DbContexts
             {
                 b.HasIndex(x => x.TaskId).IsUnique();
                 b.HasIndex(x => new { x.TreId, x.State });
+                // Reporting a result is a QUEUED -> final transition; the token makes a second, concurrent report fail.
+                b.Property(x => x.State).IsConcurrencyToken();
             });
         }
     }

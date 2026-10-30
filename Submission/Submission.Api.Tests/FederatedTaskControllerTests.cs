@@ -17,15 +17,16 @@ namespace Submission.Api.Tests
     {
         private static ApplicationDbContext NewDb()
         {
-            var options = new DbContextOptionsBuilder<ApplicationDbContext>()
-                .UseInMemoryDatabase(Guid.NewGuid().ToString())
-                .Options;
-            var db = new ApplicationDbContext(options);
+            var db = OpenDb(Guid.NewGuid().ToString());
             db.Tres.Add(NewTre(1, "tre-a", "tre-a-admin"));
             db.Tres.Add(NewTre(2, "tre-b", "tre-b-admin"));
             db.SaveChanges();
             return db;
         }
+
+        // A second context on the same database stands in for a second request.
+        private static ApplicationDbContext OpenDb(string name) =>
+            new(new DbContextOptionsBuilder<ApplicationDbContext>().UseInMemoryDatabase(name).Options);
 
         private static Tre NewTre(int id, string name, string admin) => new()
         {
@@ -306,6 +307,39 @@ namespace Submission.Api.Tests
 
             Assert.IsType<ConflictResult>(second);
             Assert.Equal(40.5m, db.FederatedTasks.AsNoTracking().Single().ResultValue);
+        }
+
+        [Fact]
+        public async Task ReportResult_ConcurrentReports_SecondReturns409_AndFirstKept()
+        {
+            var name = Guid.NewGuid().ToString();
+            using var setup = OpenDb(name);
+            setup.Tres.Add(NewTre(1, "tre-a", "tre-a-admin"));
+            setup.SaveChanges();
+            var seeded = SeedTask(setup, 1, TesState.QUEUEDEnum);
+
+            // Both requests load the task while it is QUEUED, before either saves.
+            using var dbA = OpenDb(name);
+            using var dbB = OpenDb(name);
+            dbA.FederatedTasks.Single();
+            dbB.FederatedTasks.Single();
+
+            var first = await ControllerFor(dbA, "tre-a-admin").ReportResult(new FederatedTaskResultReport
+            {
+                TaskId = seeded.TaskId.ToString(), State = TesState.COMPLETEEnum, Value = 40.5m, RowCount = 2
+            });
+            var second = await ControllerFor(dbB, "tre-a-admin").ReportResult(new FederatedTaskResultReport
+            {
+                TaskId = seeded.TaskId.ToString(), State = TesState.SYSTEMERROREnum, ErrorCode = "internal_error"
+            });
+
+            Assert.IsType<OkObjectResult>(first);
+            Assert.IsType<ConflictResult>(second);
+            using var check = OpenDb(name);
+            var row = check.FederatedTasks.Single();
+            Assert.Equal(TesState.COMPLETEEnum, row.State);
+            Assert.Equal(40.5m, row.ResultValue);
+            Assert.Null(row.ErrorCode);
         }
 
         [Theory]
