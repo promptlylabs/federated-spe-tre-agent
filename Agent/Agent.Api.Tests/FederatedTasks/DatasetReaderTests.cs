@@ -34,6 +34,20 @@ public class DatasetReaderTests
     }
 
     [Fact]
+    public async Task Read_ReadsOnlyCsv_WhateverTheUploadExtensions()
+    {
+        var store = new FakeDatasetStore()
+            .Add("dataset/cohort_2024/cohort.csv", "x\n1\n")
+            .Add("dataset/cohort_2024/cohort.parquet", "not csv");
+        var reader = new DatasetReader(store, new FederatedTaskSettings { AllowedExtensions = ["csv", "parquet"] });
+
+        var result = await reader.ReadAsync("cohort_2024", CancellationToken.None);
+
+        Assert.True(result.IsSuccess);
+        Assert.Equal(["x"], result.Table!.Columns);
+    }
+
+    [Fact]
     public async Task Read_NoFile_ReturnsDatasetNotFound()
     {
         var result = await Reader(new FakeDatasetStore()).ReadAsync("cohort_2024", CancellationToken.None);

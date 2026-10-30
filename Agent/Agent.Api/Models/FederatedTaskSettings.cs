@@ -1,3 +1,5 @@
+using Microsoft.Extensions.Configuration;
+
 namespace Agent.Api.Models
 {
     /// <summary>
@@ -18,7 +20,8 @@ namespace Agent.Api.Models
         public string DatasetPrefix { get; set; } = "dataset/";
 
         /// <summary>
-        /// File extensions (without the dot) that the upload policy allows to be uploaded.
+        /// File extensions (without the dot) that the upload policy allows to be uploaded. This does not
+        /// change what the dataset reader parses; it reads only .csv files.
         /// </summary>
         public string[] AllowedExtensions { get; set; } = ["csv"];
 
@@ -26,5 +29,23 @@ namespace Agent.Api.Models
         /// Name of the RustFS canned policy, created at startup, that grants dataset upload.
         /// </summary>
         public string UploadPolicyName { get; set; } = "dataset-upload";
+
+        /// <summary>
+        /// Binds the settings from their configuration section.
+        /// </summary>
+        public static FederatedTaskSettings FromConfiguration(IConfiguration configuration)
+        {
+            var section = configuration.GetSection(nameof(FederatedTaskSettings));
+            var settings = new FederatedTaskSettings();
+            section.Bind(settings);
+
+            // Binding appends configured array items to the default, so a configured list must replace it here.
+            if (section.GetSection(nameof(AllowedExtensions)).Get<string[]>() is { Length: > 0 } extensions)
+            {
+                settings.AllowedExtensions = extensions;
+            }
+
+            return settings;
+        }
     }
 }

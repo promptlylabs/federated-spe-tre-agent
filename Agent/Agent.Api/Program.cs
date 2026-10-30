@@ -128,8 +128,7 @@ var minioTRESettings = new MinioTRESettings();
 configuration.Bind(nameof(MinioTRESettings), minioTRESettings);
 builder.Services.AddSingleton(minioTRESettings);
 
-var federatedTaskSettings = new FederatedTaskSettings();
-configuration.Bind(nameof(FederatedTaskSettings), federatedTaskSettings);
+var federatedTaskSettings = FederatedTaskSettings.FromConfiguration(configuration);
 builder.Services.AddSingleton(federatedTaskSettings);
 
 

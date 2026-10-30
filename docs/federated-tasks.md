@@ -103,6 +103,8 @@ Agent.Api creates both at startup. Settings are in the `FederatedTaskSettings` s
 | `DatasetBucket` | `federated-datasets` |
 | `DatasetPrefix` | `dataset/` |
 | `AllowedExtensions` | `["csv"]` |
+
+`AllowedExtensions` sets only which files the upload policy accepts. A list you configure replaces the default. The Agent reads only `.csv` files, whatever this setting holds.
 | `UploadPolicyName` | `dataset-upload` |
 
 The `dataset-upload` policy allows:

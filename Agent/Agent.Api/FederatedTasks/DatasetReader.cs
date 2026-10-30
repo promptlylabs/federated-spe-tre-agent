@@ -9,6 +9,9 @@ namespace Agent.Api.FederatedTasks
     /// </summary>
     public class DatasetReader : IDatasetReader
     {
+        // The only format the reader parses. Upload policy extensions are separate: see FederatedTaskSettings.
+        private const string DatasetExtension = ".csv";
+
         private readonly IDatasetStore _store;
         private readonly FederatedTaskSettings _settings;
 
@@ -31,7 +34,7 @@ namespace Agent.Api.FederatedTasks
             var prefix = $"{_settings.DatasetPrefix}{datasetName}/";
             var keys = (await _store.ListKeysAsync(prefix, ct))
                 .Where(k => k.IndexOf('/', prefix.Length) < 0) // direct children only
-                .Where(k => _settings.AllowedExtensions.Any(ext => k.EndsWith("." + ext, StringComparison.Ordinal)))
+                .Where(k => k.EndsWith(DatasetExtension, StringComparison.Ordinal))
                 .ToList();
 
             if (keys.Count == 0)
