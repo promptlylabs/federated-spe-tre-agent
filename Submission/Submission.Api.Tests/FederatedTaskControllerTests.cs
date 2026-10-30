@@ -53,12 +53,13 @@ namespace Submission.Api.Tests
             FederatedTesProfile.Build(new FederatedTaskSpec(
                 "mean", dataset, "age", [], "study-1", tre));
 
-        private static FederatedTask SeedTask(ApplicationDbContext db, int treId, TesState state, TesTask? task = null)
+        private static FederatedTask SeedTask(ApplicationDbContext db, int treId, TesState state, TesTask? task = null, string? treName = null)
         {
             var entity = new FederatedTask
             {
                 TaskId = Guid.NewGuid(),
                 TreId = treId,
+                TreName = treName ?? (treId == 1 ? "tre-a" : "tre-b"),
                 StudyId = "study-1",
                 Operation = "mean",
                 Dataset = "cohort_2024",
@@ -84,6 +85,7 @@ namespace Submission.Api.Tests
             Assert.Equal(id, row.TaskId);
             Assert.Equal(TesState.QUEUEDEnum, row.State);
             Assert.Equal(1, row.TreId);
+            Assert.Equal("tre-a", row.TreName);
             Assert.Equal("cohort_2024", row.Dataset);
         }
 
@@ -187,6 +189,22 @@ namespace Submission.Api.Tests
             Assert.Equal(mine.TaskId.ToString(), task.Id);
             Assert.Equal(TesState.QUEUEDEnum, task.State);
             Assert.Equal("mean", task.Executors[0].Command[0]);
+        }
+
+        [Fact]
+        public async Task GetPending_SkipsTasksEnqueuedUnderAnOldTreName()
+        {
+            using var db = NewDb();
+            for (var i = 0; i < 60; i++)
+            {
+                SeedTask(db, 1, TesState.QUEUEDEnum, treName: "old-tre-a");
+            }
+            var current = SeedTask(db, 1, TesState.QUEUEDEnum);
+
+            var result = await ControllerFor(db, "tre-a-admin").GetPendingTasksForTre();
+
+            var task = Assert.Single(Assert.IsType<List<TesTask>>(Assert.IsType<OkObjectResult>(result).Value));
+            Assert.Equal(current.TaskId.ToString(), task.Id);
         }
 
         private static async Task<TesTask> GetTask(ApplicationDbContext db, Guid id)

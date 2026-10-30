@@ -67,6 +67,7 @@ namespace Submission.Api.Controllers
             {
                 TaskId = Guid.NewGuid(),
                 TreId = tre.Id,
+                TreName = spec.TreName,
                 StudyId = spec.StudyId,
                 Operation = spec.Operation,
                 Dataset = spec.Dataset,
@@ -89,10 +90,13 @@ namespace Submission.Api.Controllers
         public virtual async Task<IActionResult> GetPendingTasksForTre(CancellationToken cancellationToken = default)
         {
             var tre = ControllerHelpers.GetUserTre(User, _DbContext);
+            var treName = tre!.Name.ToLower();
 
+            // The Agent refuses tasks whose tres is not its own name and leaves them QUEUED. Tasks enqueued under a
+            // name the TRE no longer has would sit at the front of the queue forever, so they are not handed out.
             var tasks = await _DbContext.FederatedTasks
                 .AsNoTracking()
-                .Where(x => x.TreId == tre!.Id && x.State == TesState.QUEUEDEnum)
+                .Where(x => x.TreId == tre.Id && x.State == TesState.QUEUEDEnum && x.TreName == treName)
                 .OrderBy(x => x.SubmittedAt)
                 .Take(MaxPendingTasks)
                 .ToListAsync(cancellationToken);

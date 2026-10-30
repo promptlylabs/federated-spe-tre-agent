@@ -141,6 +141,10 @@ namespace Submission.Api.Migrations
                     b.Property<int>("TreId")
                         .HasColumnType("integer");
 
+                    b.Property<string>("TreName")
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.HasKey("Id");
 
                     b.HasIndex("TaskId")

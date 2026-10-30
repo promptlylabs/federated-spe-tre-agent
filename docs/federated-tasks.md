@@ -95,6 +95,8 @@ Set `TreName` in the Agent's settings to the name of the TRE as registered in Su
 
 The Agent does not run a task whose `tres` is not its own `TreName`. It logs an error, does not read the dataset, and does not report, so the task stays `QUEUED` and runs once `TreName` is fixed. If `TreName` is empty, the Agent logs an error and runs no task.
 
+If a TRE is renamed in Submission, tasks enqueued under the old name are no longer sent to the Agent. They stay `QUEUED`. Enqueue them again under the new name.
+
 A TRE that has federated tasks cannot be deleted. The tasks are the record of which results left the TRE.
 
 ### Bucket and policy

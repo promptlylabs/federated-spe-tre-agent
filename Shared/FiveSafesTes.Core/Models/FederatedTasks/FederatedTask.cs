@@ -14,6 +14,12 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         public Guid TaskId { get; set; }
         public int TreId { get; set; }
         public virtual Tre? Tre { get; set; }
+
+        /// <summary>
+        /// The task's <c>tres</c> tag as enqueued (trimmed, lowercased). If the TRE is renamed later, the task no
+        /// longer matches its TRE and is not handed to the Agent.
+        /// </summary>
+        public string TreName { get; set; } = string.Empty;
         public string StudyId { get; set; } = string.Empty;
         public string Operation { get; set; } = string.Empty;
         public string Dataset { get; set; } = string.Empty;

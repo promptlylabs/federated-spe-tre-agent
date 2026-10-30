@@ -20,6 +20,7 @@ namespace Submission.Api.Migrations
                         .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityByDefaultColumn),
                     TaskId = table.Column<Guid>(type: "uuid", nullable: false),
                     TreId = table.Column<int>(type: "integer", nullable: false),
+                    TreName = table.Column<string>(type: "text", nullable: false),
                     StudyId = table.Column<string>(type: "text", nullable: false),
                     Operation = table.Column<string>(type: "text", nullable: false),
                     Dataset = table.Column<string>(type: "text", nullable: false),
