@@ -21,12 +21,15 @@ public class CsvDatasetParserTests
         Assert.Equal(["1", "a, b"], row);
     }
 
-    [Fact]
-    public void Parse_EmptyFile_ReturnsDatasetNotFound()
+    [Theory]
+    [InlineData(new byte[0])]
+    [InlineData(new byte[] { 0x0A, 0x0A })]
+    [InlineData(new byte[] { 0xEF, 0xBB, 0xBF })]
+    public void Parse_EmptyFile_ReturnsInvalidDataset(byte[] bytes)
     {
-        var result = CsvDatasetParser.Parse(new MemoryStream([]));
+        var result = CsvDatasetParser.Parse(new MemoryStream(bytes));
 
-        Assert.Equal("dataset_not_found", result.ErrorCode);
+        Assert.Equal("invalid_dataset", result.ErrorCode);
         Assert.Equal("dataset file is empty", result.ErrorMessage);
     }
 

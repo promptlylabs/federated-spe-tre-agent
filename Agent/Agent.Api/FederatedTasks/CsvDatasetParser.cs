@@ -25,7 +25,7 @@ namespace Agent.Api.FederatedTasks
             {
                 if (!parser.Read() || !parser.ReadHeader() || parser.HeaderRecord is not { Length: > 0 } header)
                 {
-                    return DatasetReadResult.Fail(FederatedTaskErrorCodes.DatasetNotFound, "dataset file is empty");
+                    return DatasetReadResult.Fail(FederatedTaskErrorCodes.InvalidDataset, "dataset file is empty");
                 }
 
                 var rows = new List<IReadOnlyList<string?>>();
