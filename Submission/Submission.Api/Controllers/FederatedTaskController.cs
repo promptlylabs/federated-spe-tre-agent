@@ -231,7 +231,6 @@ namespace Submission.Api.Controllers
         private static ObjectResult Error(int status, string code, string message) =>
             new(new FederatedApiError { ErrorCode = code, ErrorMessage = message }) { StatusCode = status };
 
-        // Also returned for another TRE's task, so the two cases cannot be told apart.
         private static ObjectResult TaskNotFound() =>
             Error(StatusCodes.Status404NotFound, FederatedTaskErrorCodes.TaskNotFound, "task not found");
 

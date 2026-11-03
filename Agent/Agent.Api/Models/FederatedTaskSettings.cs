@@ -30,9 +30,6 @@ namespace Agent.Api.Models
         /// </summary>
         public string UploadPolicyName { get; set; } = "dataset-upload";
 
-        /// <summary>
-        /// Binds the settings from their configuration section.
-        /// </summary>
         public static FederatedTaskSettings FromConfiguration(IConfiguration configuration)
         {
             var section = configuration.GetSection(nameof(FederatedTaskSettings));

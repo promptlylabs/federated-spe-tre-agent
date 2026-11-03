@@ -9,7 +9,7 @@ namespace Agent.Api.FederatedTasks
     /// </summary>
     public class DatasetReader : IDatasetReader
     {
-        // The only format the reader parses. Upload policy extensions are separate: see FederatedTaskSettings.
+        // Not AllowedExtensions: that is the upload policy, and the parser reads only CSV.
         private const string DatasetExtension = ".csv";
 
         private readonly IDatasetStore _store;
@@ -51,7 +51,6 @@ namespace Agent.Api.FederatedTasks
 
             await using var stream = await _store.OpenReadAsync(keys[0], ct);
 
-            // Hash the exact bytes, then rewind so the parser reads the same buffer.
             var sha256 = Convert.ToHexString(await SHA256.HashDataAsync(stream, ct)).ToLowerInvariant();
             stream.Position = 0;
 

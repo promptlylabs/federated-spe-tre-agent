@@ -12,7 +12,6 @@ namespace Agent.Api.FederatedTasks
         {
             var columns = table.Columns.ToList();
 
-            // Resolve each filter's column and parse its value once, not once per row.
             var filters = new List<ResolvedFilter>(spec.Filters.Count);
             foreach (var filter in spec.Filters)
             {

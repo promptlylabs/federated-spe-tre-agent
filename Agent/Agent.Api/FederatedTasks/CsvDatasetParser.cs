@@ -44,8 +44,7 @@ namespace Agent.Api.FederatedTasks
             }
             catch (CsvHelperException ex)
             {
-                // Bad data is the uploader's to fix, not an infrastructure failure. The exception text quotes the
-                // offending record, so only the line number leaves the TRE.
+                // The exception text quotes the offending record, so only the line number leaves the TRE.
                 var line = ex.Context?.Parser?.RawRow;
                 return DatasetReadResult.Fail(FederatedTaskErrorCodes.InvalidDataset,
                     line is > 0 ? $"dataset file is not valid CSV near line {line}" : "dataset file is not valid CSV");
