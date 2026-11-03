@@ -28,6 +28,15 @@ namespace Agent.Api.FederatedTasks
                     return DatasetReadResult.Fail(FederatedTaskErrorCodes.InvalidDataset, "dataset file is empty");
                 }
 
+                // Operations look a column up by name and would silently use the first of two with the same name.
+                // Ordinal, like that lookup.
+                var duplicate = header.GroupBy(x => x, StringComparer.Ordinal).FirstOrDefault(g => g.Count() > 1);
+                if (duplicate != null)
+                {
+                    return DatasetReadResult.Fail(FederatedTaskErrorCodes.InvalidDataset,
+                        $"dataset file has more than one column named '{duplicate.Key}'");
+                }
+
                 var rows = new List<IReadOnlyList<string?>>();
                 while (parser.Read())
                 {

@@ -98,7 +98,7 @@ The result is in `logs[0].metadata`.
 | `invalid_dataset_name` | The name does not match `^[a-z0-9][a-z0-9_-]{0,62}$`. |
 | `dataset_not_found` | No `.csv` file under `dataset/<name>/`. |
 | `ambiguous_dataset` | More than one `.csv` file under `dataset/<name>/`. |
-| `invalid_dataset` | The file is empty, or is not valid CSV, for example a stray `"` inside a field. The message gives the line number, never the data. |
+| `invalid_dataset` | The file is empty, is not valid CSV (for example a stray `"` inside a field), or has two columns with the same name. The message gives the line number or the column name, never the data. |
 | `unknown_operation` | The operation is not `count` or `mean`. |
 | `invalid_filter` | The operator is not `eq`, `gt`, `lt`, `gte` or `lte`, or the filter is not `<column>:<op>:<value>`. |
 | `column_not_found` | The column, or a filter column, is not in the dataset. |
@@ -177,6 +177,7 @@ Two things to check in Keycloak:
 5. To replace a dataset, upload a file with the same name. It overwrites the old one.
 6. Numbers use `.` as the decimal point, with no thousands separators and no exponent. Any other format fails with `non_numeric_value`.
 7. Only files directly in the dataset folder count. Subfolders are ignored.
+8. Each column name must be unique. Names are case-sensitive, so `age` and `Age` are different columns.
 
 You cannot delete files. Ask a RustFS admin if one must be removed. If a folder holds two `.csv` files, tasks fail with `ambiguous_dataset`.
 

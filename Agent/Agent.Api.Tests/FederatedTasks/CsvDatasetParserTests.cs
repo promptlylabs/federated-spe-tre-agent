@@ -53,6 +53,23 @@ public class CsvDatasetParserTests
     }
 
     [Fact]
+    public void Parse_DuplicateHeader_ReturnsInvalidDataset()
+    {
+        var result = CsvDatasetParser.Parse(new MemoryStream(Encoding.UTF8.GetBytes("age,sex,age\n30,F,99\n")));
+
+        Assert.Equal("invalid_dataset", result.ErrorCode);
+        Assert.Equal("dataset file has more than one column named 'age'", result.ErrorMessage);
+    }
+
+    [Fact]
+    public void Parse_HeadersDifferingOnlyInCase_AreDistinct()
+    {
+        var result = CsvDatasetParser.Parse(new MemoryStream(Encoding.UTF8.GetBytes("age,Age\n1,2\n")));
+
+        Assert.True(result.IsSuccess);
+    }
+
+    [Fact]
     public void Parse_HeaderOnly_ReturnsEmptyTable()
     {
         var result = CsvDatasetParser.Parse(new MemoryStream(Encoding.UTF8.GetBytes("a,b\n")));
