@@ -1,4 +1,5 @@
 using FiveSafesTes.Core.Models;
+using FiveSafesTes.Core.Models.FederatedTasks;
 using Microsoft.EntityFrameworkCore;
 
 namespace Submission.Api.Repositories.DbContexts
@@ -28,12 +29,23 @@ namespace Submission.Api.Repositories.DbContexts
 
         public DbSet<UsedOnboardingJti> UsedOnboardingJtis { get; set; }
 
+        public DbSet<FederatedTask> FederatedTasks { get; set; }
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
             modelBuilder.Entity<UsedOnboardingJti>(b =>
             {
                 b.HasIndex(x => x.Jti).IsUnique();
+            });
+            modelBuilder.Entity<FederatedTask>(b =>
+            {
+                b.HasIndex(x => x.TaskId).IsUnique();
+                b.HasIndex(x => new { x.TreId, x.State });
+                // Reporting a result is a QUEUED -> final transition; the token makes a second, concurrent report fail.
+                b.Property(x => x.State).IsConcurrencyToken();
+                // Task history is the audit record of released results; deleting a TRE must not erase it.
+                b.HasOne(x => x.Tre).WithMany().HasForeignKey(x => x.TreId).OnDelete(DeleteBehavior.Restrict);
             });
         }
     }

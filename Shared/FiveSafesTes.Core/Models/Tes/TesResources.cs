@@ -62,14 +62,14 @@ namespace FiveSafesTes.Core.Models.Tes
         /// </summary>
         /// <value>Request that the task be run in these compute zones.</value>
         [DataMember(Name = "zones")]
-        public List<string> Zones { get; set; }
+        public List<string>? Zones { get; set; }
 
         /// <summary>
         /// Key/value pairs for backend configuration
         /// </summary>
         /// <value> Key/value pairs for backend configuration</value>
         [DataMember(Name = "backend_parameters")]
-        public Dictionary<string, string> BackendParameters { get; set; }
+        public Dictionary<string, string>? BackendParameters { get; set; }
 
         /// <summary>
         /// If set to true, TES shall fail the task if any backend_parameters key/values are unsupported, otherwise, TES will attempt to run the task

@@ -2,6 +2,7 @@ using System.Net;
 using System.Reflection;
 using Agent.Api;
 using Agent.Api.Constants;
+using Agent.Api.FederatedTasks;
 using Agent.Api.Models;
 using Agent.Api.Repositories.DbContexts;
 using Agent.Api.Services;
@@ -127,6 +128,9 @@ var minioTRESettings = new MinioTRESettings();
 configuration.Bind(nameof(MinioTRESettings), minioTRESettings);
 builder.Services.AddSingleton(minioTRESettings);
 
+var federatedTaskSettings = FederatedTaskSettings.FromConfiguration(configuration);
+builder.Services.AddSingleton(federatedTaskSettings);
+
 
 var DmnPath = new FiveSafesTes.Core.Models.DmnPath();
 configuration.Bind(nameof(DmnPath), DmnPath);
@@ -177,6 +181,7 @@ builder.Services.AddScoped<IEncDecHelper, EncDecHelper>();
 builder.Services.AddScoped<IDareSyncHelper, DareSyncHelper>();
 builder.Services.AddScoped<ISubmissionHelper, SubmissionHelper>();
 builder.Services.AddScoped<IDoSyncWork, DoSyncWork>();
+builder.Services.AddScoped<IDoFederatedTaskWork, DoFederatedTaskWork>();
 builder.Services.AddScoped<IDoAgentWork, DoAgentWork>();
 builder.Services.AddScoped<IDoHealthCheckWork, DoHealthCheckWork>();
 builder.Services.AddScoped<IDoBucketCleanupWork, DoBucketCleanupWork>();
@@ -311,6 +316,22 @@ using (var scope = app.Services.CreateScope())
         await initialiser.SeedDemoData(configuration["DemoModeDefaultP"]);
     }
     credDb.Database.Migrate();
+
+    // Federated tasks read their datasets from a dedicated TRE bucket. Don't fail startup if
+    // storage is unreachable: tasks report internal_error until it is back.
+    var minioTreHelper = scope.ServiceProvider.GetRequiredService<IMinioTreHelper>();
+    if (!await minioTreHelper.CreateBucket(federatedTaskSettings.DatasetBucket))
+    {
+        Log.Error("Could not create federated task dataset bucket {DatasetBucket}", federatedTaskSettings.DatasetBucket);
+    }
+
+    // Lets a TRE admin upload datasets (csv only, under the dataset prefix) from the console.
+    var uploadPolicy = DatasetUploadPolicy.Build(
+        federatedTaskSettings.DatasetBucket, federatedTaskSettings.DatasetPrefix, federatedTaskSettings.AllowedExtensions);
+    if (!await minioTreHelper.PutCannedPolicyAsync(federatedTaskSettings.UploadPolicyName, uploadPolicy))
+    {
+        Log.Error("Could not create dataset upload policy {PolicyName}", federatedTaskSettings.UploadPolicyName);
+    }
 }
 
 
@@ -362,6 +383,9 @@ void AddDependencies(WebApplicationBuilder builder, ConfigurationManager configu
     builder.Services.AddHttpContextAccessor();
 
     builder.Services.AddScoped<IMinioTreHelper, MinioTreHelper>();
+    builder.Services.AddScoped<IDatasetStore, MinioDatasetStore>();
+    builder.Services.AddScoped<IDatasetReader, DatasetReader>();
+    builder.Services.AddScoped<IFederatedTaskClient, FederatedTaskClient>();
     builder.Services.AddScoped<IMinioSubHelper, MinioSubHelper>();
     builder.Services.AddScoped<IProjectS3AccessKeySyncService, ProjectS3AccessKeySyncService>();
     builder.Services.AddScoped<IProjectS3SubHelperFactory, ProjectS3SubHelperFactory>();
@@ -471,6 +495,12 @@ if (jobSettings.syncSchedule == 0)
     RecurringJob.RemoveIfExists(syncJobName);
 else
     RecurringJob.AddOrUpdate<IDoSyncWork>(syncJobName, x => x.Execute(), Cron.MinuteInterval(jobSettings.syncSchedule));
+
+string federatedTaskJobName = jobSettings.FederatedTaskJobName;
+if (jobSettings.federatedTaskSchedule == 0)
+    RecurringJob.RemoveIfExists(federatedTaskJobName);
+else
+    RecurringJob.AddOrUpdate<IDoFederatedTaskWork>(federatedTaskJobName, x => x.Execute(), Cron.MinuteInterval(jobSettings.federatedTaskSchedule));
 
 string scanJobName = jobSettings.ScanJobName;
 

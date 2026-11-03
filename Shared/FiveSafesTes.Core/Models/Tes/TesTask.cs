@@ -45,7 +45,7 @@ namespace FiveSafesTes.Core.Models.Tes
         /// Gets or Sets Name
         /// </summary>
         [DataMember(Name = "name")]
-        public string Name { get; set; }
+        public string? Name { get; set; }
 
         /// <summary>
         /// Gets or Sets Description

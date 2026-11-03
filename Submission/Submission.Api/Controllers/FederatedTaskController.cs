@@ -1,0 +1,240 @@
+using FiveSafesTes.Core.Models.APISimpleTypeReturns;
+using FiveSafesTes.Core.Models.FederatedTasks;
+using FiveSafesTes.Core.Models.Tes;
+using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Filters;
+using Microsoft.EntityFrameworkCore;
+using Newtonsoft.Json;
+using System.Text.RegularExpressions;
+using Submission.Api.Attributes;
+using Submission.Api.Repositories.DbContexts;
+using Submission.Api.Services;
+using Swashbuckle.AspNetCore.Annotations;
+
+namespace Submission.Api.Controllers
+{
+    /// <summary>
+    /// Orchestrator API for GA4GH TES tasks in the federated profile: queue a task for a TRE, let the
+    /// TRE Agent poll for and report on its tasks, and read a task back.
+    /// </summary>
+    [ApiExplorerSettings(GroupName = "v1")]
+    [Route("api/[controller]")]
+    [ApiController]
+    public class FederatedTaskController : Controller
+    {
+        /// <summary>Upper bound on tasks returned to a TRE Agent in a single poll.</summary>
+        private const int MaxPendingTasks = 50;
+
+        private static readonly Regex Sha256Hex = new(@"^[0-9a-f]{64}\z", RegexOptions.Compiled);
+
+        private readonly ApplicationDbContext _DbContext;
+
+        public FederatedTaskController(ApplicationDbContext db)
+        {
+            _DbContext = db;
+        }
+
+        [Authorize(Roles = "dare-control-admin")]
+        [HttpPost]
+        [Route("Enqueue")]
+        [ValidateModelState]
+        [SwaggerOperation("Enqueue")]
+        [SwaggerResponse(statusCode: 200, type: typeof(TesCreateTaskResponse), description: "")]
+        [SwaggerResponse(statusCode: 400, type: typeof(FederatedApiError), description: "")]
+        public virtual async Task<IActionResult> Enqueue([FromBody] TesTask task, CancellationToken cancellationToken = default)
+        {
+            var parsed = FederatedTesProfile.Parse(task);
+            if (!parsed.IsSuccess)
+            {
+                return Error(StatusCodes.Status400BadRequest, parsed.ErrorCode!, parsed.ErrorMessage!);
+            }
+
+            var spec = parsed.Spec!;
+            var tre = await _DbContext.Tres
+                .AsNoTracking()
+                .FirstOrDefaultAsync(x => x.Name.ToLower() == spec.TreName, cancellationToken);
+            if (tre == null)
+            {
+                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, $"TRE '{spec.TreName}' doesn't exist");
+            }
+
+            // Server-owned fields: callers must not be able to inject state, logs or results into a queued task.
+            task.Id = null;
+            task.State = TesState.UNKNOWNEnum;
+            task.Logs = null;
+            task.CreationTime = null;
+
+            var entity = new FederatedTask
+            {
+                TaskId = Guid.NewGuid(),
+                TreId = tre.Id,
+                TreName = spec.TreName,
+                StudyId = spec.StudyId,
+                Operation = spec.Operation,
+                Dataset = spec.Dataset,
+                TesTaskJson = JsonConvert.SerializeObject(task),
+                State = TesState.QUEUEDEnum,
+                SubmittedAt = DateTime.UtcNow
+            };
+            _DbContext.FederatedTasks.Add(entity);
+            await _DbContext.SaveChangesAsync(cancellationToken);
+
+            return Ok(new TesCreateTaskResponse { Id = entity.TaskId.ToString() });
+        }
+
+        [Authorize(Roles = "dare-control-admin,dare-tre-admin")]
+        [HttpGet]
+        [Route("GetPendingTasksForTre")]
+        [ValidateModelState]
+        [SwaggerOperation("GetPendingTasksForTre")]
+        [SwaggerResponse(statusCode: 200, type: typeof(List<TesTask>), description: "")]
+        public virtual async Task<IActionResult> GetPendingTasksForTre(CancellationToken cancellationToken = default)
+        {
+            var tre = ControllerHelpers.GetUserTre(User, _DbContext);
+            var treName = tre!.Name.ToLower();
+
+            // The Agent refuses tasks whose tres is not its own name and leaves them QUEUED. Tasks enqueued under a
+            // name the TRE no longer has would sit at the front of the queue forever, so they are not handed out.
+            var tasks = await _DbContext.FederatedTasks
+                .AsNoTracking()
+                .Where(x => x.TreId == tre.Id && x.State == TesState.QUEUEDEnum && x.TreName == treName)
+                .OrderBy(x => x.SubmittedAt)
+                .Take(MaxPendingTasks)
+                .ToListAsync(cancellationToken);
+
+            return Ok(tasks.Select(x => x.ToTesTask()).ToList());
+        }
+
+        [Authorize(Roles = "dare-control-admin,dare-tre-admin")]
+        [HttpPost]
+        [Route("ReportResult")]
+        [ValidateModelState]
+        [SwaggerOperation("ReportResult")]
+        [SwaggerResponse(statusCode: 200, type: typeof(BoolReturn), description: "")]
+        [SwaggerResponse(statusCode: 400, type: typeof(FederatedApiError), description: "")]
+        [SwaggerResponse(statusCode: 404, type: typeof(FederatedApiError), description: "")]
+        [SwaggerResponse(statusCode: 409, type: typeof(FederatedApiError), description: "")]
+        public virtual async Task<IActionResult> ReportResult([FromBody] FederatedTaskResultReport report, CancellationToken cancellationToken = default)
+        {
+            if (report.State is not (TesState.COMPLETEEnum or TesState.EXECUTORERROREnum or TesState.SYSTEMERROREnum))
+            {
+                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "state must be COMPLETE, EXECUTOR_ERROR or SYSTEM_ERROR");
+            }
+
+            // Without a code the orchestrator cannot tell what failed. Any code is accepted, not only known ones,
+            // so a newer Agent's code is never refused (a refused report leaves the task QUEUED and retried).
+            if (report.State != TesState.COMPLETEEnum && string.IsNullOrWhiteSpace(report.ErrorCode))
+            {
+                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "ErrorCode is required when state is EXECUTOR_ERROR or SYSTEM_ERROR");
+            }
+
+            if (!Guid.TryParse(report.TaskId, out var taskId))
+            {
+                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "TaskId must be a GUID");
+            }
+
+            if (report.DatasetSha256 is not null && !Sha256Hex.IsMatch(report.DatasetSha256))
+            {
+                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "DatasetSha256 must be 64 lowercase hex characters");
+            }
+
+            var tre = ControllerHelpers.GetUserTre(User, _DbContext);
+
+            // A task that belongs to another TRE is indistinguishable from one that doesn't exist.
+            var task = await _DbContext.FederatedTasks
+                .FirstOrDefaultAsync(x => x.TaskId == taskId && x.TreId == tre!.Id, cancellationToken);
+            if (task == null)
+            {
+                return TaskNotFound();
+            }
+
+            if (task.State != TesState.QUEUEDEnum)
+            {
+                return AlreadyReported();
+            }
+
+            task.State = report.State;
+            task.CompletedAt = DateTime.UtcNow;
+            task.DatasetSha256 = report.DatasetSha256;
+            if (report.State == TesState.COMPLETEEnum)
+            {
+                task.ResultValue = report.Value;
+                task.ResultRowCount = report.RowCount;
+            }
+            else
+            {
+                task.ErrorCode = report.ErrorCode;
+                task.ResultErrorMessage = report.ErrorMessage;
+            }
+
+            try
+            {
+                await _DbContext.SaveChangesAsync(cancellationToken);
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // Another report for this task was saved after this one read it as QUEUED.
+                return AlreadyReported();
+            }
+
+            return Ok(new BoolReturn { Result = true });
+        }
+
+        [Authorize(Roles = "dare-control-admin")]
+        [HttpGet]
+        [Route("GetTask")]
+        [ValidateModelState]
+        [SwaggerOperation("GetTask")]
+        [SwaggerResponse(statusCode: 200, type: typeof(TesTask), description: "")]
+        [SwaggerResponse(statusCode: 404, type: typeof(FederatedApiError), description: "")]
+        public virtual async Task<IActionResult> GetTask([FromQuery] string id, CancellationToken cancellationToken = default)
+        {
+            if (!Guid.TryParse(id, out var taskId))
+            {
+                return TaskNotFound();
+            }
+
+            var task = await _DbContext.FederatedTasks
+                .AsNoTracking()
+                .FirstOrDefaultAsync(x => x.TaskId == taskId, cancellationToken);
+            if (task == null)
+            {
+                return TaskNotFound();
+            }
+
+            return Ok(task.ToTesTask());
+        }
+
+        /// <summary>
+        /// Runs before [ApiController]'s automatic 400, so a body that fails binding (bad JSON, unknown enum value)
+        /// gets the same error body as every other 4xx here instead of ValidationProblemDetails.
+        /// </summary>
+        public override void OnActionExecuting(ActionExecutingContext context)
+        {
+            if (!context.ModelState.IsValid)
+            {
+                var problems = context.ModelState
+                    .Where(x => x.Value!.Errors.Count > 0)
+                    .Select(x => string.IsNullOrEmpty(x.Key)
+                        ? x.Value!.Errors[0].ErrorMessage
+                        : $"{x.Key}: {x.Value!.Errors[0].ErrorMessage}");
+                context.Result = Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask,
+                    "request is not valid: " + string.Join("; ", problems));
+                return;
+            }
+
+            base.OnActionExecuting(context);
+        }
+
+        private static ObjectResult Error(int status, string code, string message) =>
+            new(new FederatedApiError { ErrorCode = code, ErrorMessage = message }) { StatusCode = status };
+
+        private static ObjectResult TaskNotFound() =>
+            Error(StatusCodes.Status404NotFound, FederatedTaskErrorCodes.TaskNotFound, "task not found");
+
+        private static ObjectResult AlreadyReported() =>
+            Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.TaskAlreadyReported, "a result has already been reported for this task");
+    }
+}

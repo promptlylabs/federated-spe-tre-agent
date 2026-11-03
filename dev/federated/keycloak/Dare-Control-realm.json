@@ -1,0 +1,56 @@
+{
+  "realm": "Dare-Control",
+  "enabled": true,
+  "sslRequired": "none",
+  "roles": {
+    "realm": [
+      { "name": "dare-control-admin" },
+      { "name": "dare-tre-admin" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "Dare-Control-API",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "dev-dare-control-api-secret",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "protocolMappers": [
+        {
+          "name": "aud-dare-control-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "Dare-Control-API",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "control-admin",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "control-admin@example.local",
+      "firstName": "Control",
+      "lastName": "Admin",
+      "credentials": [{ "type": "password", "value": "ControlAdmin1!", "temporary": false }],
+      "realmRoles": ["dare-control-admin"]
+    },
+    {
+      "username": "tre-agent-my-tre",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "tre-agent-my-tre@example.local",
+      "firstName": "Tre",
+      "lastName": "Agent",
+      "credentials": [{ "type": "password", "value": "TreAgent1!", "temporary": false }],
+      "realmRoles": ["dare-tre-admin"]
+    }
+  ]
+}
