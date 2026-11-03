@@ -81,14 +81,14 @@ Example: the mean of `age` on dataset `cohort_2024`, for rows where `sex` is `F`
 |---|---|
 | `QUEUED` | The task is enqueued. |
 | `COMPLETE` | The task succeeded. |
-| `EXECUTOR_ERROR` | The task could not run against the data. All error codes except `internal_error`. |
-| `SYSTEM_ERROR` | `internal_error`. |
+| `EXECUTOR_ERROR` | The task could not run against the data. All error codes except `internal_error` and `tre_renamed`. |
+| `SYSTEM_ERROR` | `internal_error` or `tre_renamed`. |
 
 The result is in `logs[0].metadata`.
 
 - On success: `value` and `row_count`. `value` is an invariant decimal. It is empty when there are no rows.
 - On error: `error_code` and `error_message`.
-- `dataset_sha256` is added whenever the Agent read the dataset file, on success and on errors raised after the read (including `invalid_dataset`). It is the lowercase hex SHA-256 of the exact bytes of the CSV. It is absent when the file was not read (`invalid_task`, `dataset_not_found`, `ambiguous_dataset`, `invalid_dataset_name`, and `internal_error` before the read). An empty file gives `invalid_dataset` with the hash.
+- `dataset_sha256` is added whenever the Agent read the dataset file, on success and on errors raised after the read (including `invalid_dataset`). It is the lowercase hex SHA-256 of the exact bytes of the CSV. It is absent when the file was not read (`invalid_task`, `dataset_not_found`, `ambiguous_dataset`, `invalid_dataset_name`, `tre_renamed`, and `internal_error` before the read). An empty file gives `invalid_dataset` with the hash.
 
 ### Error codes
 
@@ -104,6 +104,7 @@ The result is in `logs[0].metadata`.
 | `column_not_found` | The column, or a filter column, is not in the dataset. |
 | `non_numeric_value` | `mean` found a value that is not a number. |
 | `internal_error` | An unexpected failure, for example storage is unreachable. The message is generic, so that bucket names and hosts do not leave the TRE. The details are in the Agent log. |
+| `tre_renamed` | The TRE was renamed in Submission before the task ran. Set by Submission, not the Agent. Enqueue the task again under the new name. |
 
 ## Site setup
 
@@ -113,7 +114,7 @@ Set `TreName` in the Agent's settings to the name of the TRE as registered in Su
 
 The Agent does not run a task whose `tres` is not its own `TreName`. It logs an error, does not read the dataset, and does not report, so the task stays `QUEUED` and runs once `TreName` is fixed. If `TreName` is empty, the Agent logs an error and runs no task.
 
-If a TRE is renamed in Submission, tasks enqueued under the old name are no longer sent to the Agent. They stay `QUEUED`. Enqueue them again under the new name.
+If a TRE is renamed in Submission, its `QUEUED` tasks that were enqueued under the old name fail at once with `SYSTEM_ERROR` / `tre_renamed`. Enqueue them again under the new name. A change of case only (`My-TRE` to `my-tre`) is not a rename. If the name is changed directly in the database instead, the old tasks are not failed, but they are no longer sent to the Agent.
 
 A TRE that has federated tasks cannot be deleted. The tasks are the record of which results left the TRE.
 
