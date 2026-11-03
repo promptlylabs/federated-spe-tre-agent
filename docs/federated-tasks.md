@@ -33,6 +33,8 @@ Every 4xx from these endpoints has the same JSON body. Its keys are the same as 
 
 401 and 403 come from authentication and have no body.
 
+A `ReportResult` with state `EXECUTOR_ERROR` or `SYSTEM_ERROR` must have an `ErrorCode`, or it gets a 400. Any code is accepted, not only the ones listed below.
+
 ## The federated TES profile
 
 | TES field | Rule |

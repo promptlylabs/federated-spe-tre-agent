@@ -310,6 +310,28 @@ namespace Submission.Api.Tests
             Assert.Equal("dataset_not_found", task.Logs![0].Metadata["error_code"]);
         }
 
+        [Theory]
+        [InlineData(TesState.EXECUTORERROREnum, null)]
+        [InlineData(TesState.EXECUTORERROREnum, "")]
+        [InlineData(TesState.SYSTEMERROREnum, " ")]
+        public async Task ReportResult_ErrorStateWithoutErrorCode_Returns400_AndUnchanged(TesState state, string? errorCode)
+        {
+            using var db = NewDb();
+            var seeded = SeedTask(db, 1, TesState.QUEUEDEnum);
+
+            var result = await ControllerFor(db, "tre-a-admin").ReportResult(new FederatedTaskResultReport
+            {
+                TaskId = seeded.TaskId.ToString(),
+                State = state,
+                ErrorCode = errorCode,
+                ErrorMessage = "something failed"
+            });
+
+            var error = AssertError(result, 400, FederatedTaskErrorCodes.InvalidTask);
+            Assert.Contains("ErrorCode", error.ErrorMessage);
+            Assert.Equal(TesState.QUEUEDEnum, db.FederatedTasks.AsNoTracking().Single().State);
+        }
+
         [Fact]
         public async Task ReportResult_OtherTresTask_Returns404_AndUnchanged()
         {

@@ -123,6 +123,13 @@ namespace Submission.Api.Controllers
                 return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "state must be COMPLETE, EXECUTOR_ERROR or SYSTEM_ERROR");
             }
 
+            // Without a code the orchestrator cannot tell what failed. Any code is accepted, not only known ones,
+            // so a newer Agent's code is never refused (a refused report leaves the task QUEUED and retried).
+            if (report.State != TesState.COMPLETEEnum && string.IsNullOrWhiteSpace(report.ErrorCode))
+            {
+                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "ErrorCode is required when state is EXECUTOR_ERROR or SYSTEM_ERROR");
+            }
+
             if (!Guid.TryParse(report.TaskId, out var taskId))
             {
                 return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "TaskId must be a GUID");
