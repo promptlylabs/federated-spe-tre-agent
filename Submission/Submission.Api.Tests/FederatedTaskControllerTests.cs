@@ -5,6 +5,9 @@ using FiveSafesTes.Core.Models.FederatedTasks;
 using FiveSafesTes.Core.Models.Tes;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.Mvc.Abstractions;
+using Microsoft.AspNetCore.Mvc.Filters;
+using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
 using Newtonsoft.Json;
 using Submission.Api.Controllers;
@@ -47,6 +50,16 @@ namespace Submission.Api.Tests
                     HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(identity) }
                 }
             };
+        }
+
+        private static FederatedApiError AssertError(IActionResult result, int status, string code)
+        {
+            var obj = Assert.IsType<ObjectResult>(result);
+            Assert.Equal(status, obj.StatusCode);
+            var error = Assert.IsType<FederatedApiError>(obj.Value);
+            Assert.Equal(code, error.ErrorCode);
+            Assert.False(string.IsNullOrWhiteSpace(error.ErrorMessage));
+            return error;
         }
 
         private static TesTask MeanTask(string tre = "tre-a", string dataset = "cohort_2024") =>
@@ -137,8 +150,7 @@ namespace Submission.Api.Tests
             using var db = NewDb();
             var result = await ControllerFor(db, "dare-admin").Enqueue(task);
 
-            var bad = Assert.IsType<BadRequestObjectResult>(result);
-            Assert.StartsWith(FederatedTaskErrorCodes.InvalidTask, Assert.IsType<string>(bad.Value));
+            AssertError(result, 400, FederatedTaskErrorCodes.InvalidTask);
             Assert.Equal(0, db.FederatedTasks.Count());
         }
 
@@ -275,8 +287,7 @@ namespace Submission.Api.Tests
                 DatasetSha256 = hash
             });
 
-            var bad = Assert.IsType<BadRequestObjectResult>(result);
-            Assert.StartsWith(FederatedTaskErrorCodes.InvalidTask, Assert.IsType<string>(bad.Value));
+            AssertError(result, 400, FederatedTaskErrorCodes.InvalidTask);
             Assert.Equal(TesState.QUEUEDEnum, db.FederatedTasks.AsNoTracking().Single().State);
         }
 
@@ -313,7 +324,7 @@ namespace Submission.Api.Tests
                 RowCount = 1
             });
 
-            Assert.IsType<NotFoundResult>(result);
+            AssertError(result, 404, FederatedTaskErrorCodes.TaskNotFound);
             Assert.Equal(TesState.QUEUEDEnum, db.FederatedTasks.AsNoTracking().Single().State);
         }
 
@@ -333,7 +344,7 @@ namespace Submission.Api.Tests
                 TaskId = seeded.TaskId.ToString(), State = TesState.COMPLETEEnum, Value = 99m, RowCount = 3
             });
 
-            Assert.IsType<ConflictResult>(second);
+            AssertError(second, 409, FederatedTaskErrorCodes.TaskAlreadyReported);
             Assert.Equal(40.5m, db.FederatedTasks.AsNoTracking().Single().ResultValue);
         }
 
@@ -362,7 +373,7 @@ namespace Submission.Api.Tests
             });
 
             Assert.IsType<OkObjectResult>(first);
-            Assert.IsType<ConflictResult>(second);
+            AssertError(second, 409, FederatedTaskErrorCodes.TaskAlreadyReported);
             using var check = OpenDb(name);
             var row = check.FederatedTasks.Single();
             Assert.Equal(TesState.COMPLETEEnum, row.State);
@@ -379,7 +390,7 @@ namespace Submission.Api.Tests
             var result = await ControllerFor(db, "tre-a-admin").ReportResult(
                 new FederatedTaskResultReport { TaskId = taskId, State = state });
 
-            Assert.IsType<BadRequestObjectResult>(result);
+            AssertError(result, 400, FederatedTaskErrorCodes.InvalidTask);
         }
 
         [Fact]
@@ -387,7 +398,38 @@ namespace Submission.Api.Tests
         {
             using var db = NewDb();
             var result = await ControllerFor(db, "dare-admin").GetTask(Guid.NewGuid().ToString());
-            Assert.IsType<NotFoundResult>(result);
+            AssertError(result, 404, FederatedTaskErrorCodes.TaskNotFound);
+        }
+
+        [Fact]
+        public void InvalidModelState_ReturnsErrorBody_NotValidationProblemDetails()
+        {
+            using var db = NewDb();
+            var controller = ControllerFor(db, "tre-a-admin");
+            var actionContext = new ActionContext(controller.HttpContext, new RouteData(), new ActionDescriptor());
+            actionContext.ModelState.AddModelError("State", "Error converting value \"BOGUS\"");
+            var context = new ActionExecutingContext(actionContext, [], new Dictionary<string, object?>(), controller);
+
+            controller.OnActionExecuting(context);
+
+            var error = AssertError(context.Result!, 400, FederatedTaskErrorCodes.InvalidTask);
+            Assert.Contains("State", error.ErrorMessage);
+        }
+
+        [Fact]
+        public void ErrorBody_SerializesWithTaskMetadataKeys_AndNoReferenceId()
+        {
+            // The same settings Submission.Api registers globally.
+            var settings = new JsonSerializerSettings
+            {
+                ReferenceLoopHandling = ReferenceLoopHandling.Ignore,
+                PreserveReferencesHandling = PreserveReferencesHandling.Objects
+            };
+
+            var json = JsonConvert.SerializeObject(
+                new FederatedApiError { ErrorCode = "task_not_found", ErrorMessage = "task not found" }, settings);
+
+            Assert.Equal("{\"error_code\":\"task_not_found\",\"error_message\":\"task not found\"}", json);
         }
     }
 }

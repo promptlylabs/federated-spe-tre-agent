@@ -15,5 +15,9 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         public const string ColumnNotFound = "column_not_found";
         public const string NonNumericValue = "non_numeric_value";
         public const string InternalError = "internal_error";
+
+        // Returned only in API error bodies, never in task metadata.
+        public const string TaskNotFound = "task_not_found";
+        public const string TaskAlreadyReported = "task_already_reported";
     }
 }

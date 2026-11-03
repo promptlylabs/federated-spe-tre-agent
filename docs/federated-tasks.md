@@ -17,6 +17,22 @@ To try the flow locally, see [dev/federated](../dev/federated/README.md). It is 
 
 `GetPendingTasksForTre` and `ReportResult` accept `dare-control-admin` and `dare-tre-admin`.
 
+### API errors
+
+Every 4xx from these endpoints has the same JSON body. Its keys are the same as the error keys in a failed task's `logs[0].metadata`:
+
+```json
+{ "error_code": "invalid_task", "error_message": "TaskId must be a GUID" }
+```
+
+| Status | `error_code` | When |
+|---|---|---|
+| 400 | `invalid_task`, or any profile code from the table below (for example `unknown_operation`) | The request or the task is not valid. This includes a body that is not valid JSON or has an unknown `State` value. |
+| 404 | `task_not_found` | No such task. `ReportResult` also returns this for a task that belongs to another TRE. |
+| 409 | `task_already_reported` | `ReportResult` for a task that already has a result. |
+
+401 and 403 come from authentication and have no body.
+
 ## The federated TES profile
 
 | TES field | Rule |
