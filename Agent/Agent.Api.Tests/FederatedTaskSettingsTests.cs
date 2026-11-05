@@ -30,4 +30,13 @@ public class FederatedTaskSettingsTests
         Assert.Equal(["sql"], settings.AllowedExtensions);
         Assert.Equal("other", settings.DatasetBucket);
     }
+
+    [Fact]
+    public void Defaults_include_output_bucket_and_read_policy()
+    {
+        var settings = Bind(new Dictionary<string, string?>());
+
+        Assert.Equal("federated-outputs", settings.OutputBucket);
+        Assert.Equal("federated-outputs-read", settings.OutputReadPolicyName);
+    }
 }

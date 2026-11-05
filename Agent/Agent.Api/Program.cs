@@ -332,6 +332,18 @@ using (var scope = app.Services.CreateScope())
     {
         Log.Error("Could not create dataset upload policy {PolicyName}", federatedTaskSettings.UploadPolicyName);
     }
+
+    // Result files of federated tasks live in their own bucket, readable (not writable) by the TRE custodian.
+    if (!await minioTreHelper.CreateBucket(federatedTaskSettings.OutputBucket))
+    {
+        Log.Error("Could not create federated task output bucket {OutputBucket}", federatedTaskSettings.OutputBucket);
+    }
+
+    var outputReadPolicy = OutputReadPolicy.Build(federatedTaskSettings.OutputBucket);
+    if (!await minioTreHelper.PutCannedPolicyAsync(federatedTaskSettings.OutputReadPolicyName, outputReadPolicy))
+    {
+        Log.Error("Could not create output read policy {PolicyName}", federatedTaskSettings.OutputReadPolicyName);
+    }
 }
 
 
@@ -385,6 +397,7 @@ void AddDependencies(WebApplicationBuilder builder, ConfigurationManager configu
     builder.Services.AddScoped<IMinioTreHelper, MinioTreHelper>();
     builder.Services.AddScoped<IDatasetStore, MinioDatasetStore>();
     builder.Services.AddScoped<IDatasetReader, DatasetReader>();
+    builder.Services.AddScoped<IResultOutputStore, MinioResultOutputStore>();
     builder.Services.AddScoped<IFederatedTaskClient, FederatedTaskClient>();
     builder.Services.AddScoped<IMinioSubHelper, MinioSubHelper>();
     builder.Services.AddScoped<IProjectS3AccessKeySyncService, ProjectS3AccessKeySyncService>();
