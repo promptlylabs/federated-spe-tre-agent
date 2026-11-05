@@ -182,6 +182,7 @@ builder.Services.AddScoped<IDareSyncHelper, DareSyncHelper>();
 builder.Services.AddScoped<ISubmissionHelper, SubmissionHelper>();
 builder.Services.AddScoped<IDoSyncWork, DoSyncWork>();
 builder.Services.AddScoped<IDoFederatedTaskWork, DoFederatedTaskWork>();
+builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<IDoAgentWork, DoAgentWork>();
 builder.Services.AddScoped<IDoHealthCheckWork, DoHealthCheckWork>();
 builder.Services.AddScoped<IDoBucketCleanupWork, DoBucketCleanupWork>();
