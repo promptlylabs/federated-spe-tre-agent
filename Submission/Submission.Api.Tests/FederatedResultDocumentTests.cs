@@ -142,9 +142,26 @@ public class FederatedResultDocumentTests
     [Fact]
     public void Validate_rejects_overlong_string()
     {
-        var result = Validate(Json(dataset: new string('x', 1025)));
+        var row = Row();
+        row.Dataset = new string('x', 1025);
+        var json = Json(dataset: row.Dataset);
+
+        var result = FederatedResultDocumentJson.Validate(Encoding.UTF8.GetBytes(json), row);
 
         Assert.False(result.IsValid);
+        Assert.Contains("longer than 1024", result.Message);
+    }
+
+    [Fact]
+    public void Validate_accepts_string_at_length_limit()
+    {
+        var row = Row();
+        row.Dataset = new string('x', 1024);
+        var json = Json(dataset: row.Dataset);
+
+        var result = FederatedResultDocumentJson.Validate(Encoding.UTF8.GetBytes(json), row);
+
+        Assert.True(result.IsValid, result.Message);
     }
 
     [Fact]
