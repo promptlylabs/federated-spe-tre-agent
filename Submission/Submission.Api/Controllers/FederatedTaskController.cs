@@ -1,4 +1,3 @@
-using FiveSafesTes.Core.Models.APISimpleTypeReturns;
 using FiveSafesTes.Core.Models.FederatedTasks;
 using FiveSafesTes.Core.Models.Tes;
 using Microsoft.AspNetCore.Authorization;
@@ -7,6 +6,8 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Filters;
 using Microsoft.EntityFrameworkCore;
 using Newtonsoft.Json;
+using Serilog;
+using Submission.Api.Models;
 using System.Text.RegularExpressions;
 using Submission.Api.Attributes;
 using Submission.Api.Repositories.DbContexts;
@@ -31,9 +32,12 @@ namespace Submission.Api.Controllers
 
         private readonly ApplicationDbContext _DbContext;
 
-        public FederatedTaskController(ApplicationDbContext db)
+        private readonly IFederatedResultStore _resultStore;
+
+        public FederatedTaskController(ApplicationDbContext db, IFederatedResultStore resultStore)
         {
             _DbContext = db;
+            _resultStore = resultStore;
         }
 
         [Authorize(Roles = "dare-control-admin")]
@@ -115,40 +119,66 @@ namespace Submission.Api.Controllers
         [Authorize(Roles = "dare-tre-admin")]
         [HttpPost]
         [Route("ReportResult")]
+        [Consumes("multipart/form-data")]
+        [RequestSizeLimit(FederatedResultLimits.MaxReportRequestBytes)]
+        [RequestFormLimits(MultipartBodyLengthLimit = FederatedResultLimits.MaxReportRequestBytes)]
         [ValidateModelState]
         [SwaggerOperation("ReportResult")]
-        [SwaggerResponse(statusCode: 200, type: typeof(BoolReturn), description: "")]
+        [SwaggerResponse(statusCode: 200, type: typeof(FederatedReportResponse), description: "")]
         [SwaggerResponse(statusCode: 400, type: typeof(FederatedApiError), description: "")]
         [SwaggerResponse(statusCode: 404, type: typeof(FederatedApiError), description: "")]
         [SwaggerResponse(statusCode: 409, type: typeof(FederatedApiError), description: "")]
-        public virtual async Task<IActionResult> ReportResult([FromBody] FederatedTaskResultReport report, CancellationToken cancellationToken = default)
+        [SwaggerResponse(statusCode: 503, type: typeof(FederatedApiError), description: "")]
+        public virtual async Task<IActionResult> ReportResult([FromForm] FederatedTaskReportForm form, CancellationToken cancellationToken = default)
         {
+            // Identity first: a caller that is not a TRE Agent learns nothing about the validation rules.
             var tre = ControllerHelpers.GetAgentTre(User, _DbContext);
             if (tre == null)
             {
                 return Forbid();
             }
 
-            if (report.State is not (TesState.COMPLETEEnum or TesState.EXECUTORERROREnum or TesState.SYSTEMERROREnum))
+            var state = ParseWireState(form.State);
+            if (state == null)
             {
-                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "state must be COMPLETE, EXECUTOR_ERROR or SYSTEM_ERROR");
+                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "State must be COMPLETE, EXECUTOR_ERROR or SYSTEM_ERROR");
             }
 
-            // Without a code the orchestrator cannot tell what failed. Any code is accepted, not only known ones,
-            // so a newer Agent's code is never refused (a refused report leaves the task QUEUED and retried).
-            if (report.State != TesState.COMPLETEEnum && string.IsNullOrWhiteSpace(report.ErrorCode))
+            var files = Request.Form.Files;
+            if (state != TesState.COMPLETEEnum)
             {
-                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "ErrorCode is required when state is EXECUTOR_ERROR or SYSTEM_ERROR");
+                // Without a code the orchestrator cannot tell what failed. Any well-formed code is accepted, not only
+                // known ones, so a newer Agent's code is never refused (a refused report leaves the task QUEUED).
+                if (form.ErrorCode is null || !FederatedResultLimits.ErrorCodePattern.IsMatch(form.ErrorCode))
+                {
+                    return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "ErrorCode is required and must be 1 to 64 lowercase letters or underscores");
+                }
+
+                if (!FederatedResultLimits.IsValidErrorMessage(form.ErrorMessage))
+                {
+                    return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, $"ErrorMessage must be at most {FederatedResultLimits.MaxErrorMessageLength} characters with no control characters");
+                }
+
+                if (files.Count > 0)
+                {
+                    return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "a file must not be sent with an error report");
+                }
+
+                if (form.DatasetSha256 is not null && !Sha256Hex.IsMatch(form.DatasetSha256))
+                {
+                    return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "DatasetSha256 must be 64 lowercase hex characters");
+                }
+            }
+            else if (files.Count != 1 || files[0].Name != FederatedReportFields.ResultFile || form.DatasetSha256 is not null)
+            {
+                // DatasetSha256 comes from the result document on COMPLETE, so the form field is not accepted.
+                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask,
+                    $"a COMPLETE report needs exactly one file part named '{FederatedReportFields.ResultFile}' and no DatasetSha256 field");
             }
 
-            if (!Guid.TryParse(report.TaskId, out var taskId))
+            if (!Guid.TryParse(form.TaskId, out var taskId))
             {
                 return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "TaskId must be a GUID");
-            }
-
-            if (report.DatasetSha256 is not null && !Sha256Hex.IsMatch(report.DatasetSha256))
-            {
-                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "DatasetSha256 must be 64 lowercase hex characters");
             }
 
             // A task that belongs to another TRE is indistinguishable from one that doesn't exist.
@@ -161,16 +191,74 @@ namespace Submission.Api.Controllers
 
             if (task.State != TesState.QUEUEDEnum)
             {
-                return AlreadyReported();
+                return AlreadyReported(task);
             }
 
-            task.State = report.State;
-            task.CompletedAt = DateTime.UtcNow;
-            task.DatasetSha256 = report.DatasetSha256;
-            if (report.State != TesState.COMPLETEEnum)
+            var response = new FederatedReportResponse { Result = true };
+            if (state == TesState.COMPLETEEnum)
             {
-                task.ErrorCode = report.ErrorCode;
-                task.ResultErrorMessage = report.ErrorMessage;
+                var file = files[0];
+                if (file.Length > FederatedResultLimits.MaxResultBytes)
+                {
+                    return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.ResultTooLarge,
+                        $"the result file must be at most {FederatedResultLimits.MaxResultBytes} bytes");
+                }
+
+                byte[] bytes;
+                await using (var stream = file.OpenReadStream())
+                {
+                    using var buffer = new MemoryStream();
+                    await stream.CopyToAsync(buffer, cancellationToken);
+                    bytes = buffer.ToArray();
+                }
+
+                // Length is checked again on the bytes actually read, not only on the length the client declared.
+                if (bytes.Length > FederatedResultLimits.MaxResultBytes)
+                {
+                    return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.ResultTooLarge,
+                        $"the result file must be at most {FederatedResultLimits.MaxResultBytes} bytes");
+                }
+
+                var validation = FederatedResultDocumentJson.Validate(bytes, task);
+                if (!validation.IsValid)
+                {
+                    return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidResult, validation.Message!);
+                }
+
+                // The client's file name is never used: the key is built only from server-known values.
+                var sha = FederatedResultDocumentJson.Sha256Hex(bytes);
+                var key = FederatedResultKeys.For(task.TreId, task.TaskId, sha);
+                try
+                {
+                    await _resultStore.PutAsync(key, bytes, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    Log.Error(ex, "Storing the result of federated task {TaskId} for TRE {TreId} failed", task.TaskId, task.TreId);
+                    return Error(StatusCodes.Status503ServiceUnavailable, FederatedTaskErrorCodes.StorageUnavailable,
+                        "the result could not be stored, try again later");
+                }
+
+                task.State = TesState.COMPLETEEnum;
+                task.CompletedAt = DateTime.UtcNow;
+                task.ResultBucket = _resultStore.Bucket;
+                task.ResultKey = key;
+                task.ResultSha256 = sha;
+                task.DatasetSha256 = validation.Document!.DatasetSha256;
+                response.ResultBucket = task.ResultBucket;
+                response.ResultKey = key;
+                response.ResultSha256 = sha;
+
+                Log.Information("Stored result of federated task {TaskId} for TRE {TreId}: {Bytes} bytes, sha256 {Sha256}",
+                    task.TaskId, task.TreId, bytes.Length, sha);
+            }
+            else
+            {
+                task.State = state.Value;
+                task.CompletedAt = DateTime.UtcNow;
+                task.DatasetSha256 = form.DatasetSha256;
+                task.ErrorCode = form.ErrorCode;
+                task.ResultErrorMessage = form.ErrorMessage;
             }
 
             try
@@ -179,11 +267,12 @@ namespace Submission.Api.Controllers
             }
             catch (DbUpdateConcurrencyException)
             {
-                // Another report for this task was saved after this one read it as QUEUED.
-                return AlreadyReported();
+                // Another report for this task was saved after this one read it as QUEUED. A file stored above stays
+                // as an orphan: its key is unique to its content, and nothing references it.
+                return AlreadyReported(null);
             }
 
-            return Ok(new BoolReturn { Result = true });
+            return Ok(response);
         }
 
         [Authorize(Roles = "dare-control-admin")]
@@ -238,7 +327,27 @@ namespace Submission.Api.Controllers
         private static ObjectResult TaskNotFound() =>
             Error(StatusCodes.Status404NotFound, FederatedTaskErrorCodes.TaskNotFound, "task not found");
 
-        private static ObjectResult AlreadyReported() =>
-            Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.TaskAlreadyReported, "a result has already been reported for this task");
+        private static TesState? ParseWireState(string? state) => state switch
+        {
+            "COMPLETE" => TesState.COMPLETEEnum,
+            "EXECUTOR_ERROR" => TesState.EXECUTORERROREnum,
+            "SYSTEM_ERROR" => TesState.SYSTEMERROREnum,
+            _ => null
+        };
+
+        /// <summary>
+        /// 409. For a task already COMPLETE the body carries the stored result's sha256, because the Agent cannot
+        /// call GetTask.
+        /// </summary>
+        private static ObjectResult AlreadyReported(FederatedTask? existing)
+        {
+            var result = Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.TaskAlreadyReported, "a result has already been reported for this task");
+            if (existing is { State: TesState.COMPLETEEnum })
+            {
+                ((FederatedApiError)result.Value!).ResultSha256 = existing.ResultSha256;
+            }
+
+            return result;
+        }
     }
 }

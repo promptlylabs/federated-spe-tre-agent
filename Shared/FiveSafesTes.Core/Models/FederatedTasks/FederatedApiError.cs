@@ -15,5 +15,9 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
 
         [JsonProperty("error_message")]
         public string ErrorMessage { get; set; } = string.Empty;
+
+        /// <summary>On a 409 for a COMPLETE task: the SHA-256 of the stored result, so the Agent can compare.</summary>
+        [JsonProperty("result_sha256", NullValueHandling = NullValueHandling.Ignore)]
+        public string? ResultSha256 { get; set; }
     }
 }
