@@ -182,6 +182,84 @@ namespace FiveSafesTes.Core.Services
             Log.Debug("Successfully uploaded {TargetObject} to {Bucket}", filePath, bucketName);
         }
 
+        public async Task PutObjectAsync(string bucketName, string objectKey, byte[] content, string contentType,
+            IDictionary<string, string>? metadata = null, CancellationToken ct = default)
+        {
+            var amazonS3Client = GenerateAmazonS3Client();
+            using var stream = new MemoryStream(content);
+            var request = new PutObjectRequest
+            {
+                BucketName = bucketName,
+                Key = objectKey,
+                InputStream = stream,
+                ContentType = contentType
+            };
+            if (metadata != null)
+            {
+                foreach (var (key, value) in metadata)
+                {
+                    request.Metadata[key] = value;
+                }
+            }
+
+            Log.Information("Putting object {Key} ({Length} bytes) in {Bucket}", objectKey, content.Length, bucketName);
+            await amazonS3Client.PutObjectAsync(request, ct);
+        }
+
+        public async Task<byte[]?> GetObjectBytesAsync(string bucketName, string objectKey, CancellationToken ct = default)
+        {
+            var amazonS3Client = GenerateAmazonS3Client();
+            try
+            {
+                using var response = await amazonS3Client.GetObjectAsync(bucketName, objectKey, ct);
+                using var buffer = new MemoryStream();
+                await response.ResponseStream.CopyToAsync(buffer, ct);
+                return buffer.ToArray();
+            }
+            catch (AmazonS3Exception ex) when (ex.StatusCode == HttpStatusCode.NotFound || ex.ErrorCode == "NoSuchKey")
+            {
+                Log.Debug("Object {Key} not found in {Bucket}", objectKey, bucketName);
+                return null;
+            }
+        }
+
+        public async Task SetObjectMetadataAsync(string bucketName, string objectKey,
+            IDictionary<string, string> metadata, CancellationToken ct = default)
+        {
+            var amazonS3Client = GenerateAmazonS3Client();
+            var head = await amazonS3Client.GetObjectMetadataAsync(bucketName, objectKey, ct);
+            var request = new CopyObjectRequest
+            {
+                SourceBucket = bucketName,
+                SourceKey = objectKey,
+                DestinationBucket = bucketName,
+                DestinationKey = objectKey,
+                MetadataDirective = S3MetadataDirective.REPLACE,
+                ContentType = head.Headers.ContentType
+            };
+            foreach (var (key, value) in metadata)
+            {
+                request.Metadata[key] = value;
+            }
+
+            Log.Information("Setting metadata on {Key} in {Bucket}", objectKey, bucketName);
+            await amazonS3Client.CopyObjectAsync(request, ct);
+        }
+
+        public async Task<bool> HasBucketPolicyAsync(string bucketName)
+        {
+            var amazonS3Client = GenerateAmazonS3Client();
+            try
+            {
+                var response = await amazonS3Client.GetBucketPolicyAsync(bucketName);
+                return !string.IsNullOrWhiteSpace(response.Policy);
+            }
+            catch (AmazonS3Exception ex) when (ex.ErrorCode == "NoSuchBucketPolicy")
+            {
+                return false;
+            }
+        }
+
         public async Task<bool> DownloadFileAsync(string bucketName = "", string objectName = "")
         {
             var request = new GetObjectRequest
