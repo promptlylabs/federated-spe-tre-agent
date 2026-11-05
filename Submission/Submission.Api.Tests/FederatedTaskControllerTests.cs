@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Security.Claims;
 using FiveSafesTes.Core.Models;
 using FiveSafesTes.Core.Models.FederatedTasks;
@@ -320,8 +321,8 @@ namespace Submission.Api.Tests
 
             var form = new FederatedTaskReportForm
             {
-                TaskId = fields.GetValueOrDefault(FederatedReportFields.TaskId, ""),
-                State = fields.GetValueOrDefault(FederatedReportFields.State, ""),
+                TaskId = fields.GetValueOrDefault(FederatedReportFields.TaskId),
+                State = fields.GetValueOrDefault(FederatedReportFields.State),
                 ErrorCode = fields.GetValueOrDefault(FederatedReportFields.ErrorCode),
                 ErrorMessage = fields.GetValueOrDefault(FederatedReportFields.ErrorMessage),
                 DatasetSha256 = fields.GetValueOrDefault(FederatedReportFields.DatasetSha256)
@@ -728,6 +729,42 @@ namespace Submission.Api.Tests
             Assert.Equal(TesState.COMPLETEEnum, row.State);
             Assert.Equal(FederatedResultDocumentJson.Sha256Hex(bytes), row.ResultSha256);
             Assert.Null(row.ErrorCode);
+        }
+
+        [Fact]
+        public async Task ReportResult_ConcurrentCompleteReports_SecondReturns409WithWinnersSha()
+        {
+            var name = Guid.NewGuid().ToString();
+            using var setup = OpenDb(name);
+            setup.Tres.Add(NewTre(1, "tre-a", "tre-a-admin", "tre-a-client"));
+            setup.SaveChanges();
+            var seeded = SeedTask(setup, 1, TesState.QUEUEDEnum);
+            using var dbA = OpenDb(name);
+            using var dbB = OpenDb(name);
+            dbA.FederatedTasks.Single();
+            dbB.FederatedTasks.Single();
+
+            var winner = ValidResult(seeded);
+            await ReportComplete(AgentControllerFor(dbA, "tre-a-client"), seeded, winner);
+            var second = await ReportComplete(AgentControllerFor(dbB, "tre-a-client"), seeded, ValidResult(seeded, d => d.Result.Value = 7m));
+
+            var error = AssertError(second, 409, FederatedTaskErrorCodes.TaskAlreadyReported);
+            Assert.Equal(FederatedResultDocumentJson.Sha256Hex(winner), error.ResultSha256);
+        }
+
+        [Fact]
+        public async Task Report_from_non_agent_missing_task_id_and_state_is_forbidden()
+        {
+            using var db = NewDb();
+            var controller = ControllerWithClaims(db, new Claim("preferred_username", "tre-a-admin"));
+            controller.ControllerContext.HttpContext.Request.Form = new FormCollection(new Dictionary<string, Microsoft.Extensions.Primitives.StringValues>());
+
+            var result = await controller.ReportResult(new FederatedTaskReportForm { TaskId = null, State = null });
+
+            Assert.IsType<ForbidResult>(result);
+            var nullability = new NullabilityInfoContext();
+            Assert.Equal(NullabilityState.Nullable, nullability.Create(typeof(FederatedTaskReportForm).GetProperty(nameof(FederatedTaskReportForm.TaskId))!).WriteState);
+            Assert.Equal(NullabilityState.Nullable, nullability.Create(typeof(FederatedTaskReportForm).GetProperty(nameof(FederatedTaskReportForm.State))!).WriteState);
         }
 
         [Fact]

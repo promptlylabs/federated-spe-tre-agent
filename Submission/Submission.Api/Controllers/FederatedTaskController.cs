@@ -269,7 +269,18 @@ namespace Submission.Api.Controllers
             {
                 // Another report for this task was saved after this one read it as QUEUED. A file stored above stays
                 // as an orphan: its key is unique to its content, and nothing references it.
-                return AlreadyReported(null);
+                FederatedTask? winner = null;
+                try
+                {
+                    winner = await _DbContext.FederatedTasks.AsNoTracking()
+                        .FirstOrDefaultAsync(x => x.TaskId == task.TaskId, cancellationToken);
+                }
+                catch (Exception ex)
+                {
+                    Log.Warning(ex, "Re-reading federated task {TaskId} after a concurrent report failed", task.TaskId);
+                }
+
+                return AlreadyReported(winner);
             }
 
             return Ok(response);

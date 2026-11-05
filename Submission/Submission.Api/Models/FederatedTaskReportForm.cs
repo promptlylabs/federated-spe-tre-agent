@@ -6,10 +6,11 @@ namespace Submission.Api.Models
     /// </summary>
     public sealed class FederatedTaskReportForm
     {
-        public string TaskId { get; set; } = string.Empty;
+        // Nullable so a missing field is not a model-state error: the identity check must run before any validation.
+        public string? TaskId { get; set; }
 
         /// <summary>TES state as sent on the wire: COMPLETE, EXECUTOR_ERROR or SYSTEM_ERROR.</summary>
-        public string State { get; set; } = string.Empty;
+        public string? State { get; set; }
 
         public string? ErrorCode { get; set; }
         public string? ErrorMessage { get; set; }
