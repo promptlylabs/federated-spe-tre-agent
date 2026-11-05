@@ -65,7 +65,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
                 return Invalid("result file is not a JSON object");
             }
 
-            foreach (var name in new[] { "schemaVersion", "taskId", "tre", "studyId", "operation", "dataset", "completedAt", "result" })
+            foreach (var name in new[] { "schemaVersion", "taskId", "tre", "studyId", "operation", "dataset", "datasetSha256", "completedAt", "result" })
             {
                 if (!root.TryGetProperty(name, out var p) || p.ValueKind == JsonValueKind.Null)
                 {

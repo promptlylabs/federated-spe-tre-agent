@@ -32,7 +32,7 @@ public class FederatedResultDocumentTests
         string studyId = "study-1", string operation = "mean", string dataset = "cohort_2024",
         string extra = "", string result = "{\"kind\":\"scalar\",\"value\":1.5,\"rowCount\":3}") =>
         $"{{\"schemaVersion\":1,\"taskId\":\"{taskId}\",\"tre\":\"{tre}\",\"studyId\":\"{studyId}\"," +
-        $"\"operation\":\"{operation}\",\"dataset\":\"{dataset}\",\"completedAt\":\"2026-11-04T10:00:00+00:00\"," +
+        $"\"operation\":\"{operation}\",\"dataset\":\"{dataset}\",\"datasetSha256\":\"{ShaOk}\",\"completedAt\":\"2026-11-04T10:00:00+00:00\"," +
         $"\"result\":{result}{extra}}}";
 
     private static FederatedResultValidation Validate(string json) =>
@@ -162,6 +162,24 @@ public class FederatedResultDocumentTests
         var result = FederatedResultDocumentJson.Validate(Encoding.UTF8.GetBytes(json), row);
 
         Assert.True(result.IsValid, result.Message);
+    }
+
+    [Fact]
+    public void Validate_rejects_missing_datasetSha256()
+    {
+        var result = Validate(Json().Replace($"\"datasetSha256\":\"{ShaOk}\",", ""));
+
+        Assert.False(result.IsValid);
+        Assert.Contains("datasetSha256", result.Message);
+    }
+
+    [Fact]
+    public void Validate_rejects_null_datasetSha256()
+    {
+        var result = Validate(Json().Replace($"\"datasetSha256\":\"{ShaOk}\"", "\"datasetSha256\":null"));
+
+        Assert.False(result.IsValid);
+        Assert.Contains("datasetSha256", result.Message);
     }
 
     [Fact]
