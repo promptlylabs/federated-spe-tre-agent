@@ -302,12 +302,15 @@ RUSTFS_IDENTITY_OPENID_USERNAME_CLAIM=preferred_username
 RUSTFS_IDENTITY_OPENID_EMAIL_CLAIM=email
 RUSTFS_IDENTITY_OPENID_REDIRECT_URI=<rustfs>/rustfs/admin/v3/oidc/callback/default
 RUSTFS_IDENTITY_OPENID_DISPLAY_NAME=<login button label>
+RUSTFS_OUTBOUND_ALLOW_ORIGINS=<keycloak origin, for example http://keycloak:8080>
 ```
+
+RustFS 1.0.4 blocks outbound calls to private addresses. Without `RUSTFS_OUTBOUND_ALLOW_ORIGINS` (origin only, no path, same host as `CONFIG_URL`), OIDC discovery fails and the log says "discovery blocked by outbound policy".
 
 Two things to check in Keycloak:
 
 - The client needs a `groups` mapper of type Group Membership, with "Full group path" off.
-- The Keycloak issuer hostname must be the same one that the browser and RustFS both reach.
+- The `iss` claim in the token must equal the `CONFIG_URL` that RustFS discovers, character for character. Otherwise the console login loops and STS fails with "no OIDC provider configured for issuer". The issuer hostname must be one that the browser, the S3 client and RustFS all reach.
 
 ## Orchestrator setup
 

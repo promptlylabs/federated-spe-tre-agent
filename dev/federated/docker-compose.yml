@@ -75,7 +75,7 @@ services:
       RUSTFS_IDENTITY_OPENID_REDIRECT_URI: http://localhost:9000/rustfs/admin/v3/oidc/callback/default
       RUSTFS_IDENTITY_OPENID_REDIRECT_URI_DYNAMIC: "off"
       RUSTFS_IDENTITY_OPENID_DISPLAY_NAME: TRE Keycloak
-      # RustFS blocks outbound calls to private addresses; allow its OIDC discovery to reach Keycloak.
+      # RustFS blocks outbound calls to private addresses; allow its OIDC discovery to reach Keycloak (the origin must match the host of RUSTFS_IDENTITY_OPENID_CONFIG_URL).
       RUSTFS_OUTBOUND_ALLOW_ORIGINS: http://keycloak:8080
     ports:
       - "9000:9000"
