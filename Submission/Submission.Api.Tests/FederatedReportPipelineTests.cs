@@ -161,11 +161,24 @@ namespace Submission.Api.Tests
         {
             await using var host = await StartAsync();
 
-            using var response = await host.Client.PostAsync("api/FederatedTask/ReportResult",
-                Report(host.TaskId, new byte[200_000]));
+            // An error report is otherwise valid and carries no file, so the controller would accept it whatever its
+            // size: only the request limits on the action can reject this body (larger than MaxReportRequestBytes).
+            var content = new MultipartFormDataContent
+            {
+                { new StringContent(host.TaskId.ToString()), FederatedReportFields.TaskId },
+                { new StringContent("EXECUTOR_ERROR"), FederatedReportFields.State },
+                { new StringContent("tre_error"), FederatedReportFields.ErrorCode },
+                { new StringContent(new string('x', 200_000)), "Padding" }
+            };
 
-            Assert.True(response.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.RequestEntityTooLarge,
-                $"expected 400 or 413 but got {(int)response.StatusCode}");
+            using var response = await host.Client.PostAsync("api/FederatedTask/ReportResult", content);
+
+            var body = await response.Content.ReadAsStringAsync();
+            // The request-size limit surfaces as a form-read failure that the controller reports as a 400 invalid_task.
+            Assert.True(response.StatusCode == HttpStatusCode.BadRequest, (int)response.StatusCode + " " + body);
+            Assert.Contains(FederatedTaskErrorCodes.InvalidTask, body);
+            Assert.Contains($"max request body size is {FederatedResultLimits.MaxReportRequestBytes} bytes", body);
+            Assert.DoesNotContain(FederatedTaskErrorCodes.ResultTooLarge, body);
             Assert.Empty(host.Store.Objects);
             Assert.Equal(TesState.QUEUEDEnum, host.Row().State);
         }
