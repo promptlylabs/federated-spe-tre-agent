@@ -29,6 +29,27 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "tre-my-tre",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "dev-tre-my-tre-secret",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "protocolMappers": [
+        {
+          "name": "aud-dare-control-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "Dare-Control-API",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
     }
   ],
   "users": [
@@ -50,6 +71,12 @@
       "firstName": "Tre",
       "lastName": "Agent",
       "credentials": [{ "type": "password", "value": "TreAgent1!", "temporary": false }],
+      "realmRoles": ["dare-tre-admin"]
+    },
+    {
+      "username": "service-account-tre-my-tre",
+      "enabled": true,
+      "serviceAccountClientId": "tre-my-tre",
       "realmRoles": ["dare-tre-admin"]
     }
   ]

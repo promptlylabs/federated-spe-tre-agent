@@ -2,12 +2,13 @@
 # Helper for the local federated stack (dev/federated/docker-compose.yml).
 #
 #   ./task.sh enqueue <dataset> [operation] [extra args...]   queue a task, prints its id
-#   ./task.sh get <task-id>                                   show state and result
+#   ./task.sh get <task-id>                                   show state and result location
+#   ./task.sh result <task-id>                                download and print the result file
 #   ./task.sh run <dataset> [operation] [extra args...]       enqueue, wait for the agent, show the result
 #
 # Examples:
-#   ./task.sh run cohort_2024 mean --column age --filter sex:eq:F    -> COMPLETE, value 35, row_count 2
-#   ./task.sh run cohort_2024 count                                  -> COMPLETE, value 3
+#   ./task.sh run cohort_2024 mean --column age --filter sex:eq:F    -> COMPLETE, result_key <tre>/<task>/<sha256>.json
+#   ./task.sh run cohort_2024 count                                  -> COMPLETE, result_key ...
 #   ./task.sh run nope count                                         -> EXECUTOR_ERROR, dataset_not_found
 set -euo pipefail
 
@@ -55,6 +56,11 @@ meta.pop("$id", None)
 print(t["state"], json.dumps(meta))'
 }
 
+result() {
+  curl -sf "$SUBMISSION/api/FederatedTask/GetTaskResult?id=$1" -H "Authorization: Bearer $(token)" |
+    python3 -m json.tool
+}
+
 run() {
   local id
   id=$(enqueue "$@")
@@ -75,6 +81,7 @@ run() {
 case "${1:-}" in
   enqueue) shift; enqueue "$@" ;;
   get) shift; get "$1" ;;
+  result) shift; result "$1" ;;
   run) shift; run "$@" ;;
-  *) sed -n '2,12p' "$0"; exit 1 ;;
+  *) sed -n '2,13p' "$0"; exit 1 ;;
 esac

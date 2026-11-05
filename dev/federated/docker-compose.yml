@@ -84,6 +84,23 @@ services:
       keycloak:
         condition: service_healthy
 
+  # The orchestrator's own object store: holds the federated-results bucket (result files uploaded by Agents).
+  # Separate from the TRE's RustFS above; no OIDC.
+  rustfs-orchestrator:
+    image: rustfs/rustfs:1.0.4
+    environment:
+      RUSTFS_ADDRESS: ":9000"
+      RUSTFS_CONSOLE_ENABLE: "true"
+      RUSTFS_CONSOLE_ADDRESS: ":9001"
+      RUSTFS_CONSOLE_CORS_ALLOWED_ORIGINS: "*"
+      RUSTFS_ACCESS_KEY: orchadmin
+      RUSTFS_SECRET_KEY: orchadmin123
+    ports:
+      - "9100:9000"
+      - "9101:9001"
+    volumes:
+      - rustfsorchdata:/data
+
   submission-api:
     build:
       context: ../..
@@ -96,6 +113,10 @@ services:
       KeycloakDemoMode: "true"
       Features__SeedDemoData: "false"
       RabbitMQ__HostAddress: rabbitmq-not-used
+      # Dev uses the RustFS root key; production uses a dedicated account limited to the federated-results bucket.
+      FederatedResultsStorageSettings__Url: http://rustfs-orchestrator:9000
+      FederatedResultsStorageSettings__AccessKey: orchadmin
+      FederatedResultsStorageSettings__SecretKey: orchadmin123
     ports:
       - "5034:8080"
     depends_on:
@@ -103,6 +124,8 @@ services:
         condition: service_healthy
       keycloak:
         condition: service_healthy
+      rustfs-orchestrator:
+        condition: service_started
 
   agent-api:
     build:
@@ -118,9 +141,13 @@ services:
       Features__SeedDemoData: "false" # must stay false: seeding writes to Vault, which this stack doesn't run
       TreName: my-tre
       ApiEndpoints__SubmissionApiUrl: http://submission-api:8080
-      # The Agent logs in to Submission as this user (realm Dare-Control, role dare-tre-admin).
-      SubmissionKeyCloakSettings__Username: tre-agent-my-tre
-      SubmissionKeyCloakSettings__PasswordEnc: TreAgent1!
+      # The Agent talks to Submission as the TRE service account (client tre-my-tre, realm role dare-tre-admin).
+      # These override the Dare-Control-API client set by the anchor, and match what OnboardingService stores.
+      SubmissionKeyCloakSettings__ConfigInputMethod: Upload
+      SubmissionKeyCloakSettings__ClientId: tre-my-tre
+      SubmissionKeyCloakSettings__ClientSecret: dev-tre-my-tre-secret
+      SubmissionKeyCloakSettings__Username: tre-my-tre
+      SubmissionKeyCloakSettings__PasswordEnc: dev-tre-my-tre-secret
       TreKeyCloakSettings__Authority: http://keycloak:8080/realms/tre-test
       TreKeyCloakSettings__MetadataAddress: http://keycloak:8080/realms/tre-test/.well-known/openid-configuration
       # Admin key: the Agent creates the dataset bucket and the dataset-upload policy at startup.
@@ -162,8 +189,8 @@ services:
       - -c
       - |
         until psql -tAc 'SELECT 1 FROM "Tres" LIMIT 1' >/dev/null 2>&1; do echo "waiting for Submission migrations"; sleep 3; done
-        psql -c "INSERT INTO \"Tres\" (\"Name\",\"AdminUsername\",\"About\",\"FormData\",\"LastHeartBeatReceived\")
-                 SELECT 'my-tre','tre-agent-my-tre','Local federated dev TRE','{}',now()
+        psql -c "INSERT INTO \"Tres\" (\"Name\",\"AdminUsername\",\"About\",\"FormData\",\"LastHeartBeatReceived\",\"KeycloakClientId\")
+                 SELECT 'my-tre','tre-agent-my-tre','Local federated dev TRE','{}',now(),'tre-my-tre'
                  WHERE NOT EXISTS (SELECT 1 FROM \"Tres\" WHERE lower(\"Name\")='my-tre');"
     depends_on:
       submission-api:
@@ -193,3 +220,4 @@ services:
 volumes:
   pgdata:
   rustfsdata:
+  rustfsorchdata:
