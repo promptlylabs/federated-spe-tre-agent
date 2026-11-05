@@ -81,7 +81,7 @@ namespace Agent.Api
             // The id becomes an object key; only a GUID is accepted, and it is stored in its canonical form.
             if (!Guid.TryParse(taskId, out var guid))
             {
-                await _client.ReportAsync(Error(taskId, FederatedTaskErrorCodes.InvalidTask, "the task id is not a valid GUID"), null);
+                await ReportErrorAsync(Error(taskId, FederatedTaskErrorCodes.InvalidTask, "the task id is not a valid GUID"));
                 return;
             }
             var storeKey = guid.ToString("D");
@@ -95,15 +95,15 @@ namespace Agent.Api
                 if (computed.Skip) return;
                 if (computed.ErrorReport != null)
                 {
-                    await _client.ReportAsync(computed.ErrorReport, null);
+                    await ReportErrorAsync(computed.ErrorReport);
                     return;
                 }
 
                 bytes = FederatedResultDocumentJson.Serialize(computed.Document!);
                 if (bytes.Length > FederatedResultLimits.MaxResultBytes)
                 {
-                    await _client.ReportAsync(Error(taskId, FederatedTaskErrorCodes.ResultTooLarge,
-                        "the result file is larger than the size limit", computed.Document!.DatasetSha256), null);
+                    await ReportErrorAsync(Error(taskId, FederatedTaskErrorCodes.ResultTooLarge,
+                        "the result file is larger than the size limit", computed.Document!.DatasetSha256));
                     return;
                 }
 
@@ -120,6 +120,17 @@ namespace Agent.Api
             await HandleOutcomeAsync(taskId, storeKey, sha, outcome);
         }
 
+        /// <summary>Reports an error state (no file) and logs when Submission does not accept it.</summary>
+        private async Task ReportErrorAsync(FederatedTaskResultReport report)
+        {
+            var outcome = await _client.ReportAsync(report, null);
+            if (!outcome.Accepted)
+            {
+                Log.Warning("Federated tasks: Submission did not accept the error report for task {TaskId} (status {Status}, {ErrorCode}); it stays QUEUED",
+                    report.TaskId, outcome.StatusCode, outcome.ErrorCode);
+            }
+        }
+
         private async Task HandleOutcomeAsync(string taskId, string storeKey, string sha, FederatedReportOutcome outcome)
         {
             if (outcome.StatusCode == 200 || (outcome.StatusCode == 409 && outcome.ResultSha256 != null))
@@ -132,7 +143,7 @@ namespace Agent.Api
                 outcome.ErrorCode is FederatedTaskErrorCodes.InvalidResult or FederatedTaskErrorCodes.ResultTooLarge)
             {
                 Log.Warning("Federated tasks: Submission rejected the result for task {TaskId} with {ErrorCode}", taskId, outcome.ErrorCode);
-                await _client.ReportAsync(Error(taskId, outcome.ErrorCode!, outcome.ErrorMessage), null);
+                await ReportErrorAsync(Error(taskId, outcome.ErrorCode!, outcome.ErrorMessage));
                 return;
             }
 
@@ -219,6 +230,13 @@ namespace Agent.Api
             }
         }
 
+        // Task-spec values are echoed into messages; Submission rejects control characters.
+        private static string CleanControlChars(string message) =>
+            string.Create(message.Length, message, (span, m) =>
+            {
+                for (var i = 0; i < m.Length; i++) span[i] = char.IsControl(m[i]) ? ' ' : m[i];
+            });
+
         private static FederatedTaskResultReport Error(string taskId, string code, string? message, string? datasetSha256 = null)
         {
             Log.Information("Federated tasks: task {TaskId} failed with {ErrorCode}", taskId, code);
@@ -227,7 +245,7 @@ namespace Agent.Api
                 TaskId = taskId,
                 State = TesState.EXECUTORERROREnum,
                 ErrorCode = code,
-                ErrorMessage = message == null ? null : FederatedResultLimits.TruncateErrorMessage(message),
+                ErrorMessage = message == null ? null : FederatedResultLimits.TruncateErrorMessage(CleanControlChars(message)),
                 DatasetSha256 = datasetSha256
             };
         }

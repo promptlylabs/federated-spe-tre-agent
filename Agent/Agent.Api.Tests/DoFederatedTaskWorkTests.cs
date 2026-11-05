@@ -535,4 +535,30 @@ public class DoFederatedTaskWorkTests
         Assert.Equal("invalid_task", call.Report.ErrorCode);
         Assert.Equal(0, outputs.Touches);
     }
+
+    [Fact]
+    public async Task Error_message_control_characters_are_replaced()
+    {
+        var client = new FakeClient();
+        client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+
+        await Work(client, new FuncReader(() => DatasetReadResult.Fail("column_not_found", "column 'a\nb\tc' not found"))).Execute();
+
+        var message = Assert.Single(client.Calls).Report.ErrorMessage;
+        Assert.Equal("column 'a b c' not found", message);
+        Assert.True(FederatedResultLimits.IsValidErrorMessage(message));
+    }
+
+    [Fact]
+    public async Task Rejected_error_report_does_not_stop_the_loop()
+    {
+        var client = new FakeClient();
+        client.Pending.Add(PendingTask(T1, "nope", "count", null));
+        client.Pending.Add(PendingTask(T2, "nope", "count", null));
+        client.Outcomes.Enqueue(new FederatedReportOutcome(400, "invalid_task", "bad", null, null));
+
+        await Work(client, Store()).Execute();
+
+        Assert.Equal(2, client.Calls.Count);
+    }
 }
