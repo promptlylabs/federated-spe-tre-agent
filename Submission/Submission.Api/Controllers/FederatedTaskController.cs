@@ -84,7 +84,7 @@ namespace Submission.Api.Controllers
             return Ok(new TesCreateTaskResponse { Id = entity.TaskId.ToString() });
         }
 
-        [Authorize(Roles = "dare-control-admin,dare-tre-admin")]
+        [Authorize(Roles = "dare-tre-admin")]
         [HttpGet]
         [Route("GetPendingTasksForTre")]
         [ValidateModelState]
@@ -92,8 +92,13 @@ namespace Submission.Api.Controllers
         [SwaggerResponse(statusCode: 200, type: typeof(List<TesTask>), description: "")]
         public virtual async Task<IActionResult> GetPendingTasksForTre(CancellationToken cancellationToken = default)
         {
-            var tre = ControllerHelpers.GetUserTre(User, _DbContext);
-            var treName = tre!.Name.ToLower();
+            var tre = ControllerHelpers.GetAgentTre(User, _DbContext);
+            if (tre == null)
+            {
+                return Forbid();
+            }
+
+            var treName = tre.Name.ToLower();
 
             // The Agent refuses tasks whose tres is not its own name and leaves them QUEUED. Tasks enqueued under a
             // name the TRE no longer has would sit at the front of the queue forever, so they are not handed out.
@@ -107,7 +112,7 @@ namespace Submission.Api.Controllers
             return Ok(tasks.Select(x => x.ToTesTask()).ToList());
         }
 
-        [Authorize(Roles = "dare-control-admin,dare-tre-admin")]
+        [Authorize(Roles = "dare-tre-admin")]
         [HttpPost]
         [Route("ReportResult")]
         [ValidateModelState]
@@ -118,6 +123,12 @@ namespace Submission.Api.Controllers
         [SwaggerResponse(statusCode: 409, type: typeof(FederatedApiError), description: "")]
         public virtual async Task<IActionResult> ReportResult([FromBody] FederatedTaskResultReport report, CancellationToken cancellationToken = default)
         {
+            var tre = ControllerHelpers.GetAgentTre(User, _DbContext);
+            if (tre == null)
+            {
+                return Forbid();
+            }
+
             if (report.State is not (TesState.COMPLETEEnum or TesState.EXECUTORERROREnum or TesState.SYSTEMERROREnum))
             {
                 return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "state must be COMPLETE, EXECUTOR_ERROR or SYSTEM_ERROR");
@@ -140,11 +151,9 @@ namespace Submission.Api.Controllers
                 return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "DatasetSha256 must be 64 lowercase hex characters");
             }
 
-            var tre = ControllerHelpers.GetUserTre(User, _DbContext);
-
             // A task that belongs to another TRE is indistinguishable from one that doesn't exist.
             var task = await _DbContext.FederatedTasks
-                .FirstOrDefaultAsync(x => x.TaskId == taskId && x.TreId == tre!.Id, cancellationToken);
+                .FirstOrDefaultAsync(x => x.TaskId == taskId && x.TreId == tre.Id, cancellationToken);
             if (task == null)
             {
                 return TaskNotFound();

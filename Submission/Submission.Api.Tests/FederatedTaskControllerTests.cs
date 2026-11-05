@@ -21,8 +21,8 @@ namespace Submission.Api.Tests
         private static ApplicationDbContext NewDb()
         {
             var db = OpenDb(Guid.NewGuid().ToString());
-            db.Tres.Add(NewTre(1, "tre-a", "tre-a-admin"));
-            db.Tres.Add(NewTre(2, "tre-b", "tre-b-admin"));
+            db.Tres.Add(NewTre(1, "tre-a", "tre-a-admin", "tre-a-client"));
+            db.Tres.Add(NewTre(2, "tre-b", "tre-b-admin", "tre-b-client"));
             db.SaveChanges();
             return db;
         }
@@ -31,11 +31,12 @@ namespace Submission.Api.Tests
         private static ApplicationDbContext OpenDb(string name) =>
             new(new DbContextOptionsBuilder<ApplicationDbContext>().UseInMemoryDatabase(name).Options);
 
-        private static Tre NewTre(int id, string name, string admin) => new()
+        private static Tre NewTre(int id, string name, string admin, string clientId) => new()
         {
             Id = id,
             Name = name,
             AdminUsername = admin,
+            KeycloakClientId = clientId,
             About = "",
             FormData = ""
         };
@@ -51,6 +52,18 @@ namespace Submission.Api.Tests
                 }
             };
         }
+
+        private static FederatedTaskController AgentControllerFor(ApplicationDbContext db, string clientId) =>
+            ControllerWithClaims(db, new Claim("azp", clientId), new Claim("preferred_username", "service-account-" + clientId));
+
+        private static FederatedTaskController ControllerWithClaims(ApplicationDbContext db, params Claim[] claims) =>
+            new(db)
+            {
+                ControllerContext = new ControllerContext
+                {
+                    HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity(claims, "test")) }
+                }
+            };
 
         private static FederatedApiError AssertError(IActionResult result, int status, string code)
         {
@@ -179,11 +192,65 @@ namespace Submission.Api.Tests
             await ControllerFor(db, "dare-admin").Enqueue(task);
 
             var pending = Assert.IsType<OkObjectResult>(
-                await ControllerFor(db, "tre-a-admin").GetPendingTasksForTre());
+                await AgentControllerFor(db, "tre-a-client").GetPendingTasksForTre());
             var returned = Assert.Single(Assert.IsType<List<TesTask>>(pending.Value));
             Assert.Null(returned.Logs);
             Assert.Equal(TesState.QUEUEDEnum, returned.State);
             Assert.NotEqual("spoofed", returned.Id);
+        }
+
+        [Fact]
+        public async Task GetPending_accepts_tre_service_account()
+        {
+            using var db = NewDb();
+            var mine = SeedTask(db, 1, TesState.QUEUEDEnum);
+            SeedTask(db, 2, TesState.QUEUEDEnum);
+
+            var result = await AgentControllerFor(db, "tre-a-client").GetPendingTasksForTre();
+
+            var task = Assert.Single(Assert.IsType<List<TesTask>>(Assert.IsType<OkObjectResult>(result).Value));
+            Assert.Equal(mine.TaskId.ToString(), task.Id);
+        }
+
+        [Fact]
+        public async Task GetPending_rejects_tre_admin_username()
+        {
+            using var db = NewDb();
+            SeedTask(db, 1, TesState.QUEUEDEnum);
+
+            var result = await ControllerWithClaims(db, new Claim("preferred_username", "tre-a-admin")).GetPendingTasksForTre();
+
+            Assert.IsType<ForbidResult>(result);
+        }
+
+        [Fact]
+        public async Task GetPending_rejects_username_without_matching_azp()
+        {
+            using var db = NewDb();
+            SeedTask(db, 1, TesState.QUEUEDEnum);
+
+            var result = await ControllerWithClaims(db,
+                new Claim("azp", "other"),
+                new Claim("preferred_username", "service-account-tre-a-client")).GetPendingTasksForTre();
+
+            Assert.IsType<ForbidResult>(result);
+        }
+
+        [Fact]
+        public async Task Report_rejects_tre_admin_username()
+        {
+            using var db = NewDb();
+            var seeded = SeedTask(db, 1, TesState.QUEUEDEnum);
+
+            var result = await ControllerWithClaims(db, new Claim("preferred_username", "tre-a-admin")).ReportResult(new FederatedTaskResultReport
+            {
+                TaskId = seeded.TaskId.ToString(),
+                State = TesState.EXECUTORERROREnum,
+                ErrorCode = "dataset_not_found"
+            });
+
+            Assert.IsType<ForbidResult>(result);
+            Assert.Equal(TesState.QUEUEDEnum, db.FederatedTasks.AsNoTracking().Single().State);
         }
 
         [Fact]
@@ -194,7 +261,7 @@ namespace Submission.Api.Tests
             SeedTask(db, 1, TesState.COMPLETEEnum);
             SeedTask(db, 2, TesState.QUEUEDEnum);
 
-            var result = await ControllerFor(db, "tre-a-admin").GetPendingTasksForTre();
+            var result = await AgentControllerFor(db, "tre-a-client").GetPendingTasksForTre();
 
             var ok = Assert.IsType<OkObjectResult>(result);
             var task = Assert.Single(Assert.IsType<List<TesTask>>(ok.Value));
@@ -213,7 +280,7 @@ namespace Submission.Api.Tests
             }
             var current = SeedTask(db, 1, TesState.QUEUEDEnum);
 
-            var result = await ControllerFor(db, "tre-a-admin").GetPendingTasksForTre();
+            var result = await AgentControllerFor(db, "tre-a-client").GetPendingTasksForTre();
 
             var task = Assert.Single(Assert.IsType<List<TesTask>>(Assert.IsType<OkObjectResult>(result).Value));
             Assert.Equal(current.TaskId.ToString(), task.Id);
@@ -252,7 +319,7 @@ namespace Submission.Api.Tests
             using var db = NewDb();
             var seeded = SeedTask(db, 1, TesState.QUEUEDEnum);
 
-            var result = await ControllerFor(db, "tre-a-admin").ReportResult(new FederatedTaskResultReport
+            var result = await AgentControllerFor(db, "tre-a-client").ReportResult(new FederatedTaskResultReport
             {
                 TaskId = seeded.TaskId.ToString(),
                 State = TesState.COMPLETEEnum,
@@ -274,7 +341,7 @@ namespace Submission.Api.Tests
             var seeded = SeedTask(db, 1, TesState.QUEUEDEnum);
             var hash = new string('0', 63) + "f";
 
-            var result = await ControllerFor(db, "tre-a-admin").ReportResult(new FederatedTaskResultReport
+            var result = await AgentControllerFor(db, "tre-a-client").ReportResult(new FederatedTaskResultReport
             {
                 TaskId = seeded.TaskId.ToString(),
                 State = TesState.COMPLETEEnum,
@@ -298,7 +365,7 @@ namespace Submission.Api.Tests
             using var db = NewDb();
             var seeded = SeedTask(db, 1, TesState.QUEUEDEnum);
 
-            var result = await ControllerFor(db, "tre-a-admin").ReportResult(new FederatedTaskResultReport
+            var result = await AgentControllerFor(db, "tre-a-client").ReportResult(new FederatedTaskResultReport
             {
                 TaskId = seeded.TaskId.ToString(),
                 State = TesState.COMPLETEEnum,
@@ -317,7 +384,7 @@ namespace Submission.Api.Tests
             using var db = NewDb();
             var seeded = SeedTask(db, 1, TesState.QUEUEDEnum);
 
-            var result = await ControllerFor(db, "tre-a-admin").ReportResult(new FederatedTaskResultReport
+            var result = await AgentControllerFor(db, "tre-a-client").ReportResult(new FederatedTaskResultReport
             {
                 TaskId = seeded.TaskId.ToString(),
                 State = TesState.EXECUTORERROREnum,
@@ -339,7 +406,7 @@ namespace Submission.Api.Tests
             using var db = NewDb();
             var seeded = SeedTask(db, 1, TesState.QUEUEDEnum);
 
-            var result = await ControllerFor(db, "tre-a-admin").ReportResult(new FederatedTaskResultReport
+            var result = await AgentControllerFor(db, "tre-a-client").ReportResult(new FederatedTaskResultReport
             {
                 TaskId = seeded.TaskId.ToString(),
                 State = state,
@@ -358,7 +425,7 @@ namespace Submission.Api.Tests
             using var db = NewDb();
             var seeded = SeedTask(db, 1, TesState.QUEUEDEnum);
 
-            var result = await ControllerFor(db, "tre-b-admin").ReportResult(new FederatedTaskResultReport
+            var result = await AgentControllerFor(db, "tre-b-client").ReportResult(new FederatedTaskResultReport
             {
                 TaskId = seeded.TaskId.ToString(),
                 State = TesState.COMPLETEEnum,
@@ -375,7 +442,7 @@ namespace Submission.Api.Tests
         {
             using var db = NewDb();
             var seeded = SeedTask(db, 1, TesState.QUEUEDEnum);
-            var controller = ControllerFor(db, "tre-a-admin");
+            var controller = AgentControllerFor(db, "tre-a-client");
             await controller.ReportResult(new FederatedTaskResultReport
             {
                 TaskId = seeded.TaskId.ToString(), State = TesState.COMPLETEEnum, Value = 40.5m, RowCount = 2
@@ -395,7 +462,7 @@ namespace Submission.Api.Tests
         {
             var name = Guid.NewGuid().ToString();
             using var setup = OpenDb(name);
-            setup.Tres.Add(NewTre(1, "tre-a", "tre-a-admin"));
+            setup.Tres.Add(NewTre(1, "tre-a", "tre-a-admin", "tre-a-client"));
             setup.SaveChanges();
             var seeded = SeedTask(setup, 1, TesState.QUEUEDEnum);
 
@@ -405,11 +472,11 @@ namespace Submission.Api.Tests
             dbA.FederatedTasks.Single();
             dbB.FederatedTasks.Single();
 
-            var first = await ControllerFor(dbA, "tre-a-admin").ReportResult(new FederatedTaskResultReport
+            var first = await AgentControllerFor(dbA, "tre-a-client").ReportResult(new FederatedTaskResultReport
             {
                 TaskId = seeded.TaskId.ToString(), State = TesState.COMPLETEEnum, Value = 40.5m, RowCount = 2
             });
-            var second = await ControllerFor(dbB, "tre-a-admin").ReportResult(new FederatedTaskResultReport
+            var second = await AgentControllerFor(dbB, "tre-a-client").ReportResult(new FederatedTaskResultReport
             {
                 TaskId = seeded.TaskId.ToString(), State = TesState.SYSTEMERROREnum, ErrorCode = "internal_error"
             });
@@ -429,7 +496,7 @@ namespace Submission.Api.Tests
         public async Task ReportResult_BadInput_Returns400(string taskId, TesState state)
         {
             using var db = NewDb();
-            var result = await ControllerFor(db, "tre-a-admin").ReportResult(
+            var result = await AgentControllerFor(db, "tre-a-client").ReportResult(
                 new FederatedTaskResultReport { TaskId = taskId, State = state });
 
             AssertError(result, 400, FederatedTaskErrorCodes.InvalidTask);
@@ -447,7 +514,7 @@ namespace Submission.Api.Tests
         public void InvalidModelState_ReturnsErrorBody_NotValidationProblemDetails()
         {
             using var db = NewDb();
-            var controller = ControllerFor(db, "tre-a-admin");
+            var controller = AgentControllerFor(db, "tre-a-client");
             var actionContext = new ActionContext(controller.HttpContext, new RouteData(), new ActionDescriptor());
             actionContext.ModelState.AddModelError("State", "Error converting value \"BOGUS\"");
             var context = new ActionExecutingContext(actionContext, [], new Dictionary<string, object?>(), controller);
