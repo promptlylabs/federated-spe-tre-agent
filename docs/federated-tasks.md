@@ -50,8 +50,9 @@ sequenceDiagram
             Sub-->>Agent: 400, nothing stored
             Agent->>Sub: POST ReportResult (EXECUTOR_ERROR, same code, no file)
         else already reported (409)
-            Sub-->>Agent: 409 task_already_reported (+ result_sha256 if COMPLETE)
-            Agent->>Agent: compare result_sha256 with own copy
+            Sub-->>Agent: 409 task_already_reported (+ result_sha256 and result_key if COMPLETE)
+            Agent->>Agent: check result_sha256 equals own sha256
+            Agent->>TS: tag TRE copy with released-key / released-sha256
         else storage write fails
             Sub->>OS: put treId/taskId/sha256.json
             Sub-->>Agent: 503 storage_unavailable, task stays QUEUED, retried next poll
@@ -89,7 +90,7 @@ Every 4xx from these endpoints has the same JSON body. Its keys are the same as 
 | 400 | `result_too_large` | `ReportResult`: the result file is over 65536 bytes. |
 | 404 | `task_not_found` | No such task. `ReportResult` also returns this for a task that belongs to another TRE. |
 | 404 | `result_not_found` | `GetTaskResult`: the task is not `COMPLETE`. |
-| 409 | `task_already_reported` | `ReportResult` for a task that already has a result. When the task is `COMPLETE`, the body also has `result_sha256`. |
+| 409 | `task_already_reported` | `ReportResult` for a task that already has a result. When the task is `COMPLETE`, the body also has `result_sha256` and `result_key`. |
 | 500 | `internal_error` | `GetTaskResult`: the stored file does not match its SHA-256. The file is not returned. |
 | 503 | `storage_unavailable` | The orchestrator bucket cannot be reached. For `ReportResult` the task stays `QUEUED`. |
 
@@ -121,7 +122,7 @@ The `result` file:
 
 A 200 response has `result`, `result_bucket`, `result_key` and `result_sha256`. The last three are only for `COMPLETE`.
 
-If Submission cannot write the file, it answers 503 `storage_unavailable` and the task stays `QUEUED`. If the Agent gets 400 `invalid_result` or `result_too_large`, it sends a follow-up `EXECUTOR_ERROR` report with the same code. A 409 for a `COMPLETE` task carries `result_sha256`, because the Agent cannot call `GetTask`. The Agent compares it with its own copy.
+If Submission cannot write the file, it answers 503 `storage_unavailable` and the task stays `QUEUED`. If the Agent gets 400 `invalid_result` or `result_too_large`, it sends a follow-up `EXECUTOR_ERROR` report with the same code. A 409 for a `COMPLETE` task carries `result_sha256` and `result_key`, because the Agent cannot call `GetTask`. The Agent compares the sha256 with its own copy and, if they are equal, tags the TRE copy with the key.
 
 ## The federated TES profile
 
@@ -359,6 +360,7 @@ Known risks:
 - There is no disclosure control and no egress review yet. A result is released as computed, so a narrow filter can give a `count` of 1 or the exact value of one person in a `mean`. Until this is added, the orchestrator side must only enqueue tasks that are safe to release. This is the largest remaining risk.
 - Orchestrator admins are trusted not to change stored results or hashes, until signed results are added.
 - Any `dare-control-admin` user can read the results of every study.
+- Orphan files. Submission writes the file before it saves the `COMPLETE` row. If the row save fails, or a concurrent report wins, the file stays in the orchestrator bucket with no row that points to it. The key holds the SHA-256, so it never overwrites another result. No API call can reach an orphan. An orchestrator admin can find and delete orphans in the bucket.
 
 TODO: researcher access scoped by study once study_id → project mapping exists
 

@@ -36,7 +36,7 @@ Keycloak users:
 | Realm | User | Password | Role or group |
 |---|---|---|---|
 | `Dare-Control` | `control-admin` | `ControlAdmin1!` | `dare-control-admin`: can queue tasks |
-| `Dare-Control` | `tre-agent-my-tre` | `TreAgent1!` | `dare-tre-admin`: the Agent's own login |
+| `Dare-Control` | `tre-agent-my-tre` | `TreAgent1!` | `dare-tre-admin`: a TRE human admin. Only for the negative test that it cannot call the Agent endpoints. The Agent uses the client `tre-my-tre`. |
 | `Dare-Control` | client `tre-my-tre` | secret `dev-tre-my-tre-secret` | service account with `dare-tre-admin`: what the Agent uses to call Submission |
 | `tre-test` | `uploader` | `uploader123` | group `dataset-upload`: RustFS console upload |
 
@@ -46,7 +46,7 @@ The `uploader` login through the RustFS console's "TRE Keycloak" button loops. T
 
 ```bash
 cd dev/federated
-./task.sh run cohort_2024 mean --column age --filter sex:eq:F   # COMPLETE {"result_bucket": "federated-results", "result_key": "<tre>/<task>/<sha256>.json", ...}
+./task.sh run cohort_2024 mean --column age --filter sex:eq:F   # COMPLETE {"result_bucket": "federated-results", "result_key": "<treId>/<taskId>/<sha256>.json", ...}
 ./task.sh run cohort_2024 count                                 # COMPLETE {"result_key": ...}
 ./task.sh result <task-id>                                      # downloads and prints the result file
 ./task.sh run nope count                                        # EXECUTOR_ERROR {"error_code": "dataset_not_found", ...}

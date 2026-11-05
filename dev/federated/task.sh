@@ -7,7 +7,7 @@
 #   ./task.sh run <dataset> [operation] [extra args...]       enqueue, wait for the agent, show the result
 #
 # Examples:
-#   ./task.sh run cohort_2024 mean --column age --filter sex:eq:F    -> COMPLETE, result_key <tre>/<task>/<sha256>.json
+#   ./task.sh run cohort_2024 mean --column age --filter sex:eq:F    -> COMPLETE, result_key <treId>/<taskId>/<sha256>.json
 #   ./task.sh run cohort_2024 count                                  -> COMPLETE, result_key ...
 #   ./task.sh run nope count                                         -> EXECUTOR_ERROR, dataset_not_found
 set -euo pipefail
