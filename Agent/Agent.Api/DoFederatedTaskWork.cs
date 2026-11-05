@@ -33,7 +33,11 @@ namespace Agent.Api
         public async Task Execute()
         {
             // Don't execute if no credentials have been uploaded.
-            if (!_client.IsConfigured) return;
+            if (!_client.IsConfigured)
+            {
+                Log.Warning("Federated tasks need the TRE service account (ConfigInputMethod Upload)");
+                return;
+            }
 
             // Without its own name the agent cannot tell which tasks are addressed to it; leave them QUEUED.
             var treName = _config["TreName"];
@@ -55,7 +59,8 @@ namespace Agent.Api
                 try
                 {
                     // A task whose report is lost stays QUEUED on the server and is retried on the next poll.
-                    if (!await _client.ReportAsync(report))
+                    var outcome = await _client.ReportAsync(report, null);
+                    if (!outcome.Accepted)
                     {
                         Log.Warning("Federated tasks: Submission did not accept the result for task {TaskId}", report.TaskId);
                     }

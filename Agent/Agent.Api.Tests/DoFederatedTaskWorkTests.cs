@@ -27,10 +27,10 @@ public class DoFederatedTaskWorkTests
             return Task.FromResult(Pending);
         }
 
-        public Task<bool> ReportAsync(FederatedTaskResultReport report)
+        public Task<FederatedReportOutcome> ReportAsync(FederatedTaskResultReport report, byte[]? resultFile)
         {
             Reports.Add(report);
-            return Task.FromResult(true);
+            return Task.FromResult(new FederatedReportOutcome(200, null, null, null, null));
         }
     }
 
