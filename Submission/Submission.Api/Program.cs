@@ -25,6 +25,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.FeatureManagement;
 using Serilog.Events;
 using Submission.Api.Constants;
+using Submission.Api.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -95,6 +96,10 @@ builder.Services.Configure<KestrelServerOptions>(options =>
 var minioSettings = new MinioSettings();
 configuration.Bind(nameof(MinioSettings), minioSettings);
 builder.Services.AddSingleton(minioSettings);
+
+var federatedResultsStorageSettings = FederatedResultsStorageSettings.FromConfiguration(configuration);
+builder.Services.AddSingleton(federatedResultsStorageSettings);
+builder.Services.AddSingleton<IFederatedResultStore, RustFsFederatedResultStore>();
 
 
 var emailSettings = new EmailSettings();
@@ -249,6 +254,9 @@ using (var scope = app.Services.CreateScope())
 
     
     db.Database.Migrate();
+
+    // Never fail startup on storage; EnsureReadyAsync logs and returns false.
+    await app.Services.GetRequiredService<IFederatedResultStore>().EnsureReadyAsync();
     var keycloakAdminService = scope.ServiceProvider.GetRequiredService<IKeycloakAdminService>();
     var vaultCredentialsService = scope.ServiceProvider.GetRequiredService<IVaultCredentialsService>();
     var initialiser = new DataInitialiser(miniosettings, db, keytoken, userService, miniohelper,
