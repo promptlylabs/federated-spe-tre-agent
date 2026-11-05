@@ -166,18 +166,6 @@ public class FederatedTaskClientTests
     }
 
     [Fact]
-    public async Task Report_parses_409_result_sha256()
-    {
-        var handler = new StubHandler(HttpStatusCode.Conflict,
-            "{\"error_code\":\"already_reported\",\"error_message\":\"m\",\"result_sha256\":\"stored\"}");
-
-        var outcome = await Client(handler).ReportAsync(Complete(), new byte[] { 1 });
-
-        Assert.Equal(409, outcome.StatusCode);
-        Assert.Equal("stored", outcome.ResultSha256);
-    }
-
-    [Fact]
     public async Task Report_maps_409_body_with_sha_and_key_to_outcome()
     {
         var handler = new StubHandler(HttpStatusCode.Conflict,

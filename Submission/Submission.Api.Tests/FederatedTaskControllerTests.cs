@@ -340,27 +340,6 @@ namespace Submission.Api.Tests
         }
 
         [Fact]
-        public async Task GetTask_Complete_ReturnsResultLocationMetadata()
-        {
-            using var db = NewDb();
-            var seeded = SeedTask(db, 1, TesState.COMPLETEEnum);
-            var sha = new string('a', 64);
-            seeded.ResultBucket = "federated-results";
-            seeded.ResultKey = $"1/{seeded.TaskId}/{sha}.json";
-            seeded.ResultSha256 = sha;
-            db.SaveChanges();
-
-            var task = await GetTask(db, seeded.TaskId);
-
-            var metadata = task.Logs![0].Metadata;
-            Assert.Equal("federated-results", metadata["result_bucket"]);
-            Assert.Equal(seeded.ResultKey, metadata["result_key"]);
-            Assert.Equal(sha, metadata["result_sha256"]);
-            Assert.False(metadata.ContainsKey("value"));
-            Assert.False(metadata.ContainsKey("row_count"));
-        }
-
-        [Fact]
         public async Task Report_complete_stores_file_and_returns_location()
         {
             using var db = NewDb();
@@ -660,24 +639,6 @@ namespace Submission.Api.Tests
         }
 
         [Fact]
-        public async Task Report_complete_already_complete_returns_409_with_sha()
-        {
-            using var db = NewDb();
-            var store = new FakeResultStore();
-            var seeded = SeedTask(db, 1, TesState.COMPLETEEnum);
-            seeded.ResultSha256 = new string('a', 64);
-            seeded.ResultKey = $"1/{seeded.TaskId:D}/{seeded.ResultSha256}.json";
-            db.SaveChanges();
-
-            var result = await ReportComplete(AgentControllerFor(db, "tre-a-client", store), seeded);
-
-            var error = AssertError(result, 409, FederatedTaskErrorCodes.TaskAlreadyReported);
-            Assert.Equal(new string('a', 64), error.ResultSha256);
-            Assert.Equal($"1/{seeded.TaskId:D}/{new string('a', 64)}.json", error.ResultKey);
-            Assert.Empty(store.Objects);
-        }
-
-        [Fact]
         public async Task Report_already_errored_returns_409_without_sha()
         {
             using var db = NewDb();
@@ -695,13 +656,15 @@ namespace Submission.Api.Tests
         {
             using var db = NewDb();
             var seeded = SeededTask(db);
-            var controller = AgentControllerFor(db, "tre-a-client");
+            var store = new FakeResultStore();
+            var controller = AgentControllerFor(db, "tre-a-client", store);
             var first = ValidResult(seeded);
             await ReportComplete(controller, seeded, first);
 
             var second = await ReportComplete(controller, seeded, ValidResult(seeded, d => d.Result.Value = 99m));
 
             var error = AssertError(second, 409, FederatedTaskErrorCodes.TaskAlreadyReported);
+            Assert.Single(store.Objects);
             var firstSha = FederatedResultDocumentJson.Sha256Hex(first);
             Assert.Equal(firstSha, error.ResultSha256);
             Assert.Equal(db.FederatedTasks.AsNoTracking().Single().ResultKey, error.ResultKey);

@@ -40,7 +40,7 @@ namespace Agent.Api
             // Don't execute if no credentials have been uploaded.
             if (!_client.IsConfigured)
             {
-                Log.Warning("Federated tasks need the TRE service account (ConfigInputMethod Upload)");
+                Log.Warning("Federated tasks: the TRE service account is not configured (ConfigInputMethod Upload with ClientId and ClientSecret); not polling");
                 return;
             }
 
@@ -103,7 +103,7 @@ namespace Agent.Api
                 if (bytes.Length > FederatedResultLimits.MaxResultBytes)
                 {
                     await ReportErrorAsync(Error(taskId, FederatedTaskErrorCodes.ResultTooLarge,
-                        "the result file is larger than the size limit", computed.Document!.DatasetSha256));
+                        $"the result file must be at most {FederatedResultLimits.MaxResultBytes} bytes", computed.Document!.DatasetSha256));
                     return;
                 }
 
@@ -124,7 +124,11 @@ namespace Agent.Api
         private async Task ReportErrorAsync(FederatedTaskResultReport report)
         {
             var outcome = await _client.ReportAsync(report, null);
-            if (!outcome.Accepted)
+            if (outcome.StatusCode == 409)
+            {
+                Log.Warning("Federated tasks: task {TaskId} was already reported to Submission; the error report was not recorded", report.TaskId);
+            }
+            else if (!outcome.Accepted)
             {
                 Log.Warning("Federated tasks: Submission did not accept the error report for task {TaskId} (status {Status}, {ErrorCode}); it stays QUEUED",
                     report.TaskId, outcome.StatusCode, outcome.ErrorCode);
@@ -184,7 +188,7 @@ namespace Agent.Api
         }
 
         private static readonly System.Text.RegularExpressions.Regex Sha256Hex =
-            new("^[0-9a-f]{64}$", System.Text.RegularExpressions.RegexOptions.Compiled);
+            new(@"^[0-9a-f]{64}\z",System.Text.RegularExpressions.RegexOptions.Compiled);
 
         /// <summary>Best effort: the dataset hash recorded in the saved result document, or null.</summary>
         private static string? DatasetShaFrom(byte[] bytes)

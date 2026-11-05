@@ -75,7 +75,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
 
             if (doc.SchemaVersion != 1)
             {
-                return Invalid("unsupported schemaVersion");
+                return Invalid("schemaVersion must be 1");
             }
 
             if (doc.Result is null)
@@ -106,10 +106,10 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
 
             if (doc.Result.Kind != "scalar")
             {
-                return Invalid("unsupported result.kind");
+                return Invalid("result.kind must be 'scalar'");
             }
 
-            if (doc.DatasetSha256 is not null && !Sha256Pattern.IsMatch(doc.DatasetSha256))
+            if (!Sha256Pattern.IsMatch(doc.DatasetSha256!))
             {
                 return Invalid("field 'datasetSha256' is not a lowercase hex SHA-256");
             }

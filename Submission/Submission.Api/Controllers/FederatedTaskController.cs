@@ -94,6 +94,7 @@ namespace Submission.Api.Controllers
         [ValidateModelState]
         [SwaggerOperation("GetPendingTasksForTre")]
         [SwaggerResponse(statusCode: 200, type: typeof(List<TesTask>), description: "")]
+        [SwaggerResponse(statusCode: 403, description: "The caller is not a TRE Agent service account")]
         public virtual async Task<IActionResult> GetPendingTasksForTre(CancellationToken cancellationToken = default)
         {
             var tre = ControllerHelpers.GetAgentTre(User, _DbContext);
@@ -126,6 +127,7 @@ namespace Submission.Api.Controllers
         [SwaggerOperation("ReportResult")]
         [SwaggerResponse(statusCode: 200, type: typeof(FederatedReportResponse), description: "")]
         [SwaggerResponse(statusCode: 400, type: typeof(FederatedApiError), description: "")]
+        [SwaggerResponse(statusCode: 403, description: "The caller is not a TRE Agent service account")]
         [SwaggerResponse(statusCode: 404, type: typeof(FederatedApiError), description: "")]
         [SwaggerResponse(statusCode: 409, type: typeof(FederatedApiError), description: "")]
         [SwaggerResponse(statusCode: 503, type: typeof(FederatedApiError), description: "")]
@@ -317,7 +319,7 @@ namespace Submission.Api.Controllers
         [Route("GetTaskResult")]
         [ValidateModelState]
         [SwaggerOperation("GetTaskResult")]
-        [SwaggerResponse(statusCode: 200, type: typeof(FileContentResult), description: "")]
+        [SwaggerResponse(statusCode: 200, description: "The result file (application/json attachment)")]
         [SwaggerResponse(statusCode: 404, type: typeof(FederatedApiError), description: "")]
         [SwaggerResponse(statusCode: 500, type: typeof(FederatedApiError), description: "")]
         [SwaggerResponse(statusCode: 503, type: typeof(FederatedApiError), description: "")]
@@ -356,7 +358,7 @@ namespace Submission.Api.Controllers
             if (bytes == null)
             {
                 Log.Error("The result object of COMPLETE federated task {TaskId} is missing from storage", task.TaskId);
-                return Error(StatusCodes.Status404NotFound, FederatedTaskErrorCodes.ResultNotFound, "task has no result");
+                return Error(StatusCodes.Status404NotFound, FederatedTaskErrorCodes.ResultNotFound, "the result file is missing from storage");
             }
 
             // Never serve bytes that do not match what was validated and recorded at upload.

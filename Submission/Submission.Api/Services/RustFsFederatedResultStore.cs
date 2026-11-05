@@ -29,7 +29,7 @@ namespace Submission.Api.Services
 
                 if (await _minio.HasBucketPolicyAsync(Bucket))
                 {
-                    Log.Error("Federated results bucket {Bucket} has a bucket policy; it must have none", Bucket);
+                    Log.Error("Federated results bucket {Bucket} has a bucket policy; remove it, results must be reachable only through the API", Bucket);
                 }
 
                 return true;

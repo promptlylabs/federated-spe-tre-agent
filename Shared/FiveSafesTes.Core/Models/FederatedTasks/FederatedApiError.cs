@@ -3,7 +3,7 @@ using Newtonsoft.Json;
 namespace FiveSafesTes.Core.Models.FederatedTasks
 {
     /// <summary>
-    /// Body of every 4xx the federated task API returns. The keys match the error keys of a failed task's
+    /// Body of every error response (4xx and 5xx) the federated task API returns. The keys match the error keys of a failed task's
     /// <c>logs[0].metadata</c>, so callers read API and task errors the same way.
     /// </summary>
     // IsReference = false: the global PreserveReferencesHandling would otherwise add a "$id" key.

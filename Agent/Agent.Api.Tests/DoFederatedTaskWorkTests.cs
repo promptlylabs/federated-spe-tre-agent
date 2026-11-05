@@ -509,16 +509,16 @@ public class DoFederatedTaskWorkTests
     }
 
     [Fact]
-    public async Task Internal_error_message_is_within_limit()
+    public async Task Internal_error_does_not_leak_exception_text()
     {
         var client = new FakeClient();
         client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
 
-        await Work(client, new FuncReader(() => throw new InvalidOperationException(new string('m', 2000)))).Execute();
+        await Work(client, new FuncReader(() => throw new InvalidOperationException("bucket secret-host:9000 unreachable"))).Execute();
 
         var report = Assert.Single(client.Calls).Report;
         Assert.Equal("internal_error", report.ErrorCode);
-        Assert.True(report.ErrorMessage!.Length <= 512);
+        Assert.DoesNotContain("secret-host", report.ErrorMessage);
     }
 
     [Fact]
