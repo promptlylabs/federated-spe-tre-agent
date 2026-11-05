@@ -839,6 +839,87 @@ namespace Submission.Api.Tests
             AssertError(result, 404, FederatedTaskErrorCodes.TaskNotFound);
         }
 
+        private static async Task<(FederatedTask Task, FakeResultStore Store, byte[] Bytes)> CompletedTask(ApplicationDbContext db)
+        {
+            var store = new FakeResultStore();
+            var seeded = SeededTask(db);
+            var bytes = ValidResult(seeded);
+            await ReportComplete(AgentControllerFor(db, "tre-a-client", store), seeded, bytes);
+            return (seeded, store, bytes);
+        }
+
+        [Fact]
+        public async Task GetTaskResult_returns_stored_bytes_as_attachment()
+        {
+            using var db = NewDb();
+            var (task, store, bytes) = await CompletedTask(db);
+            var controller = ControllerFor(db, "dare-admin", store);
+
+            var result = await controller.GetTaskResult(task.TaskId.ToString());
+
+            var file = Assert.IsType<FileContentResult>(result);
+            Assert.Equal("application/json", file.ContentType);
+            Assert.Equal($"{task.TaskId}.json", file.FileDownloadName);
+            Assert.Equal(bytes, file.FileContents);
+            Assert.Equal("nosniff", controller.Response.Headers["X-Content-Type-Options"].ToString());
+        }
+
+        [Fact]
+        public async Task GetTaskResult_unknown_task_404_task_not_found()
+        {
+            using var db = NewDb();
+            AssertError(await ControllerFor(db, "dare-admin").GetTaskResult(Guid.NewGuid().ToString()), 404, FederatedTaskErrorCodes.TaskNotFound);
+            AssertError(await ControllerFor(db, "dare-admin").GetTaskResult("not-a-guid"), 404, FederatedTaskErrorCodes.TaskNotFound);
+        }
+
+        [Fact]
+        public async Task GetTaskResult_failed_task_404_result_not_found()
+        {
+            using var db = NewDb();
+            var seeded = SeedTask(db, 1, TesState.EXECUTORERROREnum);
+
+            var result = await ControllerFor(db, "dare-admin").GetTaskResult(seeded.TaskId.ToString());
+
+            AssertError(result, 404, FederatedTaskErrorCodes.ResultNotFound);
+        }
+
+        [Fact]
+        public async Task GetTaskResult_storage_down_503()
+        {
+            using var db = NewDb();
+            var (task, store, _) = await CompletedTask(db);
+            store.FailGets = true;
+
+            var result = await ControllerFor(db, "dare-admin", store).GetTaskResult(task.TaskId.ToString());
+
+            AssertError(result, 503, FederatedTaskErrorCodes.StorageUnavailable);
+        }
+
+        [Fact]
+        public async Task GetTaskResult_missing_object_404_result_not_found()
+        {
+            using var db = NewDb();
+            var (task, store, _) = await CompletedTask(db);
+            store.Objects.Clear();
+
+            var result = await ControllerFor(db, "dare-admin", store).GetTaskResult(task.TaskId.ToString());
+
+            AssertError(result, 404, FederatedTaskErrorCodes.ResultNotFound);
+        }
+
+        [Fact]
+        public async Task GetTaskResult_tampered_object_500_and_serves_nothing()
+        {
+            using var db = NewDb();
+            var (task, store, bytes) = await CompletedTask(db);
+            store.Objects[task.ResultKey!] = [.. bytes, (byte)' '];
+
+            var result = await ControllerFor(db, "dare-admin", store).GetTaskResult(task.TaskId.ToString());
+
+            AssertError(result, 500, FederatedTaskErrorCodes.InternalError);
+            Assert.IsNotType<FileContentResult>(result);
+        }
+
         [Fact]
         public void InvalidModelState_ReturnsErrorBody_NotValidationProblemDetails()
         {

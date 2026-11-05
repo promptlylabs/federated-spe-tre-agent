@@ -311,6 +311,66 @@ namespace Submission.Api.Controllers
             return Ok(task.ToTesTask());
         }
 
+        // TODO: researcher access scoped by study once study_id → project mapping exists
+        [Authorize(Roles = "dare-control-admin")]
+        [HttpGet]
+        [Route("GetTaskResult")]
+        [ValidateModelState]
+        [SwaggerOperation("GetTaskResult")]
+        [SwaggerResponse(statusCode: 200, type: typeof(FileContentResult), description: "")]
+        [SwaggerResponse(statusCode: 404, type: typeof(FederatedApiError), description: "")]
+        [SwaggerResponse(statusCode: 500, type: typeof(FederatedApiError), description: "")]
+        [SwaggerResponse(statusCode: 503, type: typeof(FederatedApiError), description: "")]
+        public virtual async Task<IActionResult> GetTaskResult([FromQuery] string id, CancellationToken cancellationToken = default)
+        {
+            if (!Guid.TryParse(id, out var taskId))
+            {
+                return TaskNotFound();
+            }
+
+            var task = await _DbContext.FederatedTasks
+                .AsNoTracking()
+                .FirstOrDefaultAsync(x => x.TaskId == taskId, cancellationToken);
+            if (task == null)
+            {
+                return TaskNotFound();
+            }
+
+            if (task.State != TesState.COMPLETEEnum || task.ResultKey == null)
+            {
+                return Error(StatusCodes.Status404NotFound, FederatedTaskErrorCodes.ResultNotFound, "task has no result");
+            }
+
+            byte[]? bytes;
+            try
+            {
+                bytes = await _resultStore.GetAsync(task.ResultKey, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Reading the result of federated task {TaskId} failed", task.TaskId);
+                return Error(StatusCodes.Status503ServiceUnavailable, FederatedTaskErrorCodes.StorageUnavailable,
+                    "the result could not be read, try again later");
+            }
+
+            if (bytes == null)
+            {
+                Log.Error("The result object of COMPLETE federated task {TaskId} is missing from storage", task.TaskId);
+                return Error(StatusCodes.Status404NotFound, FederatedTaskErrorCodes.ResultNotFound, "task has no result");
+            }
+
+            // Never serve bytes that do not match what was validated and recorded at upload.
+            if (FederatedResultDocumentJson.Sha256Hex(bytes) != task.ResultSha256)
+            {
+                Log.Error("The stored result of federated task {TaskId} failed its integrity check", task.TaskId);
+                return Error(StatusCodes.Status500InternalServerError, FederatedTaskErrorCodes.InternalError,
+                    "stored result failed its integrity check");
+            }
+
+            Response.Headers["X-Content-Type-Options"] = "nosniff";
+            return File(bytes, "application/json", $"{task.TaskId}.json");
+        }
+
         /// <summary>
         /// Runs before [ApiController]'s automatic 400, so a body that fails binding (bad JSON, unknown enum value)
         /// gets the same error body as every other 4xx here instead of ValidationProblemDetails.
