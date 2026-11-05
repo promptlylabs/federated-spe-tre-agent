@@ -19,11 +19,18 @@ namespace Agent.Api.FederatedTasks
 
         private static string KeyFor(string taskId) => $"{taskId}.json";
 
+        // A missing bucket (storage down at startup) is created on first use.
         public Task<byte[]?> TryGetAsync(string taskId, CancellationToken ct) =>
-            _helper.GetObjectBytesAsync(_settings.OutputBucket, KeyFor(taskId), ct);
+            MissingBucketRecovery.ReadAsync(
+                () => _helper.GetObjectBytesAsync(_settings.OutputBucket, KeyFor(taskId), ct),
+                () => _helper.CreateBucket(_settings.OutputBucket),
+                _settings.OutputBucket);
 
         public Task SaveAsync(string taskId, byte[] content, CancellationToken ct) =>
-            _helper.PutObjectAsync(_settings.OutputBucket, KeyFor(taskId), content, "application/json", null, ct);
+            MissingBucketRecovery.RunAsync(
+                () => _helper.PutObjectAsync(_settings.OutputBucket, KeyFor(taskId), content, "application/json", null, ct),
+                () => _helper.CreateBucket(_settings.OutputBucket),
+                _settings.OutputBucket);
 
         public Task MarkReleasedAsync(string taskId, string resultKey, string resultSha256, CancellationToken ct) =>
             _helper.SetObjectMetadataAsync(

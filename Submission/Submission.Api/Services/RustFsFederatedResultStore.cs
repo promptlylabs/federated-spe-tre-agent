@@ -41,8 +41,12 @@ namespace Submission.Api.Services
             }
         }
 
+        // The first write creates the bucket if it is missing (storage may have been down at startup).
         public Task PutAsync(string key, byte[] content, CancellationToken ct) =>
-            _minio.PutObjectAsync(Bucket, key, content, "application/json", null, ct);
+            MissingBucketRecovery.RunAsync(
+                () => _minio.PutObjectAsync(Bucket, key, content, "application/json", null, ct),
+                () => _minio.CreateBucket(Bucket),
+                Bucket);
 
         public Task<byte[]?> GetAsync(string key, CancellationToken ct) =>
             _minio.GetObjectBytesAsync(Bucket, key, ct);
