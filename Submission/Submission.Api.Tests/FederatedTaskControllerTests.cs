@@ -226,6 +226,27 @@ namespace Submission.Api.Tests
         }
 
         [Fact]
+        public async Task GetTask_Complete_ReturnsResultLocationMetadata()
+        {
+            using var db = NewDb();
+            var seeded = SeedTask(db, 1, TesState.COMPLETEEnum);
+            var sha = new string('a', 64);
+            seeded.ResultBucket = "federated-results";
+            seeded.ResultKey = $"1/{seeded.TaskId}/{sha}.json";
+            seeded.ResultSha256 = sha;
+            db.SaveChanges();
+
+            var task = await GetTask(db, seeded.TaskId);
+
+            var metadata = task.Logs![0].Metadata;
+            Assert.Equal("federated-results", metadata["result_bucket"]);
+            Assert.Equal(seeded.ResultKey, metadata["result_key"]);
+            Assert.Equal(sha, metadata["result_sha256"]);
+            Assert.False(metadata.ContainsKey("value"));
+            Assert.False(metadata.ContainsKey("row_count"));
+        }
+
+        [Fact(Skip = "rewritten in Task 6")] // asserts ResultValue/metadata removed in Task 3
         public async Task ReportResult_Complete_ThenGetTaskShowsResult()
         {
             using var db = NewDb();
@@ -243,8 +264,7 @@ namespace Submission.Api.Tests
             Assert.True(Assert.IsType<BoolReturn>(ok.Value).Result);
             var task = await GetTask(db, seeded.TaskId);
             Assert.Equal(TesState.COMPLETEEnum, task.State);
-            Assert.Equal("40.5", task.Logs![0].Metadata["value"]);
-            Assert.Equal("2", task.Logs[0].Metadata["row_count"]);
+            Assert.True(task.Logs![0].Metadata.ContainsKey("result_key"));
         }
 
         [Fact]
@@ -350,7 +370,7 @@ namespace Submission.Api.Tests
             Assert.Equal(TesState.QUEUEDEnum, db.FederatedTasks.AsNoTracking().Single().State);
         }
 
-        [Fact]
+        [Fact(Skip = "rewritten in Task 6")] // asserts ResultValue/metadata removed in Task 3
         public async Task ReportResult_AlreadyReported_Returns409_AndUnchanged()
         {
             using var db = NewDb();
@@ -367,10 +387,10 @@ namespace Submission.Api.Tests
             });
 
             AssertError(second, 409, FederatedTaskErrorCodes.TaskAlreadyReported);
-            Assert.Equal(40.5m, db.FederatedTasks.AsNoTracking().Single().ResultValue);
+            // Task 6 re-adds the assertion that the first report's result location is kept.
         }
 
-        [Fact]
+        [Fact(Skip = "rewritten in Task 6")] // asserts ResultValue/metadata removed in Task 3
         public async Task ReportResult_ConcurrentReports_SecondReturns409_AndFirstKept()
         {
             var name = Guid.NewGuid().ToString();
@@ -399,7 +419,7 @@ namespace Submission.Api.Tests
             using var check = OpenDb(name);
             var row = check.FederatedTasks.Single();
             Assert.Equal(TesState.COMPLETEEnum, row.State);
-            Assert.Equal(40.5m, row.ResultValue);
+            // Task 6 re-adds the assertion that the first report's result location is kept.
             Assert.Null(row.ErrorCode);
         }
 

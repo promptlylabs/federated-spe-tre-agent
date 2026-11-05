@@ -158,12 +158,7 @@ namespace Submission.Api.Controllers
             task.State = report.State;
             task.CompletedAt = DateTime.UtcNow;
             task.DatasetSha256 = report.DatasetSha256;
-            if (report.State == TesState.COMPLETEEnum)
-            {
-                task.ResultValue = report.Value;
-                task.ResultRowCount = report.RowCount;
-            }
-            else
+            if (report.State != TesState.COMPLETEEnum)
             {
                 task.ErrorCode = report.ErrorCode;
                 task.ResultErrorMessage = report.ErrorMessage;
