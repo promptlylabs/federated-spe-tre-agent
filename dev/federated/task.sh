@@ -57,8 +57,19 @@ print(t["state"], json.dumps(meta))'
 }
 
 result() {
-  curl -sf "$SUBMISSION/api/FederatedTask/GetTaskResult?id=$1" -H "Authorization: Bearer $(token)" |
-    python3 -m json.tool
+  local tmp code
+  tmp=$(mktemp)
+  code=$(curl -s -o "$tmp" -w '%{http_code}' "$SUBMISSION/api/FederatedTask/GetTaskResult?id=$1" \
+    -H "Authorization: Bearer $(token)") || code=000
+  if [ "$code" != 200 ]; then
+    echo "HTTP $code" >&2
+    cat "$tmp" >&2
+    echo >&2
+    rm -f "$tmp"
+    return 1
+  fi
+  python3 -m json.tool "$tmp"
+  rm -f "$tmp"
 }
 
 run() {
@@ -66,10 +77,10 @@ run() {
   id=$(enqueue "$@")
   echo "queued $id; waiting for the agent (polls every minute)..."
   for _ in $(seq 1 30); do
-    local result
-    result=$(get "$id")
-    if [[ $result != QUEUED* ]]; then
-      echo "$result"
+    local state
+    state=$(get "$id")
+    if [[ $state != QUEUED* ]]; then
+      echo "$state"
       return 0
     fi
     sleep 5

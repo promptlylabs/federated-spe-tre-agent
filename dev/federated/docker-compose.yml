@@ -192,6 +192,7 @@ services:
         psql -c "INSERT INTO \"Tres\" (\"Name\",\"AdminUsername\",\"About\",\"FormData\",\"LastHeartBeatReceived\",\"KeycloakClientId\")
                  SELECT 'my-tre','tre-agent-my-tre','Local federated dev TRE','{}',now(),'tre-my-tre'
                  WHERE NOT EXISTS (SELECT 1 FROM \"Tres\" WHERE lower(\"Name\")='my-tre');"
+        psql -c "UPDATE \"Tres\" SET \"KeycloakClientId\"='tre-my-tre' WHERE lower(\"Name\")='my-tre' AND \"KeycloakClientId\" IS NULL;"
     depends_on:
       submission-api:
         condition: service_started
