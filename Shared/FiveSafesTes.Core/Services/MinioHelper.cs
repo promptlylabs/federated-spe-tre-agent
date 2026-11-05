@@ -216,7 +216,8 @@ namespace FiveSafesTes.Core.Services
                 await response.ResponseStream.CopyToAsync(buffer, ct);
                 return buffer.ToArray();
             }
-            catch (AmazonS3Exception ex) when (ex.StatusCode == HttpStatusCode.NotFound || ex.ErrorCode == "NoSuchKey")
+            catch (AmazonS3Exception ex) when (ex.ErrorCode == "NoSuchKey" ||
+                                          (string.IsNullOrEmpty(ex.ErrorCode) && ex.StatusCode == HttpStatusCode.NotFound))
             {
                 Log.Debug("Object {Key} not found in {Bucket}", objectKey, bucketName);
                 return null;
