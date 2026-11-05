@@ -178,6 +178,20 @@ public class FederatedTaskClientTests
     }
 
     [Fact]
+    public async Task Report_maps_409_body_with_sha_and_key_to_outcome()
+    {
+        var handler = new StubHandler(HttpStatusCode.Conflict,
+            "{\"error_code\":\"task_already_reported\",\"error_message\":\"m\",\"result_sha256\":\"stored\",\"result_key\":\"1/t/stored.json\"}");
+
+        var outcome = await Client(handler).ReportAsync(Complete(), new byte[] { 1 });
+
+        Assert.Equal(409, outcome.StatusCode);
+        Assert.Equal("task_already_reported", outcome.ErrorCode);
+        Assert.Equal("stored", outcome.ResultSha256);
+        Assert.Equal("1/t/stored.json", outcome.ResultKey);
+    }
+
+    [Fact]
     public async Task Report_non_json_error_body_gives_null_codes()
     {
         var handler = new StubHandler(HttpStatusCode.BadGateway, "<html>Bad gateway</html>");

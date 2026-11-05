@@ -89,7 +89,7 @@ namespace Agent.Api.FederatedTasks
             // A body that parses but has no error_code is not ours (e.g. "{}" from a proxy).
             if (error == null || string.IsNullOrEmpty(error.ErrorCode))
                 return new FederatedReportOutcome(status, null, null, null, null);
-            return new FederatedReportOutcome(status, error.ErrorCode, error.ErrorMessage, null, error.ResultSha256);
+            return new FederatedReportOutcome(status, error.ErrorCode, error.ErrorMessage, error.ResultKey, error.ResultSha256);
         }
 
         private string Url(string endpoint) => _endpoints.SubmissionApiUrl + endpoint;

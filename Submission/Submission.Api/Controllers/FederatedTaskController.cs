@@ -407,7 +407,7 @@ namespace Submission.Api.Controllers
         };
 
         /// <summary>
-        /// 409. For a task already COMPLETE the body carries the stored result's sha256, because the Agent cannot
+        /// 409. For a task already COMPLETE the body carries the stored result's sha256 and key, because the Agent cannot
         /// call GetTask.
         /// </summary>
         private static ObjectResult AlreadyReported(FederatedTask? existing)
@@ -415,7 +415,9 @@ namespace Submission.Api.Controllers
             var result = Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.TaskAlreadyReported, "a result has already been reported for this task");
             if (existing is { State: TesState.COMPLETEEnum })
             {
-                ((FederatedApiError)result.Value!).ResultSha256 = existing.ResultSha256;
+                var body = (FederatedApiError)result.Value!;
+                body.ResultSha256 = existing.ResultSha256;
+                body.ResultKey = existing.ResultKey;
             }
 
             return result;

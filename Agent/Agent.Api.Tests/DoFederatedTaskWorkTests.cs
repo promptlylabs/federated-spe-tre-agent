@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text.Json;
 using System.Text;
 using Agent.Api.FederatedTasks;
 using Agent.Api.Models;
@@ -425,6 +426,9 @@ public class DoFederatedTaskWorkTests
         Assert.Equal(code, follow.Report.ErrorCode);
         Assert.Null(follow.Bytes);
         Assert.True(follow.Report.ErrorMessage!.Length <= FederatedResultLimits.MaxErrorMessageLength);
+        var saved = JsonDocument.Parse(client.Calls[0].Bytes!).RootElement.GetProperty("datasetSha256").GetString();
+        Assert.Equal(64, saved!.Length);
+        Assert.Equal(saved, follow.Report.DatasetSha256);
     }
 
     [Fact]
@@ -451,6 +455,19 @@ public class DoFederatedTaskWorkTests
         await work.Execute();
 
         Assert.Equal(sha, outputs.Released[T1].Sha);
+    }
+
+    [Fact]
+    public async Task Conflict_409_without_sha_does_not_mark_released_and_sends_nothing_more()
+    {
+        var client = OneMean();
+        client.Outcomes.Enqueue(new FederatedReportOutcome(409, "task_already_reported", "already", null, null));
+        var outputs = new FakeResultOutputStore();
+
+        await Work(client, Store(), outputs: outputs).Execute();
+
+        Assert.Single(client.Calls);
+        Assert.Empty(outputs.Released);
     }
 
     [Fact]

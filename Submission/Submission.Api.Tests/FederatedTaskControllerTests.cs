@@ -666,12 +666,14 @@ namespace Submission.Api.Tests
             var store = new FakeResultStore();
             var seeded = SeedTask(db, 1, TesState.COMPLETEEnum);
             seeded.ResultSha256 = new string('a', 64);
+            seeded.ResultKey = $"1/{seeded.TaskId:D}/{seeded.ResultSha256}.json";
             db.SaveChanges();
 
             var result = await ReportComplete(AgentControllerFor(db, "tre-a-client", store), seeded);
 
             var error = AssertError(result, 409, FederatedTaskErrorCodes.TaskAlreadyReported);
             Assert.Equal(new string('a', 64), error.ResultSha256);
+            Assert.Equal($"1/{seeded.TaskId:D}/{new string('a', 64)}.json", error.ResultKey);
             Assert.Empty(store.Objects);
         }
 
@@ -683,7 +685,9 @@ namespace Submission.Api.Tests
 
             var result = await ReportAs(AgentControllerFor(db, "tre-a-client"), Fields(seeded.TaskId, "SYSTEM_ERROR", "internal_error"));
 
-            Assert.Null(AssertError(result, 409, FederatedTaskErrorCodes.TaskAlreadyReported).ResultSha256);
+            var error = AssertError(result, 409, FederatedTaskErrorCodes.TaskAlreadyReported);
+            Assert.Null(error.ResultSha256);
+            Assert.Null(error.ResultKey);
         }
 
         [Fact]
@@ -700,6 +704,8 @@ namespace Submission.Api.Tests
             var error = AssertError(second, 409, FederatedTaskErrorCodes.TaskAlreadyReported);
             var firstSha = FederatedResultDocumentJson.Sha256Hex(first);
             Assert.Equal(firstSha, error.ResultSha256);
+            Assert.Equal(db.FederatedTasks.AsNoTracking().Single().ResultKey, error.ResultKey);
+            Assert.NotNull(error.ResultKey);
             Assert.Equal(firstSha, db.FederatedTasks.AsNoTracking().Single().ResultSha256);
         }
 
@@ -750,6 +756,7 @@ namespace Submission.Api.Tests
 
             var error = AssertError(second, 409, FederatedTaskErrorCodes.TaskAlreadyReported);
             Assert.Equal(FederatedResultDocumentJson.Sha256Hex(winner), error.ResultSha256);
+            Assert.Equal(Submission.Api.Services.FederatedResultKeys.For(1, seeded.TaskId, FederatedResultDocumentJson.Sha256Hex(winner)), error.ResultKey);
         }
 
         [Fact]

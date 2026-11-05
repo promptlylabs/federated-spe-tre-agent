@@ -117,7 +117,7 @@ namespace Agent.Api
 
             var outcome = await _client.ReportAsync(
                 new FederatedTaskResultReport { TaskId = taskId, State = TesState.COMPLETEEnum }, bytes);
-            await HandleOutcomeAsync(taskId, storeKey, sha, outcome);
+            await HandleOutcomeAsync(taskId, storeKey, sha, bytes, outcome);
         }
 
         /// <summary>Reports an error state (no file) and logs when Submission does not accept it.</summary>
@@ -131,7 +131,7 @@ namespace Agent.Api
             }
         }
 
-        private async Task HandleOutcomeAsync(string taskId, string storeKey, string sha, FederatedReportOutcome outcome)
+        private async Task HandleOutcomeAsync(string taskId, string storeKey, string sha, byte[] bytes, FederatedReportOutcome outcome)
         {
             if (outcome.StatusCode == 200 || (outcome.StatusCode == 409 && outcome.ResultSha256 != null))
             {
@@ -143,7 +143,14 @@ namespace Agent.Api
                 outcome.ErrorCode is FederatedTaskErrorCodes.InvalidResult or FederatedTaskErrorCodes.ResultTooLarge)
             {
                 Log.Warning("Federated tasks: Submission rejected the result for task {TaskId} with {ErrorCode}", taskId, outcome.ErrorCode);
-                await ReportErrorAsync(Error(taskId, outcome.ErrorCode!, outcome.ErrorMessage));
+                await ReportErrorAsync(Error(taskId, outcome.ErrorCode!, outcome.ErrorMessage, DatasetShaFrom(bytes)));
+                return;
+            }
+
+            if (outcome.StatusCode == 409)
+            {
+                // The task is already terminal on the server (an error state, or a COMPLETE without a stored sha).
+                Log.Warning("Federated tasks: task {TaskId} was already reported to Submission and carries no result sha256; nothing more to do", taskId);
                 return;
             }
 
@@ -153,7 +160,13 @@ namespace Agent.Api
 
         private async Task VerifyAndMarkReleasedAsync(string taskId, string storeKey, string sha, FederatedReportOutcome outcome)
         {
-            if (outcome.ResultKey == null || outcome.ResultSha256 == null || outcome.ResultSha256 != sha)
+            if (outcome.ResultKey == null || outcome.ResultSha256 == null)
+            {
+                Log.Warning("Federated tasks: Submission's answer for task {TaskId} had no result key or sha256; the TRE copy is not tagged", taskId);
+                return;
+            }
+
+            if (outcome.ResultSha256 != sha)
             {
                 Log.Error("Federated tasks: released sha256 mismatch for task {TaskId}: saved {Saved}, Submission stored {Released}",
                     taskId, sha, outcome.ResultSha256);
@@ -168,6 +181,28 @@ namespace Agent.Api
             {
                 Log.Error(ex, "Federated tasks: result for task {TaskId} was released but could not be marked in the TRE bucket", taskId);
             }
+        }
+
+        private static readonly System.Text.RegularExpressions.Regex Sha256Hex =
+            new("^[0-9a-f]{64}$", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+        /// <summary>Best effort: the dataset hash recorded in the saved result document, or null.</summary>
+        private static string? DatasetShaFrom(byte[] bytes)
+        {
+            try
+            {
+                using var doc = System.Text.Json.JsonDocument.Parse(bytes);
+                if (doc.RootElement.ValueKind == System.Text.Json.JsonValueKind.Object &&
+                    doc.RootElement.TryGetProperty("datasetSha256", out var p) &&
+                    p.ValueKind == System.Text.Json.JsonValueKind.String &&
+                    p.GetString() is { } s && Sha256Hex.IsMatch(s))
+                    return s;
+            }
+            catch (System.Text.Json.JsonException)
+            {
+            }
+
+            return null;
         }
 
         private sealed record Computed(FederatedResultDocument? Document, FederatedTaskResultReport? ErrorReport, bool Skip);
