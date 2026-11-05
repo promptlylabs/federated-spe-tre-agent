@@ -19,7 +19,6 @@ namespace Agent.Api.FederatedTasks
             IHttpClientFactory httpClientFactory,
             IOptionsMonitor<SubmissionKeyCloakSettings> keycloak,
             IOptions<ApiEndpointSettings> endpoints,
-            IConfiguration config,
             IFederatedTokenSource tokens)
         {
             _httpClientFactory = httpClientFactory;
@@ -98,6 +97,8 @@ namespace Agent.Api.FederatedTasks
         private async Task Authorize(HttpRequestMessage request)
         {
             var token = await _tokens.GetTokenAsync();
+            if (string.IsNullOrEmpty(token))
+                throw new InvalidOperationException("No token for the TRE service account");
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
         }
 

@@ -5,7 +5,6 @@ using FiveSafesTes.Core.Models.Enums;
 using FiveSafesTes.Core.Models.FederatedTasks;
 using FiveSafesTes.Core.Models.Settings;
 using FiveSafesTes.Core.Models.Tes;
-using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
 using Xunit;
 
@@ -67,15 +66,14 @@ public class FederatedTaskClientTests
     }
 
     private static FederatedTaskClient Client(StubHandler handler, ConfigInputMethod method = ConfigInputMethod.Upload,
-        string clientId = "tre-client", string clientSecret = "secret")
+        string clientId = "tre-client", string clientSecret = "secret", IFederatedTokenSource? tokens = null)
     {
         var settings = new SubmissionKeyCloakSettings { ConfigInputMethod = method, ClientId = clientId, ClientSecret = clientSecret };
         return new FederatedTaskClient(
             new Factory(handler),
             new FixedMonitor(settings),
             Options.Create(new ApiEndpointSettings { SubmissionApiUrl = "http://submission" }),
-            new ConfigurationBuilder().Build(),
-            new FakeTokens());
+            tokens ?? new FakeTokens());
     }
 
     private sealed class FixedMonitor : IOptionsMonitor<SubmissionKeyCloakSettings>
@@ -201,6 +199,38 @@ public class FederatedTaskClientTests
         Assert.Equal("t1", Assert.Single(tasks).Id);
         Assert.Equal("fake-token", handler.Request!.Headers.Authorization!.Parameter);
         Assert.Equal("http://submission/api/FederatedTask/GetPendingTasksForTre", handler.Request.RequestUri!.ToString());
+    }
+
+    private sealed class ThrowingTokens : IFederatedTokenSource
+    {
+        public Task<string> GetTokenAsync() => throw new InvalidOperationException("keycloak down");
+    }
+
+    private sealed class EmptyTokens : IFederatedTokenSource
+    {
+        public Task<string> GetTokenAsync() => Task.FromResult("");
+    }
+
+    [Fact]
+    public async Task Token_failure_propagates_from_report_and_get_pending()
+    {
+        var handler = new StubHandler(HttpStatusCode.OK, "[]");
+        var client = Client(handler, tokens: new ThrowingTokens());
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => client.ReportAsync(Complete(), null));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => client.GetPendingAsync());
+        Assert.Null(handler.Request);
+    }
+
+    [Fact]
+    public async Task Empty_token_is_never_sent()
+    {
+        var handler = new StubHandler(HttpStatusCode.OK, "[]");
+        var client = Client(handler, tokens: new EmptyTokens());
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => client.ReportAsync(Complete(), null));
+        await Assert.ThrowsAsync<InvalidOperationException>(() => client.GetPendingAsync());
+        Assert.Null(handler.Request);
     }
 
     [Theory]
