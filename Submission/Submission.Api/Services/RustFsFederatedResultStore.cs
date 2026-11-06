@@ -10,9 +10,14 @@ namespace Submission.Api.Services
 
         // Own helper on its own settings: never the DI IMinioHelper, which is the researcher-facing project store.
         public RustFsFederatedResultStore(FederatedResultsStorageSettings settings)
+            : this(settings.Bucket, new MinioHelper(settings.ToMinioSettings()))
         {
-            Bucket = settings.Bucket;
-            _minio = new MinioHelper(settings.ToMinioSettings());
+        }
+
+        public RustFsFederatedResultStore(string bucket, IMinioHelper minio)
+        {
+            Bucket = bucket;
+            _minio = minio;
         }
 
         public string Bucket { get; }
@@ -21,15 +26,20 @@ namespace Submission.Api.Services
         {
             try
             {
-                if (!await _minio.CreateBucket(Bucket))
+                if (!await _minio.EnsureBucketAsync(Bucket))
                 {
                     Log.Error("Federated results bucket {Bucket} could not be created or found", Bucket);
                     return false;
                 }
 
-                if (await _minio.HasBucketPolicyAsync(Bucket))
+                var hasPolicy = await _minio.HasBucketPolicyAsync(Bucket);
+                if (hasPolicy == true)
                 {
                     Log.Error("Federated results bucket {Bucket} has a bucket policy; remove it, results must be reachable only through the API", Bucket);
+                }
+                else if (hasPolicy == null)
+                {
+                    Log.Warning("Federated results bucket {Bucket}: the bucket policy was not checked, because the account lacks s3:GetBucketPolicy", Bucket);
                 }
 
                 return true;
@@ -45,7 +55,7 @@ namespace Submission.Api.Services
         public Task PutAsync(string key, byte[] content, CancellationToken ct) =>
             MissingBucketRecovery.RunAsync(
                 () => _minio.PutObjectAsync(Bucket, key, content, "application/json", null, ct),
-                () => _minio.CreateBucket(Bucket),
+                () => _minio.EnsureBucketAsync(Bucket),
                 Bucket);
 
         public Task<byte[]?> GetAsync(string key, CancellationToken ct) =>

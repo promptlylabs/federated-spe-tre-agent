@@ -326,7 +326,11 @@ Submission.Api keeps result files in its own RustFS, not in the TRE and not in t
 | `AWSRegion` | `us-east-1` |
 
 - Use a separate RustFS. Only Submission.Api may reach it. Do not expose it to TREs or researchers.
-- Use a dedicated service account, not the root account. It needs to create, head and list the bucket, and put and get objects in `federated-results`, and nothing else.
+- Use a dedicated service account, not the root account. Grant it only these actions:
+  - on the bucket `arn:aws:s3:::federated-results`: `s3:CreateBucket`, `s3:GetBucketLocation` (to find or create the bucket), `s3:ListBucket` (so a missing file is reported as missing, not as access denied) and `s3:GetBucketPolicy` (for the startup check below);
+  - on the objects `arn:aws:s3:::federated-results/*`: `s3:PutObject` and `s3:GetObject`.
+
+  Submission does not need `s3:ListAllMyBuckets`. Without `s3:GetBucketPolicy` it still works, but logs a warning that it did not check the bucket policy.
 - Do not set a bucket policy. Submission logs an error at startup if it finds one.
 - Use TLS in production. Plain HTTP is for the local Docker stack only.
 - Switch on server-side encryption in RustFS. It is a deployment setting and is not done by the code.

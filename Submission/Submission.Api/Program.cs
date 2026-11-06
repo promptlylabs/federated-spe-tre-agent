@@ -99,7 +99,7 @@ builder.Services.AddSingleton(minioSettings);
 
 var federatedResultsStorageSettings = FederatedResultsStorageSettings.FromConfiguration(configuration);
 builder.Services.AddSingleton(federatedResultsStorageSettings);
-builder.Services.AddSingleton<IFederatedResultStore, RustFsFederatedResultStore>();
+builder.Services.AddSingleton<IFederatedResultStore>(_ => new RustFsFederatedResultStore(federatedResultsStorageSettings));
 
 
 var emailSettings = new EmailSettings();

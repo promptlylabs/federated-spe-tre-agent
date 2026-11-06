@@ -56,8 +56,17 @@ namespace FiveSafesTes.Core.Services
         Task SetObjectMetadataAsync(string bucketName, string objectKey, IDictionary<string, string> metadata,
             CancellationToken ct = default);
 
-        /// <summary>True when the bucket has a non-empty policy; false when none is set. Throws otherwise.</summary>
-        Task<bool> HasBucketPolicyAsync(string bucketName);
+        /// <summary>
+        /// True when the bucket has a non-empty policy; false when none is set; null when the caller may not read the
+        /// policy (AccessDenied). Throws otherwise.
+        /// </summary>
+        Task<bool?> HasBucketPolicyAsync(string bucketName);
+
+        /// <summary>
+        /// Creates the bucket if it does not exist, using only bucket-scoped calls (GetBucketLocation, CreateBucket), so
+        /// an account limited to this bucket can use it. Returns false, and logs, when the check or creation fails.
+        /// </summary>
+        Task<bool> EnsureBucketAsync(string bucketName);
 
         Task<MinioCommandResult> CreateMinioSecretAsync(string accessKey, string secretKey = "", CancellationToken cancellationToken = default);
         Task<MinioCommandResult> DeleteMinioSecretAsync(string accessKey, CancellationToken cancellationToken = default);

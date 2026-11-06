@@ -247,7 +247,7 @@ namespace FiveSafesTes.Core.Services
             await amazonS3Client.CopyObjectAsync(request, ct);
         }
 
-        public async Task<bool> HasBucketPolicyAsync(string bucketName)
+        public async Task<bool?> HasBucketPolicyAsync(string bucketName)
         {
             var amazonS3Client = GenerateAmazonS3Client();
             try
@@ -257,6 +257,41 @@ namespace FiveSafesTes.Core.Services
             }
             catch (AmazonS3Exception ex) when (ex.ErrorCode == "NoSuchBucketPolicy")
             {
+                return false;
+            }
+            catch (AmazonS3Exception ex) when (ex.ErrorCode == "AccessDenied" || ex.StatusCode == HttpStatusCode.Forbidden)
+            {
+                return null;
+            }
+        }
+
+        public async Task<bool> EnsureBucketAsync(string bucketName)
+        {
+            var amazonS3Client = GenerateAmazonS3Client();
+            try
+            {
+                // Bucket-scoped (s3:GetBucketLocation), unlike CheckBucketExists, which lists every bucket.
+                await amazonS3Client.GetBucketLocationAsync(bucketName);
+                return true;
+            }
+            catch (AmazonS3Exception ex) when (ex.ErrorCode == "NoSuchBucket")
+            {
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Could not check bucket {Bucket}", bucketName);
+                return false;
+            }
+
+            try
+            {
+                await amazonS3Client.PutBucketAsync(bucketName);
+                Log.Information("Created bucket {Bucket}", bucketName);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Could not create bucket {Bucket}", bucketName);
                 return false;
             }
         }
