@@ -11,7 +11,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
 
     public static class FederatedResultDocumentJson
     {
-        private const int MaxStringLength = 1024;
+        private const int MaxStringLength = FederatedResultLimits.MaxStringLength;
         private const string NotValidJsonMessage =
             "result file is not valid JSON (malformed UTF-8 or JSON, a duplicate property, or nesting deeper than 16 levels)";
 

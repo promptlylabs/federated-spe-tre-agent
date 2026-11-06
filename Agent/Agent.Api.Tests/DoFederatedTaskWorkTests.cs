@@ -522,19 +522,19 @@ public class DoFederatedTaskWorkTests
     }
 
     [Fact]
-    public async Task Oversized_result_reports_result_too_large_without_release()
+    public async Task Overlong_study_id_reports_invalid_task_without_reading_data()
     {
         var client = new FakeClient();
-        var task = FederatedTesProfile.Build(new FederatedTaskSpec("count", "cohort_2024", null, Array.Empty<TaskFilter>(), new string('s', 70000), "tre-a"));
+        var task = FederatedTesProfile.Build(new FederatedTaskSpec("count", "cohort_2024", null, Array.Empty<TaskFilter>(), new string('s', 1025), "tre-a"));
         task.Id = T1;
         client.Pending.Add(task);
         var outputs = new FakeResultOutputStore();
 
-        await Work(client, Store(), outputs: outputs).Execute();
+        await Work(client, new FuncReader(() => throw new InvalidOperationException("dataset must not be read")), outputs: outputs).Execute();
 
         var call = Assert.Single(client.Calls);
         Assert.Equal(TesState.EXECUTORERROREnum, call.Report.State);
-        Assert.Equal("result_too_large", call.Report.ErrorCode);
+        Assert.Equal("invalid_task", call.Report.ErrorCode);
         Assert.Null(call.Bytes);
         Assert.Empty(outputs.Files);
     }

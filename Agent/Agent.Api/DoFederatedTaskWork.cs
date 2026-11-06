@@ -100,13 +100,6 @@ namespace Agent.Api
                 }
 
                 bytes = FederatedResultDocumentJson.Serialize(computed.Document!);
-                if (bytes.Length > FederatedResultLimits.MaxResultBytes)
-                {
-                    await ReportErrorAsync(Error(taskId, FederatedTaskErrorCodes.ResultTooLarge,
-                        $"the result file must be at most {FederatedResultLimits.MaxResultBytes} bytes", computed.Document!.DatasetSha256));
-                    return;
-                }
-
                 await _outputs.SaveAsync(storeKey, bytes, CancellationToken.None);
             }
 
