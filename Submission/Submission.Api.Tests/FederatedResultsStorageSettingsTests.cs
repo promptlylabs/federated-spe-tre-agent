@@ -28,5 +28,21 @@ public class FederatedResultsStorageSettingsTests
         Assert.Equal("sk", minio.SecretKey);
         Assert.Equal("federated-results", minio.BucketName);
         Assert.Equal("us-east-1", minio.AWSRegion);
+        Assert.Empty(settings.MissingSettings());
+    }
+
+    [Fact]
+    public void MissingSettings_names_each_empty_required_key()
+    {
+        var settings = new FederatedResultsStorageSettings { Url = "http://rustfs:9000", AccessKey = " ", SecretKey = "", Bucket = "" };
+
+        Assert.Equal(
+            new[]
+            {
+                "FederatedResultsStorageSettings:AccessKey",
+                "FederatedResultsStorageSettings:SecretKey",
+                "FederatedResultsStorageSettings:Bucket"
+            },
+            settings.MissingSettings());
     }
 }

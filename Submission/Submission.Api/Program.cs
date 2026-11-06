@@ -98,6 +98,14 @@ configuration.Bind(nameof(MinioSettings), minioSettings);
 builder.Services.AddSingleton(minioSettings);
 
 var federatedResultsStorageSettings = FederatedResultsStorageSettings.FromConfiguration(configuration);
+// A missing setting is a deployment error: without it every federated result is refused with 503 and every TRE
+// re-uploads on every poll. Unreachable storage, in contrast, never blocks startup (see EnsureReadyAsync below).
+var missingFederatedSettings = federatedResultsStorageSettings.MissingSettings();
+if (missingFederatedSettings.Count > 0 && !Microsoft.EntityFrameworkCore.EF.IsDesignTime)
+{
+    throw new InvalidOperationException(
+        "Federated results storage is not configured. Set: " + string.Join(", ", missingFederatedSettings));
+}
 builder.Services.AddSingleton(federatedResultsStorageSettings);
 builder.Services.AddSingleton<IFederatedResultStore>(_ => new RustFsFederatedResultStore(federatedResultsStorageSettings));
 

@@ -28,6 +28,17 @@ namespace Submission.Api.Models
             AWSRegion = AWSRegion
         };
 
+        /// <summary>Names of the required settings that are empty, as configuration keys.</summary>
+        public IReadOnlyList<string> MissingSettings()
+        {
+            var missing = new List<string>();
+            if (string.IsNullOrWhiteSpace(Url)) missing.Add($"{SectionName}:{nameof(Url)}");
+            if (string.IsNullOrWhiteSpace(AccessKey)) missing.Add($"{SectionName}:{nameof(AccessKey)}");
+            if (string.IsNullOrWhiteSpace(SecretKey)) missing.Add($"{SectionName}:{nameof(SecretKey)}");
+            if (string.IsNullOrWhiteSpace(Bucket)) missing.Add($"{SectionName}:{nameof(Bucket)}");
+            return missing;
+        }
+
         public static FederatedResultsStorageSettings FromConfiguration(IConfiguration configuration)
         {
             var settings = new FederatedResultsStorageSettings();
