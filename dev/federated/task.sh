@@ -2,12 +2,13 @@
 # Helper for the local federated stack (dev/federated/docker-compose.yml).
 #
 #   ./task.sh enqueue <dataset> [operation] [extra args...]   queue a task, prints its id
-#   ./task.sh get <task-id>                                   show state and result
+#   ./task.sh get <task-id>                                   show state and result location
+#   ./task.sh result <task-id>                                download and print the result file
 #   ./task.sh run <dataset> [operation] [extra args...]       enqueue, wait for the agent, show the result
 #
 # Examples:
-#   ./task.sh run cohort_2024 mean --column age --filter sex:eq:F    -> COMPLETE, value 35, row_count 2
-#   ./task.sh run cohort_2024 count                                  -> COMPLETE, value 3
+#   ./task.sh run cohort_2024 mean --column age --filter sex:eq:F    -> COMPLETE, result_key <treId>/<taskId>/<sha256>.json
+#   ./task.sh run cohort_2024 count                                  -> COMPLETE, result_key ...
 #   ./task.sh run nope count                                         -> EXECUTOR_ERROR, dataset_not_found
 set -euo pipefail
 
@@ -55,15 +56,31 @@ meta.pop("$id", None)
 print(t["state"], json.dumps(meta))'
 }
 
+result() {
+  local tmp code
+  tmp=$(mktemp)
+  code=$(curl -s -o "$tmp" -w '%{http_code}' "$SUBMISSION/api/FederatedTask/GetTaskResult?id=$1" \
+    -H "Authorization: Bearer $(token)") || code=000
+  if [ "$code" != 200 ]; then
+    echo "HTTP $code" >&2
+    cat "$tmp" >&2
+    echo >&2
+    rm -f "$tmp"
+    return 1
+  fi
+  python3 -m json.tool "$tmp"
+  rm -f "$tmp"
+}
+
 run() {
   local id
   id=$(enqueue "$@")
   echo "queued $id; waiting for the agent (polls every minute)..."
   for _ in $(seq 1 30); do
-    local result
-    result=$(get "$id")
-    if [[ $result != QUEUED* ]]; then
-      echo "$result"
+    local state
+    state=$(get "$id")
+    if [[ $state != QUEUED* ]]; then
+      echo "$state"
       return 0
     fi
     sleep 5
@@ -75,6 +92,7 @@ run() {
 case "${1:-}" in
   enqueue) shift; enqueue "$@" ;;
   get) shift; get "$1" ;;
+  result) shift; result "$1" ;;
   run) shift; run "$@" ;;
-  *) sed -n '2,12p' "$0"; exit 1 ;;
+  *) sed -n '2,13p' "$0"; exit 1 ;;
 esac

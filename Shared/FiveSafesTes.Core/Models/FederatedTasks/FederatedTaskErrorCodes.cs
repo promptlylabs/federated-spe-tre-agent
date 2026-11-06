@@ -16,6 +16,10 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         public const string NonNumericValue = "non_numeric_value";
         public const string InternalError = "internal_error";
         public const string TreRenamed = "tre_renamed";
+        public const string InvalidResult = "invalid_result";
+        public const string ResultTooLarge = "result_too_large";
+        public const string ResultNotFound = "result_not_found";
+        public const string StorageUnavailable = "storage_unavailable";
 
         // Returned only in API error bodies, never in task metadata.
         public const string TaskNotFound = "task_not_found";

@@ -59,6 +59,16 @@ public class FederatedTesProfileTests
     }
 
     [Fact]
+    public void Parse_TagsAtLengthLimit_AreAccepted()
+    {
+        var task = ValidTask();
+        task.Tags!["tres"] = new string('t', 1024);
+        task.Tags["study_id"] = new string('s', 1024);
+
+        Assert.True(FederatedTesProfile.Parse(task).IsSuccess);
+    }
+
+    [Fact]
     public void Parse_TreNameIsLowercased()
     {
         var task = ValidTask();
@@ -90,6 +100,8 @@ public class FederatedTesProfileTests
         { "output added", t => t.Outputs = [new TesOutput { Url = "s3://b/o", Path = "/o" }], FederatedTaskErrorCodes.InvalidTask },
         { "multiple tres", t => t.Tags!["tres"] = "tre-a|tre-b", FederatedTaskErrorCodes.InvalidTask },
         { "study_id missing", t => t.Tags!.Remove("study_id"), FederatedTaskErrorCodes.InvalidTask },
+        { "study_id too long", t => t.Tags!["study_id"] = new string('s', 1025), FederatedTaskErrorCodes.InvalidTask },
+        { "tres too long", t => t.Tags!["tres"] = new string('t', 1025), FederatedTaskErrorCodes.InvalidTask },
         { "unknown operation", t => t.Executors[0].Command = ["median"], FederatedTaskErrorCodes.UnknownOperation },
         { "mean without column", t => t.Executors[0].Command = ["mean"], FederatedTaskErrorCodes.InvalidTask },
         { "bad filter operator", t => t.Executors[0].Command = ["count", "--filter", "sex:like:F"], FederatedTaskErrorCodes.InvalidFilter },

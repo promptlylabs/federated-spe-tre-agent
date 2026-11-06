@@ -1,5 +1,4 @@
 using System.ComponentModel.DataAnnotations;
-using System.Globalization;
 using FiveSafesTes.Core.Models.Tes;
 using Newtonsoft.Json;
 
@@ -32,8 +31,18 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         /// <summary>UTC.</summary>
         public DateTime SubmittedAt { get; set; }
         public DateTime? CompletedAt { get; set; }
-        public decimal? ResultValue { get; set; }
-        public int? ResultRowCount { get; set; }
+
+        /// <summary>Orchestrator bucket holding the result file; null until a result file is stored.</summary>
+        [MaxLength(63)]
+        public string? ResultBucket { get; set; }
+
+        /// <summary>Object key of the result file in <see cref="ResultBucket"/>.</summary>
+        [MaxLength(256)]
+        public string? ResultKey { get; set; }
+
+        /// <summary>Lowercase hex SHA-256 of the stored result file.</summary>
+        [MaxLength(64)]
+        public string? ResultSha256 { get; set; }
         public string? ErrorCode { get; set; }
         public string? ResultErrorMessage { get; set; }
 
@@ -61,8 +70,9 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             {
                 TesState.COMPLETEEnum => new Dictionary<string, string>
                 {
-                    ["value"] = ResultValue?.ToString(CultureInfo.InvariantCulture) ?? "",
-                    ["row_count"] = ResultRowCount?.ToString(CultureInfo.InvariantCulture) ?? ""
+                    ["result_bucket"] = ResultBucket ?? "",
+                    ["result_key"] = ResultKey ?? "",
+                    ["result_sha256"] = ResultSha256 ?? ""
                 },
                 TesState.EXECUTORERROREnum or TesState.SYSTEMERROREnum => new Dictionary<string, string>
                 {

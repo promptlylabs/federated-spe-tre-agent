@@ -42,17 +42,20 @@ public class FederatedTaskTests
     }
 
     [Fact]
-    public void ToTesTask_Complete_HasValueMetadata()
+    public void ToTesTask_Complete_HasResultLocationMetadata()
     {
         var entity = Make(TesState.COMPLETEEnum);
         entity.CompletedAt = Completed;
-        entity.ResultValue = 40.5m;
-        entity.ResultRowCount = 2;
+        entity.ResultBucket = "federated-results";
+        entity.ResultKey = "1/key.json";
+        entity.ResultSha256 = new string('a', 64);
 
         var log = Assert.Single(entity.ToTesTask().Logs!);
 
-        Assert.Equal("40.5", log.Metadata!["value"]);
-        Assert.Equal("2", log.Metadata["row_count"]);
+        Assert.Equal("federated-results", log.Metadata!["result_bucket"]);
+        Assert.Equal("1/key.json", log.Metadata["result_key"]);
+        Assert.Equal(new string('a', 64), log.Metadata["result_sha256"]);
+        Assert.False(log.Metadata.ContainsKey("value"));
         Assert.Equal(new DateTimeOffset(Completed, TimeSpan.Zero), log.EndTime);
     }
 

@@ -25,6 +25,7 @@ using Microsoft.AspNetCore.DataProtection;
 using Microsoft.FeatureManagement;
 using Serilog.Events;
 using Submission.Api.Constants;
+using Submission.Api.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -95,6 +96,18 @@ builder.Services.Configure<KestrelServerOptions>(options =>
 var minioSettings = new MinioSettings();
 configuration.Bind(nameof(MinioSettings), minioSettings);
 builder.Services.AddSingleton(minioSettings);
+
+var federatedResultsStorageSettings = FederatedResultsStorageSettings.FromConfiguration(configuration);
+// A missing setting is a deployment error: without it every federated result is refused with 503 and every TRE
+// re-uploads on every poll. Unreachable storage, in contrast, never blocks startup (see EnsureReadyAsync below).
+var missingFederatedSettings = federatedResultsStorageSettings.MissingSettings();
+if (missingFederatedSettings.Count > 0 && !Microsoft.EntityFrameworkCore.EF.IsDesignTime)
+{
+    throw new InvalidOperationException(
+        "Federated results storage is not configured. Set: " + string.Join(", ", missingFederatedSettings));
+}
+builder.Services.AddSingleton(federatedResultsStorageSettings);
+builder.Services.AddSingleton<IFederatedResultStore>(_ => new RustFsFederatedResultStore(federatedResultsStorageSettings));
 
 
 var emailSettings = new EmailSettings();
@@ -249,6 +262,11 @@ using (var scope = app.Services.CreateScope())
 
     
     db.Database.Migrate();
+
+    // Runs in the background so an unreachable RustFS cannot delay startup. EnsureReadyAsync catches and logs every
+    // failure, and the first write creates a missing bucket anyway.
+    var federatedResultStore = app.Services.GetRequiredService<IFederatedResultStore>();
+    _ = Task.Run(federatedResultStore.EnsureReadyAsync);
     var keycloakAdminService = scope.ServiceProvider.GetRequiredService<IKeycloakAdminService>();
     var vaultCredentialsService = scope.ServiceProvider.GetRequiredService<IVaultCredentialsService>();
     var initialiser = new DataInitialiser(miniosettings, db, keytoken, userService, miniohelper,

@@ -1,0 +1,26 @@
+namespace Submission.Api.Services
+{
+    /// <summary>
+    /// Orchestrator-side store for federated task result files.
+    /// </summary>
+    public interface IFederatedResultStore
+    {
+        string Bucket { get; }
+
+        /// <summary>
+        /// Creates the bucket if needed and checks it has no bucket policy. Never throws.
+        /// </summary>
+        /// <returns>True when the bucket is ready.</returns>
+        Task<bool> EnsureReadyAsync();
+
+        /// <summary>Throws on any storage failure.</summary>
+        Task PutAsync(string key, byte[] content, CancellationToken ct);
+
+        /// <summary>
+        /// Reads from the bucket the file was written to (the task's ResultBucket), which may differ from
+        /// <see cref="Bucket"/> after the setting changes.
+        /// </summary>
+        /// <returns>Null when the object does not exist. Throws when storage is unreachable.</returns>
+        Task<byte[]?> GetAsync(string bucket, string key, CancellationToken ct);
+    }
+}
