@@ -332,6 +332,8 @@ Submission.Api keeps result files in its own RustFS, not in the TRE and not in t
 - Switch on server-side encryption in RustFS. It is a deployment setting and is not done by the code.
 - Keep the keys in secrets or configuration, never in the repository.
 
+Upgrading from inline results: the migration `FederatedResultFiles` drops the old `ResultValue` and `ResultRowCount` columns. A task that was COMPLETE before the migration keeps its state but has no result file, so `GetTaskResult` returns 404 `result_not_found` for it. The values cannot be recovered, not even by a rollback. Deploy Agent.Api and Submission.Api together.
+
 TODO: store results in the project's output bucket once study_id → project mapping exists
 
 ## Security
