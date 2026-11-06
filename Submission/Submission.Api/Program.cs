@@ -255,8 +255,10 @@ using (var scope = app.Services.CreateScope())
     
     db.Database.Migrate();
 
-    // Never fail startup on storage; EnsureReadyAsync logs and returns false.
-    await app.Services.GetRequiredService<IFederatedResultStore>().EnsureReadyAsync();
+    // Runs in the background so an unreachable RustFS cannot delay startup. EnsureReadyAsync catches and logs every
+    // failure, and the first write creates a missing bucket anyway.
+    var federatedResultStore = app.Services.GetRequiredService<IFederatedResultStore>();
+    _ = Task.Run(federatedResultStore.EnsureReadyAsync);
     var keycloakAdminService = scope.ServiceProvider.GetRequiredService<IKeycloakAdminService>();
     var vaultCredentialsService = scope.ServiceProvider.GetRequiredService<IVaultCredentialsService>();
     var initialiser = new DataInitialiser(miniosettings, db, keytoken, userService, miniohelper,
