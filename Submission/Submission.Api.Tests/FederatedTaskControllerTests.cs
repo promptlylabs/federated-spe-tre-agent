@@ -835,6 +835,20 @@ namespace Submission.Api.Tests
         }
 
         [Fact]
+        public async Task GetTaskResult_reads_from_the_bucket_recorded_on_the_task()
+        {
+            using var db = NewDb();
+            var (task, store, _) = await CompletedTask(db);
+            var row = db.FederatedTasks.Single(x => x.TaskId == task.TaskId);
+            row.ResultBucket = "old-results";
+            db.SaveChanges();
+
+            await ControllerFor(db, "dare-admin", store).GetTaskResult(task.TaskId.ToString());
+
+            Assert.Equal("old-results", store.LastGetBucket);
+        }
+
+        [Fact]
         public async Task GetTaskResult_unknown_task_404_task_not_found()
         {
             using var db = NewDb();

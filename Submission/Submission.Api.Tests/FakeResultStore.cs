@@ -24,8 +24,11 @@ namespace Submission.Api.Tests
             return Task.CompletedTask;
         }
 
-        public Task<byte[]?> GetAsync(string key, CancellationToken ct)
+        public string? LastGetBucket { get; private set; }
+
+        public Task<byte[]?> GetAsync(string bucket, string key, CancellationToken ct)
         {
+            LastGetBucket = bucket;
             if (FailGets)
             {
                 throw new IOException("storage down");

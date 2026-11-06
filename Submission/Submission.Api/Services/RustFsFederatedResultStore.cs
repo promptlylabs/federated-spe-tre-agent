@@ -58,7 +58,7 @@ namespace Submission.Api.Services
                 () => _minio.EnsureBucketAsync(Bucket),
                 Bucket);
 
-        public Task<byte[]?> GetAsync(string key, CancellationToken ct) =>
-            _minio.GetObjectBytesAsync(Bucket, key, ct);
+        public Task<byte[]?> GetAsync(string bucket, string key, CancellationToken ct) =>
+            _minio.GetObjectBytesAsync(bucket, key, ct);
     }
 }

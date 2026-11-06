@@ -338,7 +338,7 @@ namespace Submission.Api.Controllers
                 return TaskNotFound();
             }
 
-            if (task.State != TesState.COMPLETEEnum || task.ResultKey == null)
+            if (task.State != TesState.COMPLETEEnum || task.ResultKey == null || task.ResultBucket == null)
             {
                 return Error(StatusCodes.Status404NotFound, FederatedTaskErrorCodes.ResultNotFound, "task has no result");
             }
@@ -346,7 +346,7 @@ namespace Submission.Api.Controllers
             byte[]? bytes;
             try
             {
-                bytes = await _resultStore.GetAsync(task.ResultKey, cancellationToken);
+                bytes = await _resultStore.GetAsync(task.ResultBucket, task.ResultKey, cancellationToken);
             }
             catch (Exception ex)
             {

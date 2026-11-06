@@ -16,7 +16,11 @@ namespace Submission.Api.Services
         /// <summary>Throws on any storage failure.</summary>
         Task PutAsync(string key, byte[] content, CancellationToken ct);
 
+        /// <summary>
+        /// Reads from the bucket the file was written to (the task's ResultBucket), which may differ from
+        /// <see cref="Bucket"/> after the setting changes.
+        /// </summary>
         /// <returns>Null when the object does not exist. Throws when storage is unreachable.</returns>
-        Task<byte[]?> GetAsync(string key, CancellationToken ct);
+        Task<byte[]?> GetAsync(string bucket, string key, CancellationToken ct);
     }
 }
