@@ -122,7 +122,11 @@ The `result` file:
 
 A 200 response has `result`, `result_bucket`, `result_key` and `result_sha256`. The last three are only for `COMPLETE`.
 
-If Submission cannot write the file, it answers 503 `storage_unavailable` and the task stays `QUEUED`. If the Agent gets 400 `invalid_result` or `result_too_large`, it sends a follow-up `EXECUTOR_ERROR` report with the same code. A 409 for a `COMPLETE` task carries `result_sha256` and `result_key`, because the Agent cannot call `GetTask`. The Agent compares the sha256 with its own copy and, if they are equal, tags the TRE copy with the key.
+If Submission cannot write the file, it answers 503 `storage_unavailable` and the task stays `QUEUED`. If the Agent gets 400 `invalid_result` or `result_too_large`, it sends a follow-up `EXECUTOR_ERROR` report with the same code. A 409 for a `COMPLETE` task carries `result_sha256` and `result_key`, because the Agent cannot call `GetTask`. The Agent compares the sha256 with its own copy and, if they are equal, tags the TRE copy with the key. The Agent only gets this 409 when two reports for the same task race. It does not ask again later.
+
+The tag can be missing on a released file. This happens when the Agent does not get the 200 (a timeout after Submission saved the result, or an Agent restart), or when tagging fails. Submission then has the task as `COMPLETE` and never gives it to the Agent again, so nothing adds the tag later. A missing tag does not mean the file was not released. To check, compare the TRE copy's SHA-256 with `result_sha256` from `GetTask`.
+
+TODO: re-tag released TRE copies that have no `released-key` (follow-up ticket).
 
 ## The federated TES profile
 
@@ -134,7 +138,7 @@ If Submission cannot write the file, it answers 503 `storage_unavailable` and th
 | filter `<op>` | `eq`, `gt`, `lt`, `gte` or `lte`. Split on the first two `:` only, so a value may contain `:`. |
 | `inputs` | Exactly 1. `url` is `dataset://<name>`. |
 | `outputs` | Must be null or empty. The result is returned in the task log. |
-| `tags` | `tres` names exactly one existing TRE. It is trimmed and lowercased, and must not contain `\|`. `study_id` must not be empty. |
+| `tags` | `tres` names exactly one existing TRE. It is trimmed and lowercased, and must not contain `\|`. `study_id` must not be empty. Both are at most 1024 characters, the limit for strings in the result document. |
 | `resources`, `volumes`, `name`, `description` | Accepted and ignored. |
 
 The dataset name must match `^[a-z0-9][a-z0-9_-]{0,62}$`.
@@ -227,7 +231,7 @@ TODO: researcher access scoped by study once study_id → project mapping exists
 | `internal_error` | An unexpected failure, for example storage is unreachable. The message is generic, so that bucket names and hosts do not leave the TRE. The details are in the Agent log. |
 | `tre_renamed` | The TRE was renamed in Submission before the task ran. Set by Submission, not the Agent. Enqueue the task again under the new name. |
 | `invalid_result` | Submission refused the result file. The Agent sends it as the code of a follow-up `EXECUTOR_ERROR`. The message names the field. |
-| `result_too_large` | The result file is over 65536 bytes. Set by the Agent before release, or by the follow-up to a 400 from Submission. |
+| `result_too_large` | The result file is over 65536 bytes. Set by the Agent's follow-up report after a 400 from Submission. |
 | `result_not_found` | API only (`GetTaskResult`). The task has no result file. |
 | `storage_unavailable` | API only. The orchestrator bucket is not reachable. |
 
@@ -357,7 +361,7 @@ Who can read what:
 Integrity:
 
 - Submission computes the SHA-256 of the received bytes and stores it as `result_sha256`. The Agent compares it with the SHA-256 of its own copy before it marks the copy as released.
-- The TRE copy then has the metadata `released-key` and `released-sha256`. A custodian can show that the released file is byte for byte the TRE copy.
+- The TRE copy then has the metadata `released-key` and `released-sha256`. A custodian can show that the released file is byte for byte the TRE copy. The tag can be missing on a released file (see "Reporting a result"). Without it, compare the copy with `result_sha256` from `GetTask`.
 - `GetTaskResult` checks the stored file against `result_sha256` on every read.
 - Submission logs each accepted release (task id, TRE, size, SHA-256) and never the content.
 
