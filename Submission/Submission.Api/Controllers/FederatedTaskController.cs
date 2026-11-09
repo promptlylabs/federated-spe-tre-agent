@@ -109,8 +109,12 @@ namespace Submission.Api.Controllers
             // name the TRE no longer has would sit at the front of the queue forever, so they are not handed out.
             var tasks = await _DbContext.FederatedTasks
                 .AsNoTracking()
-                .Where(x => x.TreId == tre.Id && x.State == TesState.QUEUEDEnum && x.TreName == treName)
-                .OrderBy(x => x.SubmittedAt)
+                .Where(x => x.TreId == tre.Id && x.TreName == treName
+                    && (x.Step == FederatedTaskStep.Running || x.Step == FederatedTaskStep.Queued || x.Step == FederatedTaskStep.WaitingForOutputApproval))
+                // Running first (the Agent may need to resume it), then queued, then waiting: waiting tasks are
+                // only polled for their approval outcome, so they must not crowd out tasks that need action.
+                .OrderBy(x => x.Step == FederatedTaskStep.Running ? 0 : x.Step == FederatedTaskStep.Queued ? 1 : 2)
+                .ThenBy(x => x.SubmittedAt)
                 .Take(MaxPendingTasks)
                 .ToListAsync(cancellationToken);
 
@@ -143,10 +147,16 @@ namespace Submission.Api.Controllers
             var state = ParseWireState(form.State);
             if (state == null)
             {
-                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "State must be COMPLETE, EXECUTOR_ERROR or SYSTEM_ERROR");
+                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "State must be COMPLETE, EXECUTOR_ERROR, SYSTEM_ERROR or CANCELED");
             }
 
             var files = Request.Form.Files;
+            FederatedTaskStep? rejectedStep = null;
+            if (state != TesState.CANCELEDEnum && form.RejectedAt is not null)
+            {
+                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "RejectedAt is only accepted with state CANCELED");
+            }
+
             if (state != TesState.COMPLETEEnum)
             {
                 // Without a code the orchestrator cannot tell what failed. Any well-formed code is accepted, not only
@@ -159,6 +169,26 @@ namespace Submission.Api.Controllers
                 if (!FederatedResultLimits.IsValidErrorMessage(form.ErrorMessage))
                 {
                     return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, $"ErrorMessage must be at most {FederatedResultLimits.MaxErrorMessageLength} characters with no control characters");
+                }
+
+                if (state == TesState.CANCELEDEnum)
+                {
+                    rejectedStep = form.RejectedAt switch
+                    {
+                        FederatedReportFields.RejectedAtInputChecks => FederatedTaskStep.RejectedByInputChecks,
+                        FederatedReportFields.RejectedAtOutputApproval => FederatedTaskStep.RejectedAtOutputApproval,
+                        _ => null
+                    };
+                    if (rejectedStep == null)
+                    {
+                        return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask,
+                            $"RejectedAt must be {FederatedReportFields.RejectedAtInputChecks} or {FederatedReportFields.RejectedAtOutputApproval} for a CANCELED report");
+                    }
+
+                    if (string.IsNullOrWhiteSpace(form.ErrorMessage))
+                    {
+                        return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "ErrorMessage is required for a rejection");
+                    }
                 }
 
                 if (files.Count > 0)
@@ -185,17 +215,19 @@ namespace Submission.Api.Controllers
 
             // A task that belongs to another TRE is indistinguishable from one that doesn't exist.
             var task = await _DbContext.FederatedTasks
+                .Include(x => x.StepChanges)
                 .FirstOrDefaultAsync(x => x.TaskId == taskId && x.TreId == tre.Id, cancellationToken);
             if (task == null)
             {
                 return TaskNotFound();
             }
 
-            if (task.State != TesState.QUEUEDEnum)
+            if (FederatedTaskSteps.IsFinal(task.Step))
             {
                 return AlreadyReported(task);
             }
 
+            Action<FederatedTask> apply;
             var response = new FederatedReportResponse { Result = true };
             if (state == TesState.COMPLETEEnum)
             {
@@ -241,12 +273,17 @@ namespace Submission.Api.Controllers
                         "the result could not be stored, try again later");
                 }
 
-                task.MoveTo(FederatedTaskStep.Released, DateTime.UtcNow);
-                task.ResultBucket = _resultStore.Bucket;
-                task.ResultKey = key;
-                task.ResultSha256 = sha;
-                task.DatasetSha256 = validation.Document!.DatasetSha256;
-                response.ResultBucket = task.ResultBucket;
+                var bucket = _resultStore.Bucket;
+                var datasetSha = validation.Document!.DatasetSha256;
+                apply = t =>
+                {
+                    t.MoveTo(FederatedTaskStep.Released, DateTime.UtcNow);
+                    t.ResultBucket = bucket;
+                    t.ResultKey = key;
+                    t.ResultSha256 = sha;
+                    t.DatasetSha256 = datasetSha;
+                };
+                response.ResultBucket = bucket;
                 response.ResultKey = key;
                 response.ResultSha256 = sha;
 
@@ -255,33 +292,55 @@ namespace Submission.Api.Controllers
             }
             else
             {
-                task.MoveTo(FederatedTaskStep.Failed, DateTime.UtcNow, state.Value, form.ErrorCode, form.ErrorMessage);
-                task.DatasetSha256 = form.DatasetSha256;
+                var target = rejectedStep ?? FederatedTaskStep.Failed;
+                apply = t =>
+                {
+                    t.MoveTo(target, DateTime.UtcNow, state.Value, form.ErrorCode, form.ErrorMessage);
+                    t.DatasetSha256 = form.DatasetSha256;
+                };
             }
 
-            try
+            for (var attempt = 0; attempt < MaxProgressAttempts; attempt++)
             {
-                await _DbContext.SaveChangesAsync(cancellationToken);
-            }
-            catch (DbUpdateConcurrencyException)
-            {
-                // Another report for this task was saved after this one read it as QUEUED. A file stored above stays
-                // as an orphan: its key is unique to its content, and nothing references it.
-                FederatedTask? winner = null;
+                apply(task);
                 try
                 {
-                    winner = await _DbContext.FederatedTasks.AsNoTracking()
-                        .FirstOrDefaultAsync(x => x.TaskId == task.TaskId, cancellationToken);
+                    await _DbContext.SaveChangesAsync(cancellationToken);
+                    return Ok(response);
                 }
-                catch (Exception ex)
+                catch (DbUpdateConcurrencyException)
                 {
-                    Log.Warning(ex, "Re-reading federated task {TaskId} after a concurrent report failed", task.TaskId);
-                }
+                    // Another report moved the task after it was read here. A file stored above stays as an orphan if
+                    // the other report wins: its key is unique to its content, and nothing references it.
+                    _DbContext.ChangeTracker.Clear();
+                    try
+                    {
+                        var current = await _DbContext.FederatedTasks
+                            .Include(x => x.StepChanges)
+                            .FirstOrDefaultAsync(x => x.TaskId == taskId && x.TreId == tre.Id, cancellationToken);
+                        if (current == null)
+                        {
+                            return TaskNotFound();
+                        }
 
-                return AlreadyReported(winner);
+                        if (FederatedTaskSteps.IsFinal(current.Step))
+                        {
+                            return AlreadyReported(current);
+                        }
+
+                        // A progress report moved it (e.g. to running): apply this final report on top of that.
+                        task = current;
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warning(ex, "Re-reading federated task {TaskId} after a concurrent report failed", taskId);
+                        return AlreadyReported(null);
+                    }
+                }
             }
 
-            return Ok(response);
+            return Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.InvalidTransition,
+                "the task is being updated by other reports, try again");
         }
 
         /// <summary>Attempts at one report when other reports for the same task keep winning the race.</summary>
@@ -475,6 +534,7 @@ namespace Submission.Api.Controllers
             "COMPLETE" => TesState.COMPLETEEnum,
             "EXECUTOR_ERROR" => TesState.EXECUTORERROREnum,
             "SYSTEM_ERROR" => TesState.SYSTEMERROREnum,
+            "CANCELED" => TesState.CANCELEDEnum,
             _ => null
         };
 

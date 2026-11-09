@@ -25,7 +25,8 @@ namespace Submission.Api.Tests
             var task = new FederatedTask
             {
                 TaskId = Guid.NewGuid(), TreId = treId, TreName = treName, StudyId = "s", Operation = "count",
-                Dataset = "d", TesTaskJson = "{}", State = state, SubmittedAt = DateTime.UtcNow
+                Dataset = "d", TesTaskJson = "{}", State = state, SubmittedAt = DateTime.UtcNow,
+                Step = state == TesState.COMPLETEEnum ? FederatedTaskStep.Released : FederatedTaskStep.Queued
             };
             db.FederatedTasks.Add(task);
             db.SaveChanges();
@@ -33,7 +34,7 @@ namespace Submission.Api.Tests
         }
 
         [Fact]
-        public void FailQueuedUnderOtherNames_FailsOnlyThisTresQueuedTasksUnderAnotherName()
+        public void FailUnfinishedUnderOtherNames_FailsOnlyThisTresQueuedTasksUnderAnotherName()
         {
             using var db = NewDb();
             var oldName = Seed(db, 1, "tre-a", TesState.QUEUEDEnum);
@@ -42,7 +43,7 @@ namespace Submission.Api.Tests
             var done = Seed(db, 1, "tre-a", TesState.COMPLETEEnum);
             var otherTre = Seed(db, 2, "tre-b", TesState.QUEUEDEnum);
 
-            var failed = FederatedTaskRenames.FailQueuedUnderOtherNames(db, 1, "Tre-A-2 ");
+            var failed = FederatedTaskRenames.FailUnfinishedUnderOtherNames(db, 1, "Tre-A-2 ");
             db.SaveChanges();
 
             Assert.Equal(2, failed);
@@ -61,13 +62,37 @@ namespace Submission.Api.Tests
             Assert.Equal(TesState.QUEUEDEnum, rows[otherTre.TaskId].State);
         }
 
+        [Theory]
+        [InlineData(FederatedTaskStep.Running)]
+        [InlineData(FederatedTaskStep.WaitingForOutputApproval)]
+        public void Rename_fails_running_and_waiting_tasks_under_old_name(FederatedTaskStep step)
+        {
+            using var db = NewDb();
+            var task = Seed(db, 1, "tre-a", TesState.QUEUEDEnum);
+            task.MoveTo(FederatedTaskStep.Queued, DateTime.UtcNow);
+            task.MoveTo(step, DateTime.UtcNow);
+            db.SaveChanges();
+
+            var failed = FederatedTaskRenames.FailUnfinishedUnderOtherNames(db, 1, "tre-a-2");
+            db.SaveChanges();
+
+            Assert.Equal(1, failed);
+            var row = db.FederatedTasks.AsNoTracking().Include(x => x.StepChanges).Single();
+            Assert.Equal(FederatedTaskStep.Failed, row.Step);
+            Assert.Equal(TesState.SYSTEMERROREnum, row.State);
+            Assert.Equal(FederatedTaskErrorCodes.TreRenamed, row.ErrorCode);
+            var last = row.StepChanges.OrderBy(c => c.Id).Last();
+            Assert.Equal(FederatedTaskStep.Failed, last.Step);
+            Assert.Equal(FederatedTaskErrorCodes.TreRenamed, last.ErrorCode);
+        }
+
         [Fact]
-        public void FailQueuedUnderOtherNames_CaseOnlyRename_FailsNothing()
+        public void FailUnfinishedUnderOtherNames_CaseOnlyRename_FailsNothing()
         {
             using var db = NewDb();
             var task = Seed(db, 1, "tre-a", TesState.QUEUEDEnum);
 
-            var failed = FederatedTaskRenames.FailQueuedUnderOtherNames(db, 1, "TRE-A");
+            var failed = FederatedTaskRenames.FailUnfinishedUnderOtherNames(db, 1, "TRE-A");
             db.SaveChanges();
 
             Assert.Equal(0, failed);

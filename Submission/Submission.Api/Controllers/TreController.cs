@@ -78,10 +78,10 @@ namespace Submission.Api.Controllers
                         _DbContext.Tres.Update(tre);
                         logtype = LogType.UpdateTre;
 
-                        var failedTasks = FederatedTaskRenames.FailQueuedUnderOtherNames(_DbContext, tre.Id, tre.Name);
+                        var failedTasks = FederatedTaskRenames.FailUnfinishedUnderOtherNames(_DbContext, tre.Id, tre.Name);
                         if (failedTasks > 0)
                         {
-                            Log.Information("{Function} Failed {Count} queued federated task(s) enqueued under an old name of TRE {TreName}",
+                            Log.Information("{Function} Failed {Count} unfinished federated task(s) enqueued under an old name of TRE {TreName}",
                                 "SaveTre", failedTasks, tre.Name);
                         }
                     }

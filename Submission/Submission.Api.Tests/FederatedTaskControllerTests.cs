@@ -95,6 +95,12 @@ namespace Submission.Api.Tests
                 Dataset = "cohort_2024",
                 TesTaskJson = JsonConvert.SerializeObject(task ?? MeanTask()),
                 State = state,
+                Step = state switch
+                {
+                    TesState.COMPLETEEnum => FederatedTaskStep.Released,
+                    TesState.EXECUTORERROREnum or TesState.SYSTEMERROREnum => FederatedTaskStep.Failed,
+                    _ => FederatedTaskStep.Queued
+                },
                 SubmittedAt = DateTime.UtcNow
             };
             db.FederatedTasks.Add(entity);
@@ -375,7 +381,8 @@ namespace Submission.Api.Tests
                 State = fields.GetValueOrDefault(FederatedReportFields.State),
                 ErrorCode = fields.GetValueOrDefault(FederatedReportFields.ErrorCode),
                 ErrorMessage = fields.GetValueOrDefault(FederatedReportFields.ErrorMessage),
-                DatasetSha256 = fields.GetValueOrDefault(FederatedReportFields.DatasetSha256)
+                DatasetSha256 = fields.GetValueOrDefault(FederatedReportFields.DatasetSha256),
+                RejectedAt = fields.GetValueOrDefault(FederatedReportFields.RejectedAt)
             };
             return controller.ReportResult(form);
         }
@@ -983,6 +990,166 @@ namespace Submission.Api.Tests
                 new FederatedApiError { ErrorCode = "task_not_found", ErrorMessage = "task not found" }, settings);
 
             Assert.Equal("{\"error_code\":\"task_not_found\",\"error_message\":\"task not found\"}", json);
+        }
+
+        private static FederatedTask SeedAtStep(ApplicationDbContext db, FederatedTaskStep step, int treId = 1, DateTime? submittedAt = null)
+        {
+            var task = SeedTask(db, treId, TesState.QUEUEDEnum);
+            task.SubmittedAt = submittedAt ?? task.SubmittedAt;
+            task.MoveTo(FederatedTaskStep.Queued, task.SubmittedAt);
+            if (step != FederatedTaskStep.Queued)
+            {
+                task.MoveTo(step, task.SubmittedAt.AddSeconds(1));
+            }
+            db.SaveChanges();
+            return task;
+        }
+
+        private static FederatedTask Reload(ApplicationDbContext db, Guid id) =>
+            db.FederatedTasks.AsNoTracking().Include(x => x.StepChanges).Single(x => x.TaskId == id);
+
+        private static void AssertUnchanged(ApplicationDbContext db, FederatedTask seeded)
+        {
+            var row = Reload(db, seeded.TaskId);
+            Assert.Equal(seeded.Step, row.Step);
+            Assert.Equal(seeded.State, row.State);
+            Assert.Equal(seeded.StepChanges.Count, row.StepChanges.Count);
+        }
+
+        [Theory]
+        [InlineData(FederatedTaskStep.Running)]
+        [InlineData(FederatedTaskStep.WaitingForOutputApproval)]
+        public async Task ReportResult_complete_from_unfinished_step_is_released(FederatedTaskStep from)
+        {
+            using var db = NewDb();
+            var seeded = SeedAtStep(db, from);
+
+            var result = await ReportComplete(AgentControllerFor(db, "tre-a-client", new FakeResultStore()), seeded);
+
+            Assert.IsType<OkObjectResult>(result);
+            var row = Reload(db, seeded.TaskId);
+            Assert.Equal(FederatedTaskStep.Released, row.Step);
+            Assert.Equal(TesState.COMPLETEEnum, row.State);
+        }
+
+        [Theory]
+        [InlineData("input_checks", FederatedTaskStep.RejectedByInputChecks, "invalid_filter")]
+        [InlineData("output_approval", FederatedTaskStep.RejectedAtOutputApproval, "output_rejected")]
+        public async Task ReportResult_canceled_is_rejected_with_reason(string rejectedAt, FederatedTaskStep expected, string code)
+        {
+            using var db = NewDb();
+            var seeded = SeedAtStep(db, FederatedTaskStep.Running);
+            var fields = Fields(seeded.TaskId, "CANCELED", code, "not allowed");
+            fields[FederatedReportFields.RejectedAt] = rejectedAt;
+
+            var result = await ReportAs(AgentControllerFor(db, "tre-a-client"), fields);
+
+            Assert.IsType<OkObjectResult>(result);
+            var row = Reload(db, seeded.TaskId);
+            Assert.Equal(expected, row.Step);
+            Assert.Equal(TesState.CANCELEDEnum, row.State);
+            Assert.Equal(code, row.ErrorCode);
+            Assert.Equal("not allowed", row.ResultErrorMessage);
+            var last = row.StepChanges.OrderBy(c => c.Id).Last();
+            Assert.Equal(expected, last.Step);
+            Assert.Equal(code, last.ErrorCode);
+            Assert.Equal("not allowed", last.ErrorMessage);
+        }
+
+        [Fact]
+        public async Task ReportResult_rejected_at_with_complete_is_400()
+        {
+            using var db = NewDb();
+            var seeded = SeedAtStep(db, FederatedTaskStep.Running);
+            var fields = Fields(seeded.TaskId, "COMPLETE");
+            fields[FederatedReportFields.RejectedAt] = "input_checks";
+
+            var result = await ReportAs(AgentControllerFor(db, "tre-a-client", new FakeResultStore()), fields,
+                (FederatedReportFields.ResultFile, "result.json", ValidResult(seeded)));
+
+            AssertError(result, 400, FederatedTaskErrorCodes.InvalidTask);
+            AssertUnchanged(db, seeded);
+        }
+
+        [Fact]
+        public async Task ReportResult_rejected_at_with_error_state_is_400()
+        {
+            using var db = NewDb();
+            var seeded = SeedAtStep(db, FederatedTaskStep.Running);
+            var fields = Fields(seeded.TaskId, "SYSTEM_ERROR", "boom", "x");
+            fields[FederatedReportFields.RejectedAt] = "input_checks";
+
+            var result = await ReportAs(AgentControllerFor(db, "tre-a-client"), fields);
+
+            AssertError(result, 400, FederatedTaskErrorCodes.InvalidTask);
+            AssertUnchanged(db, seeded);
+        }
+
+        [Theory]
+        [InlineData(null, "invalid_filter", "msg")]
+        [InlineData("elsewhere", "invalid_filter", "msg")]
+        [InlineData("input_checks", "invalid_filter", null)]
+        [InlineData("input_checks", "invalid_filter", "  ")]
+        public async Task ReportResult_canceled_with_bad_fields_is_400(string? rejectedAt, string code, string? message)
+        {
+            using var db = NewDb();
+            var seeded = SeedAtStep(db, FederatedTaskStep.Running);
+            var fields = Fields(seeded.TaskId, "CANCELED", code, message);
+            if (rejectedAt != null) fields[FederatedReportFields.RejectedAt] = rejectedAt;
+
+            var result = await ReportAs(AgentControllerFor(db, "tre-a-client"), fields);
+
+            AssertError(result, 400, FederatedTaskErrorCodes.InvalidTask);
+            AssertUnchanged(db, seeded);
+        }
+
+        [Fact]
+        public async Task ReportResult_canceled_with_file_is_400()
+        {
+            using var db = NewDb();
+            var seeded = SeedAtStep(db, FederatedTaskStep.Running);
+            var fields = Fields(seeded.TaskId, "CANCELED", "invalid_filter", "msg");
+            fields[FederatedReportFields.RejectedAt] = "input_checks";
+
+            var result = await ReportAs(AgentControllerFor(db, "tre-a-client"), fields,
+                (FederatedReportFields.ResultFile, "result.json", new byte[] { 1 }));
+
+            AssertError(result, 400, FederatedTaskErrorCodes.InvalidTask);
+            AssertUnchanged(db, seeded);
+        }
+
+        [Fact]
+        public async Task GetPending_returns_running_and_waiting_tasks()
+        {
+            using var db = NewDb();
+            SeedAtStep(db, FederatedTaskStep.Running);
+            SeedAtStep(db, FederatedTaskStep.WaitingForOutputApproval);
+            SeedAtStep(db, FederatedTaskStep.Released);
+
+            var result = await AgentControllerFor(db, "tre-a-client").GetPendingTasksForTre();
+
+            var tasks = Assert.IsType<List<TesTask>>(Assert.IsType<OkObjectResult>(result).Value);
+            Assert.Equal(new[] { TesState.RUNNINGEnum, TesState.PAUSEDEnum }, tasks.Select(t => t.State).ToArray());
+        }
+
+        [Fact]
+        public async Task GetPending_waiting_tasks_do_not_crowd_out_queued()
+        {
+            using var db = NewDb();
+            var start = DateTime.UtcNow.AddHours(-2);
+            for (var i = 0; i < 50; i++)
+            {
+                SeedAtStep(db, FederatedTaskStep.WaitingForOutputApproval, submittedAt: start.AddSeconds(i));
+            }
+            var queued = SeedAtStep(db, FederatedTaskStep.Queued, submittedAt: start.AddMinutes(10));
+            var running = SeedAtStep(db, FederatedTaskStep.Running, submittedAt: start.AddMinutes(20));
+
+            var result = await AgentControllerFor(db, "tre-a-client").GetPendingTasksForTre();
+
+            var tasks = Assert.IsType<List<TesTask>>(Assert.IsType<OkObjectResult>(result).Value);
+            Assert.Equal(50, tasks.Count);
+            Assert.Equal(running.TaskId.ToString(), tasks[0].Id);
+            Assert.Equal(queued.TaskId.ToString(), tasks[1].Id);
         }
 
         private static Task<IActionResult> Progress(FederatedTaskController controller, Guid taskId, string? step) =>
