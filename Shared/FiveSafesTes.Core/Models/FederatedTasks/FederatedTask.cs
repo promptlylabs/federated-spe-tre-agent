@@ -61,7 +61,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
 
         public FederatedTaskStep Step { get; set; } = FederatedTaskStep.Queued;
 
-        public List<FederatedTaskStepChange> StepChanges { get; set; } = [];
+        public virtual List<FederatedTaskStepChange> StepChanges { get; set; } = [];
 
         /// <summary>Moves the task to <paramref name="step"/>, updating its TES state and recording the change.</summary>
         public void MoveTo(FederatedTaskStep step, DateTime atUtc, TesState? failedState = null, string? errorCode = null, string? errorMessage = null)

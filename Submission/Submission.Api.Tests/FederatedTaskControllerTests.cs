@@ -120,6 +120,54 @@ namespace Submission.Api.Tests
         }
 
         [Fact]
+        public async Task Enqueue_records_queued_step()
+        {
+            using var db = NewDb();
+            await ControllerFor(db, "dare-admin").Enqueue(MeanTask());
+
+            var row = db.FederatedTasks.Include(x => x.StepChanges).Single();
+            Assert.Equal(FederatedTaskStep.Queued, row.Step);
+            var change = Assert.Single(row.StepChanges);
+            Assert.Equal(FederatedTaskStep.Queued, change.Step);
+            Assert.Equal(row.SubmittedAt, change.At);
+        }
+
+        [Fact]
+        public async Task GetTask_queued_task_shows_step_and_queued_at()
+        {
+            using var db = NewDb();
+            await ControllerFor(db, "dare-admin").Enqueue(MeanTask());
+            var id = db.FederatedTasks.Single().TaskId;
+
+            var task = await GetTask(db, id);
+
+            Assert.Equal(TesState.QUEUEDEnum, task.State);
+            var metadata = Assert.Single(task.Logs).Metadata;
+            Assert.Equal("queued", metadata["step"]);
+            Assert.True(metadata.ContainsKey("queued_at"));
+        }
+
+        [Fact]
+        public async Task GetTask_backfilled_task_has_no_running_time()
+        {
+            using var db = NewDb();
+            var seeded = SeedTask(db, 1, TesState.COMPLETEEnum);
+            var queuedAt = new DateTime(2026, 11, 1, 10, 0, 0, DateTimeKind.Utc);
+            var releasedAt = queuedAt.AddMinutes(5);
+            seeded.Step = FederatedTaskStep.Released;
+            seeded.StepChanges.Add(new FederatedTaskStepChange { Step = FederatedTaskStep.Queued, At = queuedAt });
+            seeded.StepChanges.Add(new FederatedTaskStepChange { Step = FederatedTaskStep.Released, At = releasedAt });
+            db.SaveChanges();
+
+            var task = await GetTask(db, seeded.TaskId);
+
+            var log = Assert.Single(task.Logs);
+            Assert.False(log.Metadata.ContainsKey("running_at"));
+            Assert.Null(log.StartTime);
+            Assert.Equal(new DateTimeOffset(releasedAt, TimeSpan.Zero), log.EndTime);
+        }
+
+        [Fact]
         public async Task Enqueue_StoresDefinedStateInTaskJson()
         {
             using var db = NewDb();
