@@ -59,6 +59,32 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         /// <summary>Reserved for DAAMS.</summary>
         public string? ApprovalReference { get; set; }
 
+        public FederatedTaskStep Step { get; set; } = FederatedTaskStep.Queued;
+
+        public List<FederatedTaskStepChange> StepChanges { get; set; } = [];
+
+        /// <summary>Moves the task to <paramref name="step"/>, updating its TES state and recording the change.</summary>
+        public void MoveTo(FederatedTaskStep step, DateTime atUtc, TesState? failedState = null, string? errorCode = null, string? errorMessage = null)
+        {
+            var state = FederatedTaskSteps.ToTesState(step, failedState);
+            Step = step;
+            State = state;
+            if (FederatedTaskSteps.IsFinal(step))
+            {
+                CompletedAt = atUtc;
+            }
+
+            ErrorCode = errorCode;
+            ResultErrorMessage = errorMessage;
+            StepChanges.Add(new FederatedTaskStepChange
+            {
+                Step = step,
+                At = atUtc,
+                ErrorCode = errorCode,
+                ErrorMessage = errorMessage
+            });
+        }
+
         public TesTask ToTesTask()
         {
             var task = JsonConvert.DeserializeObject<TesTask>(TesTaskJson) ?? new TesTask();
@@ -66,38 +92,55 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             task.State = State;
             task.CreationTime = AsUtc(SubmittedAt);
 
-            Dictionary<string, string>? metadata = State switch
+            var metadata = new Dictionary<string, string> { ["step"] = FederatedTaskSteps.ToWire(Step) };
+            DateTime? runningAt = null;
+            DateTime? finalAt = null;
+            foreach (var change in StepChanges.OrderBy(c => c.At).ThenBy(c => c.Id))
             {
-                TesState.COMPLETEEnum => new Dictionary<string, string>
+                var key = FederatedTaskSteps.ToWire(change.Step) + "_at";
+                if (metadata.ContainsKey(key))
                 {
-                    ["result_bucket"] = ResultBucket ?? "",
-                    ["result_key"] = ResultKey ?? "",
-                    ["result_sha256"] = ResultSha256 ?? ""
-                },
-                TesState.EXECUTORERROREnum or TesState.SYSTEMERROREnum => new Dictionary<string, string>
-                {
-                    ["error_code"] = ErrorCode ?? "",
-                    ["error_message"] = ResultErrorMessage ?? ""
-                },
-                _ => null
-            };
-
-            if (metadata is not null)
-            {
-                if (DatasetSha256 is not null)
-                {
-                    metadata["dataset_sha256"] = DatasetSha256;
+                    continue;
                 }
 
-                task.Logs =
-                [
-                    new TesTaskLog
-                    {
-                        EndTime = CompletedAt is { } completed ? AsUtc(completed) : null,
-                        Metadata = metadata
-                    }
-                ];
+                metadata[key] = DateTime.SpecifyKind(change.At, DateTimeKind.Utc).ToString("O");
+                if (change.Step == FederatedTaskStep.Running)
+                {
+                    runningAt = change.At;
+                }
+
+                if (change.Step == Step && FederatedTaskSteps.IsFinal(Step))
+                {
+                    finalAt = change.At;
+                }
             }
+
+            if (Step == FederatedTaskStep.Released)
+            {
+                metadata["result_bucket"] = ResultBucket ?? "";
+                metadata["result_key"] = ResultKey ?? "";
+                metadata["result_sha256"] = ResultSha256 ?? "";
+            }
+            else if (Step is FederatedTaskStep.Failed or FederatedTaskStep.RejectedByInputChecks or FederatedTaskStep.RejectedAtOutputApproval)
+            {
+                metadata["error_code"] = ErrorCode ?? "";
+                metadata["error_message"] = ResultErrorMessage ?? "";
+            }
+
+            if (DatasetSha256 is not null)
+            {
+                metadata["dataset_sha256"] = DatasetSha256;
+            }
+
+            task.Logs =
+            [
+                new TesTaskLog
+                {
+                    StartTime = runningAt is { } started ? AsUtc(started) : null,
+                    EndTime = finalAt is { } ended ? AsUtc(ended) : null,
+                    Metadata = metadata
+                }
+            ];
 
             return task;
         }

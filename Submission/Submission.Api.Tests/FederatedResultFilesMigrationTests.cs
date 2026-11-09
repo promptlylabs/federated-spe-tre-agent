@@ -38,11 +38,12 @@ namespace Submission.Api.Tests
                 ResultSha256 = sha,
                 DatasetSha256 = new string('b', 64)
             };
+            task.MoveTo(FederatedTaskStep.Released, new DateTime(2026, 11, 9, 10, 5, 0, DateTimeKind.Utc));
 
             var metadata = task.ToTesTask().Logs![0].Metadata;
 
             Assert.Equal(
-                new[] { "dataset_sha256", "result_bucket", "result_key", "result_sha256" },
+                new[] { "dataset_sha256", "released_at", "result_bucket", "result_key", "result_sha256", "step" },
                 metadata.Keys.OrderBy(k => k, StringComparer.Ordinal).ToArray());
         }
     }

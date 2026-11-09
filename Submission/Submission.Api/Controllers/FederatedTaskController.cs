@@ -79,9 +79,9 @@ namespace Submission.Api.Controllers
                 Operation = spec.Operation,
                 Dataset = spec.Dataset,
                 TesTaskJson = JsonConvert.SerializeObject(task),
-                State = TesState.QUEUEDEnum,
                 SubmittedAt = DateTime.UtcNow
             };
+            entity.MoveTo(FederatedTaskStep.Queued, entity.SubmittedAt);
             _DbContext.FederatedTasks.Add(entity);
             await _DbContext.SaveChangesAsync(cancellationToken);
 
@@ -241,8 +241,7 @@ namespace Submission.Api.Controllers
                         "the result could not be stored, try again later");
                 }
 
-                task.State = TesState.COMPLETEEnum;
-                task.CompletedAt = DateTime.UtcNow;
+                task.MoveTo(FederatedTaskStep.Released, DateTime.UtcNow);
                 task.ResultBucket = _resultStore.Bucket;
                 task.ResultKey = key;
                 task.ResultSha256 = sha;
@@ -256,11 +255,8 @@ namespace Submission.Api.Controllers
             }
             else
             {
-                task.State = state.Value;
-                task.CompletedAt = DateTime.UtcNow;
+                task.MoveTo(FederatedTaskStep.Failed, DateTime.UtcNow, state.Value, form.ErrorCode, form.ErrorMessage);
                 task.DatasetSha256 = form.DatasetSha256;
-                task.ErrorCode = form.ErrorCode;
-                task.ResultErrorMessage = form.ErrorMessage;
             }
 
             try
@@ -304,6 +300,7 @@ namespace Submission.Api.Controllers
 
             var task = await _DbContext.FederatedTasks
                 .AsNoTracking()
+                .Include(x => x.StepChanges)
                 .FirstOrDefaultAsync(x => x.TaskId == taskId, cancellationToken);
             if (task == null)
             {

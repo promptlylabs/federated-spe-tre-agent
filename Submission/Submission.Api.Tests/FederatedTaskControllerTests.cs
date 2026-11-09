@@ -198,7 +198,9 @@ namespace Submission.Api.Tests
             var pending = Assert.IsType<OkObjectResult>(
                 await AgentControllerFor(db, "tre-a-client").GetPendingTasksForTre());
             var returned = Assert.Single(Assert.IsType<List<TesTask>>(pending.Value));
-            Assert.Null(returned.Logs);
+            var metadata = Assert.Single(returned.Logs!).Metadata;
+            Assert.DoesNotContain("value", metadata.Keys);
+            Assert.Equal("queued", metadata["step"]);
             Assert.Equal(TesState.QUEUEDEnum, returned.State);
             Assert.NotEqual("spoofed", returned.Id);
         }
