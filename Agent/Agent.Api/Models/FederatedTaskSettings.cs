@@ -30,6 +30,17 @@ namespace Agent.Api.Models
         /// </summary>
         public string UploadPolicyName { get; set; } = "dataset-upload";
 
+        /// <summary>
+        /// Dedicated TRE bucket holding one result file per federated task. Separate from the project
+        /// output buckets so its access can be locked down on its own. Created at startup if missing.
+        /// </summary>
+        public string OutputBucket { get; set; } = "federated-outputs";
+
+        /// <summary>
+        /// Name of the RustFS canned policy, created at startup, that grants read-only access to the output bucket.
+        /// </summary>
+        public string OutputReadPolicyName { get; set; } = "federated-outputs-read";
+
         public static FederatedTaskSettings FromConfiguration(IConfiguration configuration)
         {
             var section = configuration.GetSection(nameof(FederatedTaskSettings));

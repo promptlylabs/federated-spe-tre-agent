@@ -103,6 +103,9 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
                 return Fail(FederatedTaskErrorCodes.InvalidTask, $"tag '{TresTag}' must name exactly one TRE");
             if (!tags.TryGetValue(StudyIdTag, out var studyId) || string.IsNullOrWhiteSpace(studyId))
                 return Fail(FederatedTaskErrorCodes.InvalidTask, $"tag '{StudyIdTag}' is required");
+            if (tre.Length > FederatedResultLimits.MaxStringLength || studyId.Length > FederatedResultLimits.MaxStringLength)
+                return Fail(FederatedTaskErrorCodes.InvalidTask,
+                    $"tags '{TresTag}' and '{StudyIdTag}' must be at most {FederatedResultLimits.MaxStringLength} characters");
 
             var spec = new FederatedTaskSpec(operation, dataset, column, filters, studyId, tre.Trim().ToLowerInvariant());
             return new FederatedTaskParseResult(spec, null, null);

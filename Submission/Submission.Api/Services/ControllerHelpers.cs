@@ -44,6 +44,27 @@ namespace Submission.Api.Services
         }
 
         /// <summary>
+        /// Resolves the TRE whose Keycloak service account made this request, or null. Unlike GetUserTre it does not
+        /// accept Tre.AdminUsername, so a human TRE admin is never taken for the Agent. Requires the token's azp to
+        /// equal the TRE's KeycloakClientId and preferred_username to be service-account-&lt;KeycloakClientId&gt;.
+        /// </summary>
+        public static Tre? GetAgentTre(ClaimsPrincipal user, ApplicationDbContext db)
+        {
+            var azp = user.FindFirst("azp")?.Value ?? user.FindFirst("client_id")?.Value;
+            var username = user.FindFirst("preferred_username")?.Value;
+            if (string.IsNullOrEmpty(azp) || string.IsNullOrEmpty(username))
+            {
+                return null;
+            }
+
+            var candidates = db.Tres.Where(x => x.KeycloakClientId == azp).ToList();
+            return candidates.FirstOrDefault(x =>
+                !string.IsNullOrEmpty(x.KeycloakClientId) &&
+                string.Equals(x.KeycloakClientId, azp, StringComparison.Ordinal) &&
+                string.Equals("service-account-" + x.KeycloakClientId, username, StringComparison.OrdinalIgnoreCase));
+        }
+
+        /// <summary>
         /// Determine whether a user has a TRE without throwing an exception.
         /// </summary>
         public static bool IsUserAssignedTRE(ClaimsPrincipal loggedInUser, ApplicationDbContext dbContext)

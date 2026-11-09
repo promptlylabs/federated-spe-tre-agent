@@ -1,0 +1,64 @@
+using FiveSafesTes.Core.Services;
+using Serilog;
+using Submission.Api.Models;
+
+namespace Submission.Api.Services
+{
+    public class RustFsFederatedResultStore : IFederatedResultStore
+    {
+        private readonly IMinioHelper _minio;
+
+        // Own helper on its own settings: never the DI IMinioHelper, which is the researcher-facing project store.
+        public RustFsFederatedResultStore(FederatedResultsStorageSettings settings)
+            : this(settings.Bucket, new MinioHelper(settings.ToMinioSettings()))
+        {
+        }
+
+        public RustFsFederatedResultStore(string bucket, IMinioHelper minio)
+        {
+            Bucket = bucket;
+            _minio = minio;
+        }
+
+        public string Bucket { get; }
+
+        public async Task<bool> EnsureReadyAsync()
+        {
+            try
+            {
+                if (!await _minio.EnsureBucketAsync(Bucket))
+                {
+                    Log.Error("Federated results bucket {Bucket} could not be created or found", Bucket);
+                    return false;
+                }
+
+                var hasPolicy = await _minio.HasBucketPolicyAsync(Bucket);
+                if (hasPolicy == true)
+                {
+                    Log.Error("Federated results bucket {Bucket} has a bucket policy; remove it, results must be reachable only through the API", Bucket);
+                }
+                else if (hasPolicy == null)
+                {
+                    Log.Warning("Federated results bucket {Bucket}: the bucket policy was not checked, because the account lacks s3:GetBucketPolicy", Bucket);
+                }
+
+                return true;
+            }
+            catch (Exception e)
+            {
+                Log.Error(e, "Federated results bucket {Bucket} is not ready", Bucket);
+                return false;
+            }
+        }
+
+        // The first write creates the bucket if it is missing (storage may have been down at startup).
+        public Task PutAsync(string key, byte[] content, CancellationToken ct) =>
+            MissingBucketRecovery.RunAsync(
+                () => _minio.PutObjectAsync(Bucket, key, content, "application/json", null, ct),
+                () => _minio.EnsureBucketAsync(Bucket),
+                Bucket);
+
+        public Task<byte[]?> GetAsync(string bucket, string key, CancellationToken ct) =>
+            _minio.GetObjectBytesAsync(bucket, key, ct);
+    }
+}

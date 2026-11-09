@@ -91,15 +91,12 @@ namespace Submission.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
-                    b.Property<string>("ErrorCode")
-                        .HasColumnType("text");
-
-                    b.Property<string>("ResultErrorMessage")
-                        .HasColumnType("text");
-
                     b.Property<string>("DatasetSha256")
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
+
+                    b.Property<string>("ErrorCode")
+                        .HasColumnType("text");
 
                     b.Property<string>("ManifestHash")
                         .HasColumnType("text");
@@ -108,11 +105,20 @@ namespace Submission.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
-                    b.Property<int?>("ResultRowCount")
-                        .HasColumnType("integer");
+                    b.Property<string>("ResultBucket")
+                        .HasMaxLength(63)
+                        .HasColumnType("character varying(63)");
 
-                    b.Property<decimal?>("ResultValue")
-                        .HasColumnType("numeric");
+                    b.Property<string>("ResultErrorMessage")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ResultKey")
+                        .HasMaxLength(256)
+                        .HasColumnType("character varying(256)");
+
+                    b.Property<string>("ResultSha256")
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
 
                     b.Property<string>("SiteToken")
                         .HasColumnType("text");

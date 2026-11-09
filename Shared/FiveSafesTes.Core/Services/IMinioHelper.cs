@@ -45,6 +45,29 @@ namespace FiveSafesTes.Core.Services
 
         Task WriteToStore(string bucketName, string objectKey, MemoryStream file);
 
+        /// <summary>Puts an object under its full key (folder prefixes kept). Throws on failure.</summary>
+        Task PutObjectAsync(string bucketName, string objectKey, byte[] content, string contentType,
+            IDictionary<string, string>? metadata = null, CancellationToken ct = default);
+
+        /// <summary>Reads an object fully. Returns null when the key does not exist; throws on other failures.</summary>
+        Task<byte[]?> GetObjectBytesAsync(string bucketName, string objectKey, CancellationToken ct = default);
+
+        /// <summary>Replaces user metadata (bare key names) by copying the object onto itself, keeping its content type.</summary>
+        Task SetObjectMetadataAsync(string bucketName, string objectKey, IDictionary<string, string> metadata,
+            CancellationToken ct = default);
+
+        /// <summary>
+        /// True when the bucket has a non-empty policy; false when none is set; null when the caller may not read the
+        /// policy (AccessDenied). Throws otherwise.
+        /// </summary>
+        Task<bool?> HasBucketPolicyAsync(string bucketName);
+
+        /// <summary>
+        /// Creates the bucket if it does not exist, using only bucket-scoped calls (GetBucketLocation, CreateBucket), so
+        /// an account limited to this bucket can use it. Returns false, and logs, when the check or creation fails.
+        /// </summary>
+        Task<bool> EnsureBucketAsync(string bucketName);
+
         Task<MinioCommandResult> CreateMinioSecretAsync(string accessKey, string secretKey = "", CancellationToken cancellationToken = default);
         Task<MinioCommandResult> DeleteMinioSecretAsync(string accessKey, CancellationToken cancellationToken = default);
         Task<MinioCommandResult> ListMinioSecretsAsync(CancellationToken cancellationToken = default);

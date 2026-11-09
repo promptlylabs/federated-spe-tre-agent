@@ -4,20 +4,21 @@ using FiveSafesTes.Core.Models.Tes;
 namespace Agent.Api.FederatedTasks
 {
     /// <summary>
-    /// Talks to the Submission layer's federated task endpoints.
+    /// Talks to the Submission layer's federated task endpoints as the TRE service account.
     /// </summary>
     public interface IFederatedTaskClient
     {
         /// <summary>
-        /// False until Submission credentials have been uploaded.
+        /// True only when the TRE service account credentials have been uploaded (ConfigInputMethod Upload).
         /// </summary>
         bool IsConfigured { get; }
 
         Task<List<TesTask>> GetPendingAsync();
 
         /// <summary>
-        /// Returns true if Submission accepted the report.
+        /// Sends the report, with the result file for a COMPLETE one. Returns what Submission answered;
+        /// throws only on a network or token failure.
         /// </summary>
-        Task<bool> ReportAsync(FederatedTaskResultReport report);
+        Task<FederatedReportOutcome> ReportAsync(FederatedTaskResultReport report, byte[]? resultFile);
     }
 }
