@@ -284,6 +284,79 @@ namespace Submission.Api.Controllers
             return Ok(response);
         }
 
+        /// <summary>Attempts at one report when other reports for the same task keep winning the race.</summary>
+        private const int MaxProgressAttempts = 3;
+
+        [Authorize(Roles = "dare-tre-admin")]
+        [HttpPost]
+        [Route("ReportProgress")]
+        [ValidateModelState]
+        [SwaggerOperation("ReportProgress")]
+        [SwaggerResponse(statusCode: 200, type: typeof(FederatedProgressResponse), description: "")]
+        [SwaggerResponse(statusCode: 400, type: typeof(FederatedApiError), description: "")]
+        [SwaggerResponse(statusCode: 403, description: "The caller is not a TRE Agent service account")]
+        [SwaggerResponse(statusCode: 404, type: typeof(FederatedApiError), description: "")]
+        [SwaggerResponse(statusCode: 409, type: typeof(FederatedApiError), description: "")]
+        public virtual async Task<IActionResult> ReportProgress([FromBody] FederatedTaskProgressReport report, CancellationToken cancellationToken = default)
+        {
+            var tre = ControllerHelpers.GetAgentTre(User, _DbContext);
+            if (tre == null)
+            {
+                return Forbid();
+            }
+
+            if (!FederatedTaskSteps.TryParse(report.Step, out var step)
+                || step is not (FederatedTaskStep.Running or FederatedTaskStep.WaitingForOutputApproval))
+            {
+                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask,
+                    "Step must be running or waiting_for_output_approval");
+            }
+
+            if (!Guid.TryParse(report.TaskId, out var taskId))
+            {
+                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "TaskId must be a GUID");
+            }
+
+            for (var attempt = 0; attempt < MaxProgressAttempts; attempt++)
+            {
+                // A task that belongs to another TRE is indistinguishable from one that doesn't exist.
+                var task = await _DbContext.FederatedTasks
+                    .Include(x => x.StepChanges)
+                    .FirstOrDefaultAsync(x => x.TaskId == taskId && x.TreId == tre.Id, cancellationToken);
+                if (task == null)
+                {
+                    return TaskNotFound();
+                }
+
+                switch (FederatedTaskSteps.Check(task.Step, step))
+                {
+                    case TransitionResult.NoChange:
+                        return Ok(new FederatedProgressResponse { Step = FederatedTaskSteps.ToWire(task.Step) });
+                    case TransitionResult.Backwards:
+                        return Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.InvalidTransition,
+                            $"task is at step '{FederatedTaskSteps.ToWire(task.Step)}' and cannot go back to '{FederatedTaskSteps.ToWire(step)}'");
+                    case TransitionResult.AlreadyFinal:
+                        return AlreadyReported(task);
+                }
+
+                task.MoveTo(step, DateTime.UtcNow);
+                try
+                {
+                    await _DbContext.SaveChangesAsync(cancellationToken);
+                    return Ok(new FederatedProgressResponse { Step = FederatedTaskSteps.ToWire(step) });
+                }
+                catch (DbUpdateConcurrencyException)
+                {
+                    // Another report moved the task after it was read here. Drop the stale copy and decide again
+                    // against the step the winner left.
+                    _DbContext.ChangeTracker.Clear();
+                }
+            }
+
+            return Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.InvalidTransition,
+                "the task is being updated by other reports, try again");
+        }
+
         [Authorize(Roles = "dare-control-admin")]
         [HttpGet]
         [Route("GetTask")]

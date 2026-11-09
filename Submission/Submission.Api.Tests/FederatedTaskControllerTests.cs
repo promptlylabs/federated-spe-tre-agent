@@ -984,5 +984,148 @@ namespace Submission.Api.Tests
 
             Assert.Equal("{\"error_code\":\"task_not_found\",\"error_message\":\"task not found\"}", json);
         }
+
+        private static Task<IActionResult> Progress(FederatedTaskController controller, Guid taskId, string? step) =>
+            controller.ReportProgress(new FederatedTaskProgressReport { TaskId = taskId.ToString(), Step = step });
+
+        [Fact]
+        public async Task ReportProgress_queued_to_running_records_history()
+        {
+            using var db = NewDb();
+            var seeded = SeededTask(db);
+
+            var result = await Progress(AgentControllerFor(db, "tre-a-client"), seeded.TaskId, "running");
+
+            var ok = Assert.IsType<OkObjectResult>(result);
+            Assert.Equal("running", Assert.IsType<FederatedProgressResponse>(ok.Value).Step);
+            var row = db.FederatedTasks.AsNoTracking().Include(x => x.StepChanges).Single();
+            Assert.Equal(FederatedTaskStep.Running, row.Step);
+            Assert.Equal(TesState.RUNNINGEnum, row.State);
+            Assert.Contains(row.StepChanges, c => c.Step == FederatedTaskStep.Running);
+        }
+
+        [Fact]
+        public async Task ReportProgress_repeat_running_is_ok_and_adds_no_history()
+        {
+            using var db = NewDb();
+            var seeded = SeededTask(db);
+            var controller = AgentControllerFor(db, "tre-a-client");
+            await Progress(controller, seeded.TaskId, "running");
+
+            var result = await Progress(controller, seeded.TaskId, "running");
+
+            var ok = Assert.IsType<OkObjectResult>(result);
+            Assert.Equal("running", Assert.IsType<FederatedProgressResponse>(ok.Value).Step);
+            var row = db.FederatedTasks.AsNoTracking().Include(x => x.StepChanges).Single();
+            Assert.Single(row.StepChanges, c => c.Step == FederatedTaskStep.Running);
+        }
+
+        [Fact]
+        public async Task ReportProgress_waiting_then_running_is_409_invalid_transition()
+        {
+            using var db = NewDb();
+            var seeded = SeededTask(db);
+            var controller = AgentControllerFor(db, "tre-a-client");
+            await Progress(controller, seeded.TaskId, "waiting_for_output_approval");
+
+            var result = await Progress(controller, seeded.TaskId, "running");
+
+            AssertError(result, 409, FederatedTaskErrorCodes.InvalidTransition);
+            Assert.Equal(FederatedTaskStep.WaitingForOutputApproval, db.FederatedTasks.AsNoTracking().Single().Step);
+        }
+
+        [Fact]
+        public async Task ReportProgress_on_released_is_409_already_reported_with_sha()
+        {
+            using var db = NewDb();
+            var seeded = SeededTask(db);
+            var bytes = ValidResult(seeded);
+            await ReportComplete(AgentControllerFor(db, "tre-a-client"), seeded, bytes);
+
+            var result = await Progress(AgentControllerFor(db, "tre-a-client"), seeded.TaskId, "running");
+
+            var error = AssertError(result, 409, FederatedTaskErrorCodes.TaskAlreadyReported);
+            Assert.Equal(FederatedResultDocumentJson.Sha256Hex(bytes), error.ResultSha256);
+            Assert.NotNull(error.ResultKey);
+        }
+
+        [Theory]
+        [InlineData("released")]
+        [InlineData("failed")]
+        [InlineData("queued")]
+        [InlineData("bogus")]
+        [InlineData(null)]
+        public async Task ReportProgress_final_step_name_is_400(string? step)
+        {
+            using var db = NewDb();
+            var seeded = SeededTask(db);
+
+            var result = await Progress(AgentControllerFor(db, "tre-a-client"), seeded.TaskId, step);
+
+            AssertError(result, 400, FederatedTaskErrorCodes.InvalidTask);
+            Assert.Equal(FederatedTaskStep.Queued, db.FederatedTasks.AsNoTracking().Single().Step);
+        }
+
+        [Fact]
+        public async Task ReportProgress_bad_guid_is_400()
+        {
+            using var db = NewDb();
+
+            var result = await AgentControllerFor(db, "tre-a-client")
+                .ReportProgress(new FederatedTaskProgressReport { TaskId = "nope", Step = "running" });
+
+            AssertError(result, 400, FederatedTaskErrorCodes.InvalidTask);
+        }
+
+        [Fact]
+        public async Task ReportProgress_other_tre_is_404()
+        {
+            using var db = NewDb();
+            var seeded = SeededTask(db);
+
+            var result = await Progress(AgentControllerFor(db, "tre-b-client"), seeded.TaskId, "running");
+
+            AssertError(result, 404, FederatedTaskErrorCodes.TaskNotFound);
+            Assert.Equal(FederatedTaskStep.Queued, db.FederatedTasks.AsNoTracking().Single().Step);
+        }
+
+        [Fact]
+        public async Task ReportProgress_non_agent_is_403()
+        {
+            using var db = NewDb();
+            var seeded = SeededTask(db);
+
+            var result = await Progress(ControllerFor(db, "dare-admin"), seeded.TaskId, "running");
+
+            Assert.IsType<ForbidResult>(result);
+        }
+
+        [Fact]
+        public async Task ReportProgress_racing_final_report_is_409_not_500()
+        {
+            var name = Guid.NewGuid().ToString();
+            using var setup = OpenDb(name);
+            setup.Tres.Add(NewTre(1, "tre-a", "tre-a-admin", "tre-a-client"));
+            setup.SaveChanges();
+            var seeded = SeedTask(setup, 1, TesState.QUEUEDEnum);
+
+            // Context A has read the task as queued before the final report is saved through context B.
+            using var dbA = OpenDb(name);
+            using var dbB = OpenDb(name);
+            dbA.FederatedTasks.Include(x => x.StepChanges).Single();
+            var bytes = ValidResult(seeded);
+            Assert.IsType<OkObjectResult>(await ReportComplete(AgentControllerFor(dbB, "tre-a-client"), seeded, bytes));
+
+            var result = await Progress(AgentControllerFor(dbA, "tre-a-client"), seeded.TaskId, "running");
+
+            var error = AssertError(result, 409, FederatedTaskErrorCodes.TaskAlreadyReported);
+            Assert.Equal(FederatedResultDocumentJson.Sha256Hex(bytes), error.ResultSha256);
+            using var check = OpenDb(name);
+            var row = check.FederatedTasks.Include(x => x.StepChanges).Single();
+            Assert.Equal(FederatedTaskStep.Released, row.Step);
+            Assert.Equal(TesState.COMPLETEEnum, row.State);
+            // The in-memory provider has no transactions, so a running history row added in the failed save can
+            // survive here; a relational provider rolls the whole save back. Step and State are the guarantee tested.
+        }
     }
 }
