@@ -121,16 +121,7 @@ namespace Agent.Api
                 }
                 catch (Exception ex)
                 {
-                    // An outage is retried at the next poll, but not for ever: a bucket that is wrongly configured or
-                    // denied would otherwise leave the task unfinished with nothing the orchestrator can see.
-                    if (!HasWaitedTooLong(task))
-                    {
-                        Log.Warning(ex, "Federated tasks: the dataset bucket could not be listed for task {TaskId}; it keeps its step and is tried again at the next poll",
-                            taskId);
-                        return;
-                    }
-
-                    await ReportErrorAsync(InternalError(taskId, ex));
+                    await RetryOrGiveUpAsync(task, taskId, ex, "listed");
                     return;
                 }
 
@@ -145,7 +136,26 @@ namespace Agent.Api
                 if (task.State == TesState.QUEUEDEnum && !await ReportRunningAsync(taskId))
                     return;
 
-                var computed = await RunAsync(prepared.Spec!, resolved.FileKey!, taskId);
+                // The task is running now. If the bucket fails during the read, it stays running and is resumed at the
+                // next poll, under the same time limit as a failed listing. Any other fault cannot be fixed by
+                // waiting, so it is reported at once.
+                DatasetReadResult dataset;
+                try
+                {
+                    dataset = await _reader.ReadAsync(resolved.FileKey!, CancellationToken.None);
+                }
+                catch (DatasetStoreException ex)
+                {
+                    await RetryOrGiveUpAsync(task, taskId, ex, "read");
+                    return;
+                }
+                catch (Exception ex)
+                {
+                    await ReportErrorAsync(InternalError(taskId, ex));
+                    return;
+                }
+
+                var computed = Compute(prepared.Spec!, dataset, taskId);
                 if (computed.ErrorReport != null)
                 {
                     await ReportErrorAsync(computed.ErrorReport);
@@ -315,13 +325,12 @@ namespace Agent.Api
         }
 
         /// <summary>
-        /// Runs one task against its dataset file. Returns a document or an error report. Does not touch result storage.
+        /// Runs one task against its parsed dataset. Returns a document or an error report. Does not touch storage.
         /// </summary>
-        private async Task<Computed> RunAsync(FederatedTaskSpec spec, string fileKey, string taskId)
+        private Computed Compute(FederatedTaskSpec spec, DatasetReadResult dataset, string taskId)
         {
             try
             {
-                var dataset = await _reader.ReadAsync(fileKey, CancellationToken.None);
                 if (!dataset.IsSuccess)
                     return new Computed(null, Error(taskId, dataset.ErrorCode!, dataset.ErrorMessage, dataset.Sha256));
 
@@ -346,6 +355,22 @@ namespace Agent.Api
             {
                 return new Computed(null, InternalError(taskId, ex));
             }
+        }
+
+        /// <summary>
+        /// A dataset store failure is retried at the next poll, but not for ever: a bucket that is wrongly configured
+        /// or denied would otherwise leave the task unfinished with nothing the orchestrator can see.
+        /// </summary>
+        private async Task RetryOrGiveUpAsync(TesTask task, string taskId, Exception ex, string action)
+        {
+            if (!HasWaitedTooLong(task))
+            {
+                Log.Warning(ex, "Federated tasks: the dataset bucket could not be {Action} for task {TaskId}; it keeps its step and is tried again at the next poll",
+                    action, taskId);
+                return;
+            }
+
+            await ReportErrorAsync(InternalError(taskId, ex));
         }
 
         /// <summary>

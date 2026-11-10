@@ -219,7 +219,9 @@ public class DoFederatedTaskWorkTests
         var store = Store().Add("dataset/other/other.csv", "a\n1\n");
         store.ThrowOnOpenKey = "dataset/other/other.csv";
         var client = new FakeClient();
-        client.Pending.Add(PendingTask(T1, "other", "count", null));
+        var failing = PendingTask(T1, "other", "count", null);
+        failing.CreationTime = Now.AddMinutes(-60); // old enough that the read failure is reported, not retried
+        client.Pending.Add(failing);
         client.Pending.Add(PendingTask(T2, "cohort_2024", "count", null));
 
         await Work(client, store).Execute();
@@ -830,5 +832,70 @@ public class DoFederatedTaskWorkTests
         await Work(client, new FailingResolveReader()).Execute();
 
         Assert.Equal("internal_error", Assert.Single(client.Reports).ErrorCode);
+    }
+
+    [Fact]
+    public async Task Execute_dataset_read_fails_on_a_young_queued_task_marks_it_running_and_reports_nothing_else()
+    {
+        var client = OneMean();
+        var outputs = new FakeResultOutputStore();
+
+        await Work(client, new FuncReader(() => throw new DatasetStoreException("read failed", new IOException("store down"))), outputs: outputs).Execute();
+
+        // Marked running before the read; the failed read leaves it running for the next poll to resume.
+        Assert.Single(client.ProgressCalls);
+        Assert.Empty(client.Calls);
+        Assert.Empty(outputs.Files);
+    }
+
+    [Fact]
+    public async Task Execute_dataset_read_fails_on_a_young_running_task_reports_nothing()
+    {
+        var client = OneMean();
+        client.Pending[0].State = TesState.RUNNINGEnum;
+
+        await Work(client, new FuncReader(() => throw new DatasetStoreException("read failed", new IOException("store down")))).Execute();
+
+        Assert.Empty(client.ProgressCalls);
+        Assert.Empty(client.Calls);
+    }
+
+    [Fact]
+    public async Task Execute_dataset_read_fails_for_too_long_reports_internal_error()
+    {
+        var client = OneMean();
+        client.Pending[0].State = TesState.RUNNINGEnum;
+        client.Pending[0].CreationTime = Now.AddMinutes(-60);
+
+        await Work(client, new FuncReader(() => throw new DatasetStoreException("read failed", new IOException("store down")))).Execute();
+
+        var report = Assert.Single(client.Reports);
+        Assert.Equal(TesState.SYSTEMERROREnum, report.State);
+        Assert.Equal("internal_error", report.ErrorCode);
+        Assert.DoesNotContain("store down", report.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task Execute_invalid_csv_on_a_young_task_is_still_reported_at_once()
+    {
+        var client = OneMean();
+
+        await Work(client, new FuncReader(() => DatasetReadResult.Fail("invalid_dataset", "dataset file is not valid CSV"))).Execute();
+
+        Assert.Equal("invalid_dataset", Assert.Single(client.Reports).ErrorCode);
+    }
+
+    [Fact]
+    public async Task Execute_dataset_read_fault_that_is_not_the_bucket_is_reported_at_once()
+    {
+        var client = OneMean();
+
+        await Work(client, new FuncReader(() => throw new InvalidOperationException("parser bug"))).Execute();
+
+        // A young task: a bucket failure would be retried, but waiting cannot fix a fault in the TRE.
+        Assert.Single(client.ProgressCalls);
+        var report = Assert.Single(client.Reports);
+        Assert.Equal(TesState.SYSTEMERROREnum, report.State);
+        Assert.Equal("internal_error", report.ErrorCode);
     }
 }

@@ -54,15 +54,38 @@ namespace Agent.Api.FederatedTasks
 
         public async Task<DatasetReadResult> ReadAsync(string fileKey, CancellationToken ct)
         {
-            // If the file was removed after ResolveAsync, this throws and the task fails with internal_error, not
-            // dataset_not_found. The window is a few milliseconds and datasets are not removed while tasks run.
-            await using var stream = await _store.OpenReadAsync(fileKey, ct);
+            // Only the store calls are wrapped, so the Agent can retry a bucket failure and still report a parser
+            // fault at once. If the file was removed after ResolveAsync, this is a store failure: the task is retried
+            // and then fails with internal_error, not dataset_not_found. Datasets are not removed while tasks run.
+            Stream stream;
+            try
+            {
+                stream = await _store.OpenReadAsync(fileKey, ct);
+            }
+            catch (Exception ex)
+            {
+                throw StoreFailed(fileKey, ex);
+            }
 
-            var sha256 = Convert.ToHexString(await SHA256.HashDataAsync(stream, ct)).ToLowerInvariant();
-            stream.Position = 0;
+            await using (stream)
+            {
+                string sha256;
+                try
+                {
+                    sha256 = Convert.ToHexString(await SHA256.HashDataAsync(stream, ct)).ToLowerInvariant();
+                }
+                catch (Exception ex)
+                {
+                    throw StoreFailed(fileKey, ex);
+                }
+                stream.Position = 0;
 
-            // The hash is kept on failures too: the file was read, so the report must say which file it was.
-            return CsvDatasetParser.Parse(stream) with { Sha256 = sha256 };
+                // The hash is kept on failures too: the file was read, so the report must say which file it was.
+                return CsvDatasetParser.Parse(stream) with { Sha256 = sha256 };
+            }
         }
+
+        private static DatasetStoreException StoreFailed(string fileKey, Exception ex) =>
+            new($"Reading dataset file '{fileKey}' failed", ex);
     }
 }

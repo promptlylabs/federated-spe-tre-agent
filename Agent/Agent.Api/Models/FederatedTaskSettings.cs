@@ -43,8 +43,9 @@ namespace Agent.Api.Models
 
         /// <summary>
         /// How long, in minutes after a task was queued, the Agent keeps retrying a task whose dataset bucket cannot
-        /// be listed. Until then a failure is treated as an outage and the task is tried again at the next poll; after
-        /// it, the task fails with internal_error so a bucket that is wrongly configured does not leave it queued for good.
+        /// be listed or read. Until then a failure is treated as an outage and the task is tried again at the next
+        /// poll; after it, the task fails with internal_error so a bucket that is wrongly configured does not leave it
+        /// unfinished for good.
         /// 0 or less gives up at the first failure.
         /// </summary>
         public int DatasetUnreachableGiveUpMinutes { get; set; } = 60;

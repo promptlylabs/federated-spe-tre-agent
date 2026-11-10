@@ -150,4 +150,14 @@ public class DatasetReaderTests
 
         Assert.Equal("dataset_not_found", result.ErrorCode);
     }
+
+    [Fact]
+    public async Task Read_store_failure_throws_DatasetStoreException()
+    {
+        var store = new FakeDatasetStore().Add("dataset/x/a.csv", "a\n1\n");
+        store.ThrowOnOpenKey = "dataset/x/a.csv";
+
+        var ex = await Assert.ThrowsAsync<DatasetStoreException>(() => Reader(store).ReadAsync("dataset/x/a.csv", CancellationToken.None));
+        Assert.IsType<IOException>(ex.InnerException);
+    }
 }
