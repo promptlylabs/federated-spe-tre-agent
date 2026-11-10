@@ -59,6 +59,9 @@ namespace Agent.Api
 
             foreach (var task in pending)
             {
+                // Waiting for output approval: the TRE has nothing to do until Submission records a decision.
+                if (task.State == TesState.PAUSEDEnum) continue;
+
                 try
                 {
                     await ProcessAsync(task, treName.Trim());
@@ -91,8 +94,20 @@ namespace Agent.Api
 
             if (bytes == null)
             {
-                var computed = await ComputeAsync(task, taskId, treName);
-                if (computed.Skip) return;
+                var prepared = Prepare(task, taskId, treName);
+                if (prepared.Skip) return;
+                if (prepared.ErrorReport != null)
+                {
+                    await ReportErrorAsync(prepared.ErrorReport);
+                    return;
+                }
+
+                // A QUEUED task is marked running before its data is read. A RUNNING one was marked by an earlier
+                // poll and is resumed. A transport failure here throws and leaves the task for the next poll.
+                if (task.State == TesState.QUEUEDEnum && !await ReportRunningAsync(taskId))
+                    return;
+
+                var computed = await RunAsync(prepared.Spec!, taskId);
                 if (computed.ErrorReport != null)
                 {
                     await ReportErrorAsync(computed.ErrorReport);
@@ -202,50 +217,78 @@ namespace Agent.Api
             return null;
         }
 
-        private sealed record Computed(FederatedResultDocument? Document, FederatedTaskResultReport? ErrorReport, bool Skip);
+        private sealed record Computed(FederatedResultDocument? Document, FederatedTaskResultReport? ErrorReport);
+
+        private sealed record Prepared(FederatedTaskSpec? Spec, FederatedTaskResultReport? ErrorReport, bool Skip);
 
         /// <summary>
-        /// Runs one task against its dataset. Returns a document, an error report, or Skip when the task must stay
-        /// QUEUED without a report. Does not touch result storage.
+        /// Parses the task and checks it is addressed to this TRE. Returns the spec, an error report, or Skip when
+        /// the task must be left alone without a report.
         /// </summary>
-        private async Task<Computed> ComputeAsync(TesTask task, string taskId, string treName)
+        private static Prepared Prepare(TesTask task, string taskId, string treName)
+        {
+            // Enqueue refuses tasks outside the profile, so a failure here is defence in depth.
+            var parsed = FederatedTesProfile.Parse(task);
+            if (!parsed.IsSuccess)
+                return new Prepared(null, Error(taskId, parsed.ErrorCode!, parsed.ErrorMessage), false);
+
+            // Tasks are polled per TRE, so a mismatch means this agent's TreName disagrees with the TRE's name
+            // in Submission. Don't read data, and don't report: the task stays as it is and runs once config is fixed.
+            if (!string.Equals(parsed.Spec!.TreName, treName, StringComparison.OrdinalIgnoreCase))
+            {
+                Log.Error("Federated tasks: task {TaskId} is for TRE '{TaskTre}' but this agent's TreName is '{TreName}'; not running it",
+                    taskId, parsed.Spec.TreName, treName);
+                return new Prepared(null, null, true);
+            }
+
+            return new Prepared(parsed.Spec, null, false);
+        }
+
+        /// <summary>
+        /// Tells Submission the task is running. Returns false when the task must not run now: Submission says it
+        /// is already past that step or did not accept the report. Throws on transport failure.
+        /// </summary>
+        private async Task<bool> ReportRunningAsync(string taskId)
+        {
+            var outcome = await _client.ReportProgressAsync(taskId, FederatedTaskStep.Running);
+            if (outcome.Accepted) return true;
+
+            if (outcome.StatusCode == 409)
+                Log.Warning("Federated tasks: task {TaskId} is already past the running step on Submission ({ErrorCode}); not running it",
+                    taskId, outcome.ErrorCode);
+            else
+                Log.Warning("Federated tasks: Submission did not accept the running report for task {TaskId} (status {Status}, {ErrorCode}); it will be retried on the next poll",
+                    taskId, outcome.StatusCode, outcome.ErrorCode);
+            return false;
+        }
+
+        /// <summary>
+        /// Runs one task against its dataset. Returns a document or an error report. Does not touch result storage.
+        /// </summary>
+        private async Task<Computed> RunAsync(FederatedTaskSpec spec, string taskId)
         {
             try
             {
-                // Enqueue refuses tasks outside the profile, so a failure here is defence in depth.
-                var parsed = FederatedTesProfile.Parse(task);
-                if (!parsed.IsSuccess)
-                    return new Computed(null, Error(taskId, parsed.ErrorCode!, parsed.ErrorMessage), false);
-
-                // Tasks are polled per TRE, so a mismatch means this agent's TreName disagrees with the TRE's name
-                // in Submission. Don't read data, and don't report: the task stays QUEUED and runs once config is fixed.
-                if (!string.Equals(parsed.Spec!.TreName, treName, StringComparison.OrdinalIgnoreCase))
-                {
-                    Log.Error("Federated tasks: task {TaskId} is for TRE '{TaskTre}' but this agent's TreName is '{TreName}'; not running it",
-                        taskId, parsed.Spec.TreName, treName);
-                    return new Computed(null, null, true);
-                }
-
-                var dataset = await _reader.ReadAsync(parsed.Spec.Dataset, CancellationToken.None);
+                var dataset = await _reader.ReadAsync(spec.Dataset, CancellationToken.None);
                 if (!dataset.IsSuccess)
-                    return new Computed(null, Error(taskId, dataset.ErrorCode!, dataset.ErrorMessage, dataset.Sha256), false);
+                    return new Computed(null, Error(taskId, dataset.ErrorCode!, dataset.ErrorMessage, dataset.Sha256));
 
-                var result = FederatedOperationExecutor.Execute(parsed.Spec, dataset.Table!);
+                var result = FederatedOperationExecutor.Execute(spec, dataset.Table!);
                 if (!result.IsSuccess)
-                    return new Computed(null, Error(taskId, result.ErrorCode!, result.ErrorMessage, dataset.Sha256), false);
+                    return new Computed(null, Error(taskId, result.ErrorCode!, result.ErrorMessage, dataset.Sha256));
 
                 var document = new FederatedResultDocument
                 {
                     TaskId = taskId,
-                    Tre = parsed.Spec.TreName,
-                    StudyId = parsed.Spec.StudyId,
-                    Operation = parsed.Spec.Operation,
-                    Dataset = parsed.Spec.Dataset,
+                    Tre = spec.TreName,
+                    StudyId = spec.StudyId,
+                    Operation = spec.Operation,
+                    Dataset = spec.Dataset,
                     DatasetSha256 = dataset.Sha256,
                     CompletedAt = _clock.GetUtcNow(),
                     Result = new FederatedScalarResult { Value = result.Value, RowCount = result.RowCount }
                 };
-                return new Computed(document, null, false);
+                return new Computed(document, null);
             }
             catch (Exception ex)
             {
@@ -258,7 +301,7 @@ namespace Agent.Api
                     State = TesState.SYSTEMERROREnum,
                     ErrorCode = FederatedTaskErrorCodes.InternalError,
                     ErrorMessage = "an internal error occurred in the TRE; the TRE admin can find the details in the Agent log"
-                }, false);
+                });
             }
         }
 
@@ -272,10 +315,13 @@ namespace Agent.Api
         private static FederatedTaskResultReport Error(string taskId, string code, string? message, string? datasetSha256 = null)
         {
             Log.Information("Federated tasks: task {TaskId} failed with {ErrorCode}", taskId, code);
+            // An input-check failure is a rejection (CANCELED), not an execution failure.
+            var rejected = FederatedTaskErrorCodes.InputCheckCodes.Contains(code);
             return new FederatedTaskResultReport
             {
                 TaskId = taskId,
-                State = TesState.EXECUTORERROREnum,
+                State = rejected ? TesState.CANCELEDEnum : TesState.EXECUTORERROREnum,
+                RejectedAt = rejected ? FederatedReportFields.RejectedAtInputChecks : null,
                 ErrorCode = code,
                 ErrorMessage = message == null ? null : FederatedResultLimits.TruncateErrorMessage(CleanControlChars(message)),
                 DatasetSha256 = datasetSha256

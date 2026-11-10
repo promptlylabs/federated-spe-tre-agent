@@ -20,5 +20,11 @@ namespace Agent.Api.FederatedTasks
         /// throws only on a network or token failure.
         /// </summary>
         Task<FederatedReportOutcome> ReportAsync(FederatedTaskResultReport report, byte[]? resultFile);
+
+        /// <summary>
+        /// Tells Submission the task reached a step. Parses the answer like <see cref="ReportAsync"/>;
+        /// throws only on a network or token failure.
+        /// </summary>
+        Task<FederatedReportOutcome> ReportProgressAsync(string taskId, FederatedTaskStep step);
     }
 }

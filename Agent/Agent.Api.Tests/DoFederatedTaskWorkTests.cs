@@ -26,6 +26,10 @@ public class DoFederatedTaskWorkTests
         public Queue<FederatedReportOutcome> Outcomes { get; } = new();
         public bool ThrowOnReport { get; set; }
         public int GetPendingCalls { get; private set; }
+        public List<(string TaskId, FederatedTaskStep Step)> ProgressCalls { get; } = new();
+        public Queue<FederatedReportOutcome> ProgressOutcomes { get; } = new();
+        public bool ThrowOnProgress { get; set; }
+        public List<string> Order { get; } = new();
 
         public List<FederatedTaskResultReport> Reports => Calls.Select(c => c.Report).ToList();
 
@@ -35,8 +39,17 @@ public class DoFederatedTaskWorkTests
             return Task.FromResult(Pending);
         }
 
+        public Task<FederatedReportOutcome> ReportProgressAsync(string taskId, FederatedTaskStep step)
+        {
+            if (ThrowOnProgress) throw new HttpRequestException("network down");
+            ProgressCalls.Add((taskId, step));
+            Order.Add("progress:" + FederatedTaskSteps.ToWire(step));
+            return Task.FromResult(ProgressOutcomes.Count > 0 ? ProgressOutcomes.Dequeue() : new FederatedReportOutcome(200, null, null, null, null));
+        }
+
         public Task<FederatedReportOutcome> ReportAsync(FederatedTaskResultReport report, byte[]? resultFile)
         {
+            Order.Add("report:" + report.State);
             if (ThrowOnReport) throw new HttpRequestException("network down");
             Calls.Add((report, resultFile));
             return Task.FromResult(Outcomes.Count > 0 ? Outcomes.Dequeue() : new FederatedReportOutcome(200, null, null, null, null));
@@ -97,6 +110,7 @@ public class DoFederatedTaskWorkTests
     {
         var task = FederatedTesProfile.Build(new FederatedTaskSpec(operation, dataset, column, filters, "study-1", "tre-a"));
         task.Id = id;
+        task.State = TesState.QUEUEDEnum;
         return task;
     }
 
@@ -126,7 +140,7 @@ public class DoFederatedTaskWorkTests
     }
 
     [Fact]
-    public async Task Execute_MissingDataset_ReportsExecutorErrorDatasetNotFound()
+    public async Task Execute_missing_dataset_reports_rejected_by_input_checks()
     {
         var client = new FakeClient();
         client.Pending.Add(PendingTask(T1, "nope", "count", null));
@@ -134,8 +148,10 @@ public class DoFederatedTaskWorkTests
         await Work(client, Store()).Execute();
 
         var report = Assert.Single(client.Reports);
-        Assert.Equal(TesState.EXECUTORERROREnum, report.State);
+        Assert.Equal(TesState.CANCELEDEnum, report.State);
+        Assert.Equal("input_checks", report.RejectedAt);
         Assert.Equal("dataset_not_found", report.ErrorCode);
+        Assert.False(string.IsNullOrWhiteSpace(report.ErrorMessage));
     }
 
     [Fact]
@@ -149,6 +165,20 @@ public class DoFederatedTaskWorkTests
         var report = Assert.Single(client.Reports);
         Assert.Equal(TesState.EXECUTORERROREnum, report.State);
         Assert.Equal("column_not_found", report.ErrorCode);
+        Assert.Null(report.RejectedAt);
+    }
+
+    [Fact]
+    public async Task Execute_missing_column_still_reports_executor_error()
+    {
+        var client = new FakeClient();
+        client.Pending.Add(PendingTask(T1, "cohort_2024", "mean", "height"));
+
+        await Work(client, Store()).Execute();
+
+        var report = Assert.Single(client.Reports);
+        Assert.Equal(TesState.EXECUTORERROREnum, report.State);
+        Assert.Null(report.RejectedAt);
     }
 
     [Fact]
@@ -162,8 +192,10 @@ public class DoFederatedTaskWorkTests
         await Work(client, Store()).Execute();
 
         var report = Assert.Single(client.Reports);
-        Assert.Equal(TesState.EXECUTORERROREnum, report.State);
+        Assert.Equal(TesState.CANCELEDEnum, report.State);
+        Assert.Equal("input_checks", report.RejectedAt);
         Assert.Equal("invalid_task", report.ErrorCode);
+        Assert.False(string.IsNullOrWhiteSpace(report.ErrorMessage));
     }
 
     [Fact]
@@ -533,7 +565,7 @@ public class DoFederatedTaskWorkTests
         await Work(client, new FuncReader(() => throw new InvalidOperationException("dataset must not be read")), outputs: outputs).Execute();
 
         var call = Assert.Single(client.Calls);
-        Assert.Equal(TesState.EXECUTORERROREnum, call.Report.State);
+        Assert.Equal(TesState.CANCELEDEnum, call.Report.State);
         Assert.Equal("invalid_task", call.Report.ErrorCode);
         Assert.Null(call.Bytes);
         Assert.Empty(outputs.Files);
@@ -577,5 +609,78 @@ public class DoFederatedTaskWorkTests
         await Work(client, Store()).Execute();
 
         Assert.Equal(2, client.Calls.Count);
+    }
+
+    [Fact]
+    public async Task Execute_queued_task_reports_running_before_result()
+    {
+        var client = OneMean();
+
+        await Work(client, Store()).Execute();
+
+        var progress = Assert.Single(client.ProgressCalls);
+        Assert.Equal((T1, FederatedTaskStep.Running), progress);
+        Assert.Equal(new[] { "progress:running", "report:COMPLETEEnum" }, client.Order);
+    }
+
+    [Fact]
+    public async Task Execute_running_task_is_resumed_without_reporting_running()
+    {
+        var client = OneMean();
+        client.Pending[0].State = TesState.RUNNINGEnum;
+
+        await Work(client, Store()).Execute();
+
+        Assert.Empty(client.ProgressCalls);
+        Assert.Equal(TesState.COMPLETEEnum, Assert.Single(client.Reports).State);
+    }
+
+    [Fact]
+    public async Task Execute_paused_task_is_left_alone()
+    {
+        var client = OneMean();
+        client.Pending[0].State = TesState.PAUSEDEnum;
+
+        await Work(client, new ThrowingReader()).Execute();
+
+        Assert.Empty(client.ProgressCalls);
+        Assert.Empty(client.Reports);
+    }
+
+    [Fact]
+    public async Task Execute_running_report_network_failure_leaves_task_for_next_poll()
+    {
+        var client = OneMean();
+        client.ThrowOnProgress = true;
+
+        await Work(client, new ThrowingReader()).Execute();
+
+        Assert.Empty(client.Calls);
+    }
+
+    [Fact]
+    public async Task Execute_running_report_409_already_final_skips_task()
+    {
+        var client = OneMean();
+        client.ProgressOutcomes.Enqueue(new FederatedReportOutcome(409, "task_already_reported", "final", null, null));
+
+        await Work(client, new ThrowingReader()).Execute();
+
+        Assert.Single(client.ProgressCalls);
+        Assert.Empty(client.Calls);
+    }
+
+    [Fact]
+    public async Task Execute_task_for_other_tre_does_not_report_running()
+    {
+        var client = new FakeClient();
+        var task = PendingTask(T1, "cohort_2024", "count", null);
+        task.Tags!["tres"] = "tre-b";
+        client.Pending.Add(task);
+
+        await Work(client, new ThrowingReader()).Execute();
+
+        Assert.Empty(client.ProgressCalls);
+        Assert.Empty(client.Calls);
     }
 }
