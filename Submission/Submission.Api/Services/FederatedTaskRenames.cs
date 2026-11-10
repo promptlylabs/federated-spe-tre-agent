@@ -20,15 +20,15 @@ namespace Submission.Api.Services
         {
             var current = treName.Trim().ToLower();
             var orphaned = db.FederatedTasks
-                .Where(x => x.TreId == treId && x.TreName != current
-                    && (x.Step == FederatedTaskStep.Queued || x.Step == FederatedTaskStep.Running || x.Step == FederatedTaskStep.WaitingForOutputApproval))
+                .Where(x => x.TreId == treId && x.TreName != current)
+                .Where(FederatedTaskSteps.IsUnfinishedTask)
                 .Include(x => x.StepChanges)
                 .ToList();
 
             var now = DateTime.UtcNow;
             foreach (var task in orphaned)
             {
-                task.MoveTo(FederatedTaskStep.Failed, now, TesState.SYSTEMERROREnum, FederatedTaskErrorCodes.TreRenamed,
+                task.Fail(now, TesState.SYSTEMERROREnum, FederatedTaskErrorCodes.TreRenamed,
                     $"the TRE was renamed to '{current}' before this task finished; enqueue it again under the new name");
             }
 

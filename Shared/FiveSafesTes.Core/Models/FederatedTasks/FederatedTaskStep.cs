@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using FiveSafesTes.Core.Models.Tes;
 
 namespace FiveSafesTes.Core.Models.FederatedTasks
@@ -14,7 +15,8 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         Failed
     }
 
-    public enum TransitionResult
+    /// <summary>What a requested step change would do to a task.</summary>
+    public enum FederatedTaskTransition
     {
         Apply,
         NoChange,
@@ -24,6 +26,14 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
 
     public static class FederatedTaskSteps
     {
+        /// <summary>
+        /// The task is in a step that is not final. For EF queries; a test keeps it in agreement with <see cref="IsFinal"/>.
+        /// </summary>
+        public static readonly Expression<Func<FederatedTask, bool>> IsUnfinishedTask = x =>
+            x.Step == FederatedTaskStep.Queued
+            || x.Step == FederatedTaskStep.Running
+            || x.Step == FederatedTaskStep.WaitingForOutputApproval;
+
         public static string ToWire(FederatedTaskStep step) => step switch
         {
             FederatedTaskStep.Queued => "queued",
@@ -51,31 +61,38 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             return false;
         }
 
-        public static bool IsFinal(FederatedTaskStep step) => Rank(step) == 3;
+        public static bool IsFinal(FederatedTaskStep step) => step switch
+        {
+            FederatedTaskStep.Queued or FederatedTaskStep.Running or FederatedTaskStep.WaitingForOutputApproval => false,
+            FederatedTaskStep.Released or FederatedTaskStep.RejectedByInputChecks
+                or FederatedTaskStep.RejectedAtOutputApproval or FederatedTaskStep.Failed => true,
+            _ => throw new ArgumentOutOfRangeException(nameof(step), step, null)
+        };
 
-        public static TransitionResult Check(FederatedTaskStep current, FederatedTaskStep next)
+        public static bool IsRejection(FederatedTaskStep step) =>
+            step is FederatedTaskStep.RejectedByInputChecks or FederatedTaskStep.RejectedAtOutputApproval;
+
+        public static FederatedTaskTransition Check(FederatedTaskStep current, FederatedTaskStep next)
         {
             if (IsFinal(current))
             {
-                return current == next ? TransitionResult.NoChange : TransitionResult.AlreadyFinal;
+                return current == next ? FederatedTaskTransition.NoChange : FederatedTaskTransition.AlreadyFinal;
             }
 
             var c = Rank(current);
             var n = Rank(next);
-            return n > c ? TransitionResult.Apply : n == c ? TransitionResult.NoChange : TransitionResult.Backwards;
+            return n > c ? FederatedTaskTransition.Apply : n == c ? FederatedTaskTransition.NoChange : FederatedTaskTransition.Backwards;
         }
 
-        internal static TesState ToTesState(FederatedTaskStep step, TesState? failedState) => step switch
+        /// <summary>The TES state of every step except <see cref="FederatedTaskStep.Failed"/>, whose state the reporter chooses.</summary>
+        internal static TesState ToTesState(FederatedTaskStep step) => step switch
         {
             FederatedTaskStep.Queued => TesState.QUEUEDEnum,
             FederatedTaskStep.Running => TesState.RUNNINGEnum,
             FederatedTaskStep.WaitingForOutputApproval => TesState.PAUSEDEnum,
             FederatedTaskStep.Released => TesState.COMPLETEEnum,
             FederatedTaskStep.RejectedByInputChecks or FederatedTaskStep.RejectedAtOutputApproval => TesState.CANCELEDEnum,
-            FederatedTaskStep.Failed => failedState is TesState.EXECUTORERROREnum or TesState.SYSTEMERROREnum
-                ? failedState.Value
-                : throw new ArgumentException("failedState must be EXECUTOR_ERROR or SYSTEM_ERROR for a failed step", nameof(failedState)),
-            _ => throw new ArgumentOutOfRangeException(nameof(step), step, null)
+            _ => throw new ArgumentOutOfRangeException(nameof(step), step, "a failed step has no fixed TES state")
         };
 
         private static int Rank(FederatedTaskStep step) => step switch
@@ -83,7 +100,9 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             FederatedTaskStep.Queued => 0,
             FederatedTaskStep.Running => 1,
             FederatedTaskStep.WaitingForOutputApproval => 2,
-            _ => 3
+            FederatedTaskStep.Released or FederatedTaskStep.RejectedByInputChecks
+                or FederatedTaskStep.RejectedAtOutputApproval or FederatedTaskStep.Failed => 3,
+            _ => throw new ArgumentOutOfRangeException(nameof(step), step, null)
         };
     }
 }

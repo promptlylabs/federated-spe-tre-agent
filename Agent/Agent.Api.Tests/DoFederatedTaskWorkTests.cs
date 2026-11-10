@@ -94,14 +94,21 @@ public class DoFederatedTaskWorkTests
         public override DateTimeOffset GetUtcNow() => new(2026, 11, 5, 10, 0, 0, TimeSpan.Zero);
     }
 
+    /// <summary>Finds any dataset, but throws if its data is read.</summary>
     private sealed class ThrowingReader : IDatasetReader
     {
-        public Task<DatasetReadResult> ReadAsync(string datasetName, CancellationToken ct) => throw new InvalidOperationException("reader must not be called");
+        public Task<DatasetResolveResult> ResolveAsync(string datasetName, CancellationToken ct) =>
+            Task.FromResult(DatasetResolveResult.Ok($"dataset/{datasetName}/data.csv"));
+
+        public Task<DatasetReadResult> ReadAsync(string fileKey, CancellationToken ct) => throw new InvalidOperationException("reader must not be called");
     }
 
     private sealed class FuncReader(Func<DatasetReadResult> f) : IDatasetReader
     {
-        public Task<DatasetReadResult> ReadAsync(string datasetName, CancellationToken ct) => Task.FromResult(f());
+        public Task<DatasetResolveResult> ResolveAsync(string datasetName, CancellationToken ct) =>
+            Task.FromResult(DatasetResolveResult.Ok($"dataset/{datasetName}/data.csv"));
+
+        public Task<DatasetReadResult> ReadAsync(string fileKey, CancellationToken ct) => Task.FromResult(f());
     }
 
     private static FakeDatasetStore Store() => new FakeDatasetStore().Add("dataset/cohort_2024/cohort.csv", Csv);
@@ -151,6 +158,8 @@ public class DoFederatedTaskWorkTests
         Assert.Equal(TesState.CANCELEDEnum, report.State);
         Assert.Equal("input_checks", report.RejectedAt);
         Assert.Equal("dataset_not_found", report.ErrorCode);
+        // Rejected before it was marked running: the history has no running step.
+        Assert.Empty(client.ProgressCalls);
         Assert.False(string.IsNullOrWhiteSpace(report.ErrorMessage));
     }
 
@@ -698,6 +707,54 @@ public class DoFederatedTaskWorkTests
         await Work(client, new ThrowingReader()).Execute();
 
         Assert.Empty(client.ProgressCalls);
+        Assert.Empty(client.Calls);
+    }
+
+    [Fact]
+    public async Task Execute_ambiguous_dataset_is_rejected_without_reporting_running()
+    {
+        var client = new FakeClient();
+        client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+        var store = Store().Add("dataset/cohort_2024/second.csv", Csv);
+
+        await Work(client, store).Execute();
+
+        Assert.Empty(client.ProgressCalls);
+        var report = Assert.Single(client.Reports);
+        Assert.Equal(TesState.CANCELEDEnum, report.State);
+        Assert.Equal("ambiguous_dataset", report.ErrorCode);
+    }
+
+    [Fact]
+    public async Task Execute_store_failure_while_finding_dataset_reports_internal_error_without_running()
+    {
+        var client = OneMean();
+
+        await Work(client, new FailingResolveReader()).Execute();
+
+        Assert.Empty(client.ProgressCalls);
+        var report = Assert.Single(client.Reports);
+        Assert.Equal(TesState.SYSTEMERROREnum, report.State);
+        Assert.Equal("internal_error", report.ErrorCode);
+        Assert.Null(report.RejectedAt);
+    }
+
+    private sealed class FailingResolveReader : IDatasetReader
+    {
+        public Task<DatasetResolveResult> ResolveAsync(string datasetName, CancellationToken ct) => throw new IOException("store down");
+
+        public Task<DatasetReadResult> ReadAsync(string fileKey, CancellationToken ct) => throw new InvalidOperationException("must not be read");
+    }
+
+    [Fact]
+    public async Task Execute_running_report_409_task_busy_leaves_task_for_next_poll()
+    {
+        var client = OneMean();
+        client.ProgressOutcomes.Enqueue(new FederatedReportOutcome(409, "task_busy", "busy", null, null));
+
+        await Work(client, new ThrowingReader()).Execute();
+
+        Assert.Single(client.ProgressCalls);
         Assert.Empty(client.Calls);
     }
 }

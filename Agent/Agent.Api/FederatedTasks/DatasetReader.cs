@@ -5,7 +5,7 @@ using FiveSafesTes.Core.Models.FederatedTasks;
 namespace Agent.Api.FederatedTasks
 {
     /// <summary>
-    /// Resolves a dataset name to its single data file under {DatasetPrefix}{name}/ and parses it.
+    /// Resolves a dataset name to its single data file under {DatasetPrefix}{name}/, then reads and parses that file.
     /// </summary>
     public class DatasetReader : IDatasetReader
     {
@@ -21,12 +21,12 @@ namespace Agent.Api.FederatedTasks
             _settings = settings;
         }
 
-        public async Task<DatasetReadResult> ReadAsync(string datasetName, CancellationToken ct)
+        public async Task<DatasetResolveResult> ResolveAsync(string datasetName, CancellationToken ct)
         {
             // Validate before touching the store so the name can never escape the dataset prefix.
             if (!FederatedTaskNames.IsValidDatasetName(datasetName))
             {
-                return DatasetReadResult.Fail(FederatedTaskErrorCodes.InvalidDatasetName,
+                return DatasetResolveResult.Fail(FederatedTaskErrorCodes.InvalidDatasetName,
                     "dataset name must match ^[a-z0-9][a-z0-9_-]{0,62}$");
             }
 
@@ -39,17 +39,22 @@ namespace Agent.Api.FederatedTasks
 
             if (keys.Count == 0)
             {
-                return DatasetReadResult.Fail(FederatedTaskErrorCodes.DatasetNotFound,
+                return DatasetResolveResult.Fail(FederatedTaskErrorCodes.DatasetNotFound,
                     $"no dataset file found for '{datasetName}'");
             }
 
             if (keys.Count > 1)
             {
-                return DatasetReadResult.Fail(FederatedTaskErrorCodes.AmbiguousDataset,
+                return DatasetResolveResult.Fail(FederatedTaskErrorCodes.AmbiguousDataset,
                     $"more than one dataset file found for '{datasetName}'");
             }
 
-            await using var stream = await _store.OpenReadAsync(keys[0], ct);
+            return DatasetResolveResult.Ok(keys[0]);
+        }
+
+        public async Task<DatasetReadResult> ReadAsync(string fileKey, CancellationToken ct)
+        {
+            await using var stream = await _store.OpenReadAsync(fileKey, ct);
 
             var sha256 = Convert.ToHexString(await SHA256.HashDataAsync(stream, ct)).ToLowerInvariant();
             stream.Position = 0;

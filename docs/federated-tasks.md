@@ -10,8 +10,8 @@ To try the flow locally, see [dev/federated](../dev/federated/README.md). It is 
 
 1. A `dare-control-admin` user calls `POST /api/FederatedTask/Enqueue` with a TES task. Submission validates it against the federated profile. The task is stored at the step `queued`. The response holds the task id.
 2. The Agent job `Run Federated Tasks` (`JobSettings:FederatedTaskJobName`) runs every `JobSettings:federatedTaskSchedule` minutes. It calls `GET /api/FederatedTask/GetPendingTasksForTre`. The TRE is taken from the token.
-3. For a `queued` task, the Agent calls `POST /api/FederatedTask/ReportProgress` with the step `running`. Submission moves the task to `running`.
-4. The Agent reads the one `.csv` under `dataset/<name>/` in the dataset bucket.
+3. The Agent checks the task against the profile and finds the one `.csv` under `dataset/<name>/` in the dataset bucket. It reads no data values yet. If a check fails, or there is no file or more than one, the task is rejected (`rejected_by_input_checks`) and never reaches `running`.
+4. For a `queued` task, the Agent calls `POST /api/FederatedTask/ReportProgress` with the step `running`. Submission moves the task to `running`. Then the Agent reads the file.
 5. The Agent runs the operation in-process. It does not start a container. The result is a JSON file (see "Task state and result").
 6. The Agent saves the file in the TRE bucket `federated-outputs` as `<taskId>.json`. If the file is already there from an earlier poll, the Agent reuses it and does not compute again.
 7. The Agent releases the file: `POST /api/FederatedTask/ReportResult` with the file as an upload. Submission checks the caller and the file, and stores it in the orchestrator bucket `federated-results`. The task moves to `released`.
@@ -102,7 +102,7 @@ Every 4xx from these endpoints has the same JSON body. Its keys are the same as 
 | 409 | `invalid_transition` | `ReportProgress` asks to go back to an earlier step. |
 | 409 | `task_busy` | `ReportProgress` or `ReportResult` lost a race with other reports for the same task three times in a row. Nothing was recorded. Send the report again. |
 | 500 | `internal_error` | `GetTaskResult`: the stored file does not match its SHA-256. The file is not returned. |
-| 503 | `storage_unavailable` | The orchestrator bucket cannot be reached. For `ReportResult` the task keeps its step. |
+| 503 | `storage_unavailable` | The orchestrator bucket cannot be reached, or `ReportResult` lost a race and could not read the task again. For `ReportResult` the task keeps its step and the Agent sends the report again at the next poll. |
 
 `result_not_found` and `storage_unavailable` are returned by the API only. An Agent never reports them as a task result.
 

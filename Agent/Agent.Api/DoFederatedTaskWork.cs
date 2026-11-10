@@ -109,12 +109,21 @@ namespace Agent.Api
                     return;
                 }
 
+                // Finding the dataset is the last input check: a task whose dataset is missing is rejected before it
+                // is marked running.
+                var resolved = await ResolveAsync(prepared.Spec!, taskId);
+                if (resolved.ErrorReport != null)
+                {
+                    await ReportErrorAsync(resolved.ErrorReport);
+                    return;
+                }
+
                 // A QUEUED task is marked running before its data is read. A RUNNING one was marked by an earlier
                 // poll and is resumed. A transport failure here throws and leaves the task for the next poll.
                 if (task.State == TesState.QUEUEDEnum && !await ReportRunningAsync(taskId))
                     return;
 
-                var computed = await RunAsync(prepared.Spec!, taskId);
+                var computed = await RunAsync(prepared.Spec!, resolved.FileKey!, taskId);
                 if (computed.ErrorReport != null)
                 {
                     await ReportErrorAsync(computed.ErrorReport);
@@ -139,7 +148,7 @@ namespace Agent.Api
         private async Task ReportErrorAsync(FederatedTaskResultReport report)
         {
             var outcome = await _client.ReportAsync(report, null);
-            if (outcome.StatusCode == 409 && outcome.ErrorCode != FederatedTaskErrorCodes.TaskBusy)
+            if (IsAlreadyFinal(outcome))
             {
                 Log.Warning("Federated tasks: task {TaskId} was already reported to Submission; the error report was not recorded", report.TaskId);
             }
@@ -166,7 +175,7 @@ namespace Agent.Api
                 return;
             }
 
-            if (outcome.StatusCode == 409 && outcome.ErrorCode != FederatedTaskErrorCodes.TaskBusy)
+            if (IsAlreadyFinal(outcome))
             {
                 // The task is already terminal on the server (an error state, or a COMPLETE without a stored sha).
                 Log.Warning("Federated tasks: task {TaskId} was already reported to Submission and carries no result sha256; nothing more to do", taskId);
@@ -228,6 +237,8 @@ namespace Agent.Api
 
         private sealed record Prepared(FederatedTaskSpec? Spec, FederatedTaskResultReport? ErrorReport, bool Skip);
 
+        private sealed record Resolved(string? FileKey, FederatedTaskResultReport? ErrorReport);
+
         /// <summary>
         /// Parses the task and checks it is addressed to this TRE. Returns the spec, an error report, or Skip when
         /// the task must be left alone without a report.
@@ -260,7 +271,7 @@ namespace Agent.Api
             var outcome = await _client.ReportProgressAsync(taskId, FederatedTaskStep.Running);
             if (outcome.Accepted) return true;
 
-            if (outcome.StatusCode == 409 && outcome.ErrorCode != FederatedTaskErrorCodes.TaskBusy)
+            if (IsAlreadyFinal(outcome))
                 Log.Warning("Federated tasks: task {TaskId} is already past the running step on Submission ({ErrorCode}); not running it",
                     taskId, outcome.ErrorCode);
             else
@@ -269,14 +280,30 @@ namespace Agent.Api
             return false;
         }
 
-        /// <summary>
-        /// Runs one task against its dataset. Returns a document or an error report. Does not touch result storage.
-        /// </summary>
-        private async Task<Computed> RunAsync(FederatedTaskSpec spec, string taskId)
+        /// <summary>Finds the task's dataset file. Returns its key or an error report. Reads no data values.</summary>
+        private async Task<Resolved> ResolveAsync(FederatedTaskSpec spec, string taskId)
         {
             try
             {
-                var dataset = await _reader.ReadAsync(spec.Dataset, CancellationToken.None);
+                var resolved = await _reader.ResolveAsync(spec.Dataset, CancellationToken.None);
+                return resolved.IsSuccess
+                    ? new Resolved(resolved.FileKey, null)
+                    : new Resolved(null, Error(taskId, resolved.ErrorCode!, resolved.ErrorMessage));
+            }
+            catch (Exception ex)
+            {
+                return new Resolved(null, InternalError(taskId, ex));
+            }
+        }
+
+        /// <summary>
+        /// Runs one task against its dataset file. Returns a document or an error report. Does not touch result storage.
+        /// </summary>
+        private async Task<Computed> RunAsync(FederatedTaskSpec spec, string fileKey, string taskId)
+        {
+            try
+            {
+                var dataset = await _reader.ReadAsync(fileKey, CancellationToken.None);
                 if (!dataset.IsSuccess)
                     return new Computed(null, Error(taskId, dataset.ErrorCode!, dataset.ErrorMessage, dataset.Sha256));
 
@@ -299,18 +326,29 @@ namespace Agent.Api
             }
             catch (Exception ex)
             {
-                // The dataset reader lets store failures propagate; report them rather than fail the whole poll.
-                // The exception can name buckets, endpoints or hosts, so it stays in the TRE's own log.
-                Log.Error(ex, "Federated tasks: task {TaskId} failed unexpectedly", taskId);
-                return new Computed(null, new FederatedTaskResultReport
-                {
-                    TaskId = taskId,
-                    State = TesState.SYSTEMERROREnum,
-                    ErrorCode = FederatedTaskErrorCodes.InternalError,
-                    ErrorMessage = "an internal error occurred in the TRE; the TRE admin can find the details in the Agent log"
-                });
+                return new Computed(null, InternalError(taskId, ex));
             }
         }
+
+        /// <summary>
+        /// The dataset reader lets store failures propagate; they are reported rather than failing the whole poll.
+        /// The exception can name buckets, endpoints or hosts, so it stays in the TRE's own log.
+        /// </summary>
+        private static FederatedTaskResultReport InternalError(string taskId, Exception ex)
+        {
+            Log.Error(ex, "Federated tasks: task {TaskId} failed unexpectedly", taskId);
+            return new FederatedTaskResultReport
+            {
+                TaskId = taskId,
+                State = TesState.SYSTEMERROREnum,
+                ErrorCode = FederatedTaskErrorCodes.InternalError,
+                ErrorMessage = "an internal error occurred in the TRE; the TRE admin can find the details in the Agent log"
+            };
+        }
+
+        /// <summary>A 409 that says the task is already final on Submission; task_busy means "send it again".</summary>
+        private static bool IsAlreadyFinal(FederatedReportOutcome outcome) =>
+            outcome.StatusCode == 409 && outcome.ErrorCode != FederatedTaskErrorCodes.TaskBusy;
 
         // Task-spec values are echoed into messages; Submission rejects control characters.
         private static string CleanControlChars(string message) =>
@@ -328,7 +366,7 @@ namespace Agent.Api
             {
                 TaskId = taskId,
                 State = rejected ? TesState.CANCELEDEnum : TesState.EXECUTORERROREnum,
-                RejectedAt = rejected ? FederatedReportFields.RejectedAtInputChecks : null,
+                RejectedAt = rejected ? FederatedRejectedAt.InputChecks : null,
                 ErrorCode = code,
                 ErrorMessage = message == null ? null : FederatedResultLimits.TruncateErrorMessage(CleanControlChars(message)),
                 DatasetSha256 = datasetSha256

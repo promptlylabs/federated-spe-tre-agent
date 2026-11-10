@@ -26,7 +26,7 @@ namespace Submission.Api.Controllers
     public class FederatedTaskController : Controller
     {
         /// <summary>Attempts at one report when other reports for the same task keep winning the race.</summary>
-        private const int MaxProgressAttempts = 3;
+        private const int MaxReportAttempts = 3;
 
         /// <summary>Upper bound on tasks returned to a TRE Agent in a single poll.</summary>
         private const int MaxPendingTasks = 50;
@@ -112,8 +112,8 @@ namespace Submission.Api.Controllers
             // name the TRE no longer has would stay unfinished forever and fill the list, so they are not handed out.
             var tasks = await _DbContext.FederatedTasks
                 .AsNoTracking()
-                .Where(x => x.TreId == tre.Id && x.TreName == treName
-                    && (x.Step == FederatedTaskStep.Running || x.Step == FederatedTaskStep.Queued || x.Step == FederatedTaskStep.WaitingForOutputApproval))
+                .Where(x => x.TreId == tre.Id && x.TreName == treName)
+                .Where(FederatedTaskSteps.IsUnfinishedTask)
                 // Running first (the Agent may need to resume it), then queued, then waiting: waiting tasks are
                 // only polled for their approval outcome, so they must not crowd out tasks that need action.
                 .OrderBy(x => x.Step == FederatedTaskStep.Running ? 0 : x.Step == FederatedTaskStep.Queued ? 1 : 2)
@@ -153,12 +153,13 @@ namespace Submission.Api.Controllers
                 return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "State must be COMPLETE, EXECUTOR_ERROR, SYSTEM_ERROR or CANCELED");
             }
 
-            var files = Request.Form.Files;
-            FederatedTaskStep? rejectedStep = null;
             if (state != TesState.CANCELEDEnum && form.RejectedAt is not null)
             {
                 return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "RejectedAt is only accepted with state CANCELED");
             }
+
+            var files = Request.Form.Files;
+            FederatedTaskStep? rejectedStep = null;
 
             if (state != TesState.COMPLETEEnum)
             {
@@ -178,14 +179,14 @@ namespace Submission.Api.Controllers
                 {
                     rejectedStep = form.RejectedAt switch
                     {
-                        FederatedReportFields.RejectedAtInputChecks => FederatedTaskStep.RejectedByInputChecks,
-                        FederatedReportFields.RejectedAtOutputApproval => FederatedTaskStep.RejectedAtOutputApproval,
+                        FederatedRejectedAt.InputChecks => FederatedTaskStep.RejectedByInputChecks,
+                        FederatedRejectedAt.OutputApproval => FederatedTaskStep.RejectedAtOutputApproval,
                         _ => null
                     };
                     if (rejectedStep == null)
                     {
                         return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask,
-                            $"RejectedAt must be {FederatedReportFields.RejectedAtInputChecks} or {FederatedReportFields.RejectedAtOutputApproval} for a CANCELED report");
+                            $"RejectedAt must be {FederatedRejectedAt.InputChecks} or {FederatedRejectedAt.OutputApproval} for a CANCELED report");
                     }
 
                     if (string.IsNullOrWhiteSpace(form.ErrorMessage))
@@ -295,15 +296,22 @@ namespace Submission.Api.Controllers
             }
             else
             {
-                var target = rejectedStep ?? FederatedTaskStep.Failed;
-                apply = t =>
-                {
-                    t.MoveTo(target, DateTime.UtcNow, state.Value, form.ErrorCode, form.ErrorMessage);
-                    t.DatasetSha256 = form.DatasetSha256;
-                };
+                // ErrorCode was checked above; ErrorMessage was checked for a rejection.
+                var errorCode = form.ErrorCode!;
+                apply = rejectedStep is { } rejected
+                    ? t =>
+                    {
+                        t.Reject(rejected, DateTime.UtcNow, errorCode, form.ErrorMessage!);
+                        t.DatasetSha256 = form.DatasetSha256;
+                    }
+                    : t =>
+                    {
+                        t.Fail(DateTime.UtcNow, state.Value, errorCode, form.ErrorMessage);
+                        t.DatasetSha256 = form.DatasetSha256;
+                    };
             }
 
-            for (var attempt = 0; attempt < MaxProgressAttempts; attempt++)
+            for (var attempt = 0; attempt < MaxReportAttempts; attempt++)
             {
                 apply(task);
                 try
@@ -336,8 +344,10 @@ namespace Submission.Api.Controllers
                     }
                     catch (Exception ex)
                     {
+                        // Nothing was recorded, and it is not known whether the task is final: tell the Agent to retry.
                         Log.Warning(ex, "Re-reading federated task {TaskId} after a concurrent report failed", taskId);
-                        return AlreadyReported(null);
+                        return Error(StatusCodes.Status503ServiceUnavailable, FederatedTaskErrorCodes.StorageUnavailable,
+                            "the report could not be recorded, try again later");
                     }
                 }
             }
@@ -376,7 +386,7 @@ namespace Submission.Api.Controllers
                 return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "TaskId must be a GUID");
             }
 
-            for (var attempt = 0; attempt < MaxProgressAttempts; attempt++)
+            for (var attempt = 0; attempt < MaxReportAttempts; attempt++)
             {
                 // A task that belongs to another TRE is indistinguishable from one that doesn't exist.
                 var task = await _DbContext.FederatedTasks
@@ -389,12 +399,12 @@ namespace Submission.Api.Controllers
 
                 switch (FederatedTaskSteps.Check(task.Step, step))
                 {
-                    case TransitionResult.NoChange:
+                    case FederatedTaskTransition.NoChange:
                         return Ok(new FederatedProgressResponse { Step = FederatedTaskSteps.ToWire(task.Step) });
-                    case TransitionResult.Backwards:
+                    case FederatedTaskTransition.Backwards:
                         return Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.InvalidTransition,
                             $"task is at step '{FederatedTaskSteps.ToWire(task.Step)}' and cannot go back to '{FederatedTaskSteps.ToWire(step)}'");
-                    case TransitionResult.AlreadyFinal:
+                    case FederatedTaskTransition.AlreadyFinal:
                         return AlreadyReported(task);
                 }
 
@@ -542,10 +552,10 @@ namespace Submission.Api.Controllers
         /// 409. For a task already COMPLETE the body carries the stored result's sha256 and key, because the Agent cannot
         /// call GetTask.
         /// </summary>
-        private static ObjectResult AlreadyReported(FederatedTask? existing)
+        private static ObjectResult AlreadyReported(FederatedTask existing)
         {
             var result = Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.TaskAlreadyReported, "a result has already been reported for this task");
-            if (existing is { State: TesState.COMPLETEEnum })
+            if (existing.State == TesState.COMPLETEEnum)
             {
                 var body = (FederatedApiError)result.Value!;
                 body.ResultSha256 = existing.ResultSha256;

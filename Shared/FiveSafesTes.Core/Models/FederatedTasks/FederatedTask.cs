@@ -63,10 +63,44 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
 
         public virtual List<FederatedTaskStepChange> StepChanges { get; set; } = [];
 
-        /// <summary>Moves the task to <paramref name="step"/>, updating its TES state and recording the change.</summary>
-        public void MoveTo(FederatedTaskStep step, DateTime atUtc, TesState? failedState = null, string? errorCode = null, string? errorMessage = null)
+        /// <summary>
+        /// Moves the task to a step without an error (queued, running, waiting or released), updating its TES state
+        /// and recording the change. Rejections go through <see cref="Reject"/>, failures through <see cref="Fail"/>.
+        /// </summary>
+        public void MoveTo(FederatedTaskStep step, DateTime atUtc)
         {
-            var state = FederatedTaskSteps.ToTesState(step, failedState);
+            if (step == FederatedTaskStep.Failed || FederatedTaskSteps.IsRejection(step))
+            {
+                throw new ArgumentException($"use {nameof(Reject)} or {nameof(Fail)} for step {step}", nameof(step));
+            }
+
+            Record(step, FederatedTaskSteps.ToTesState(step), atUtc, null, null);
+        }
+
+        /// <summary>Moves the task to a rejected step (TES CANCELED) with the reason.</summary>
+        public void Reject(FederatedTaskStep step, DateTime atUtc, string errorCode, string errorMessage)
+        {
+            if (!FederatedTaskSteps.IsRejection(step))
+            {
+                throw new ArgumentException($"{step} is not a rejection", nameof(step));
+            }
+
+            Record(step, FederatedTaskSteps.ToTesState(step), atUtc, errorCode, errorMessage);
+        }
+
+        /// <summary>Moves the task to failed with <paramref name="state"/> (EXECUTOR_ERROR or SYSTEM_ERROR) and the reason.</summary>
+        public void Fail(DateTime atUtc, TesState state, string errorCode, string? errorMessage)
+        {
+            if (state is not (TesState.EXECUTORERROREnum or TesState.SYSTEMERROREnum))
+            {
+                throw new ArgumentException("a failed task must be EXECUTOR_ERROR or SYSTEM_ERROR", nameof(state));
+            }
+
+            Record(FederatedTaskStep.Failed, state, atUtc, errorCode, errorMessage);
+        }
+
+        private void Record(FederatedTaskStep step, TesState state, DateTime atUtc, string? errorCode, string? errorMessage)
+        {
             Step = step;
             State = state;
             if (FederatedTaskSteps.IsFinal(step))
@@ -98,6 +132,8 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             foreach (var change in StepChanges.OrderBy(c => c.At).ThenBy(c => c.Id))
             {
                 var key = FederatedTaskSteps.ToWire(change.Step) + "_at";
+                // A step is recorded once on Postgres, where a failed save rolls back. The in-memory test provider
+                // can keep a row from a save that lost a race, so the first time a step was reached wins.
                 if (metadata.ContainsKey(key))
                 {
                     continue;
@@ -121,7 +157,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
                 metadata["result_key"] = ResultKey ?? "";
                 metadata["result_sha256"] = ResultSha256 ?? "";
             }
-            else if (Step is FederatedTaskStep.Failed or FederatedTaskStep.RejectedByInputChecks or FederatedTaskStep.RejectedAtOutputApproval)
+            else if (Step == FederatedTaskStep.Failed || FederatedTaskSteps.IsRejection(Step))
             {
                 metadata["error_code"] = ErrorCode ?? "";
                 metadata["error_message"] = ResultErrorMessage ?? "";

@@ -1,10 +1,12 @@
 namespace Agent.Api.FederatedTasks
 {
     /// <summary>
-    /// Finds and reads a dataset by name.
+    /// Finds a dataset by name, then reads it. Finding it reads no data values, so its errors are input-check errors.
     /// </summary>
     public interface IDatasetReader
     {
-        Task<DatasetReadResult> ReadAsync(string datasetName, CancellationToken ct);
+        Task<DatasetResolveResult> ResolveAsync(string datasetName, CancellationToken ct);
+
+        Task<DatasetReadResult> ReadAsync(string fileKey, CancellationToken ct);
     }
 }

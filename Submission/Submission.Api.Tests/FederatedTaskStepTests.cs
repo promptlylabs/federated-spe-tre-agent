@@ -13,7 +13,9 @@ namespace Submission.Api.Tests
             FederatedTaskStep.Queued => 0,
             FederatedTaskStep.Running => 1,
             FederatedTaskStep.WaitingForOutputApproval => 2,
-            _ => 3
+            FederatedTaskStep.Released or FederatedTaskStep.RejectedByInputChecks
+                or FederatedTaskStep.RejectedAtOutputApproval or FederatedTaskStep.Failed => 3,
+            _ => throw new ArgumentOutOfRangeException(nameof(s), s, "add the new step to this test")
         };
 
         public static IEnumerable<object[]> AllPairs() =>
@@ -27,10 +29,10 @@ namespace Submission.Api.Tests
         {
             var currentFinal = Rank(current) == 3;
             var expected =
-                currentFinal ? (current == next ? TransitionResult.NoChange : TransitionResult.AlreadyFinal)
-                : Rank(next) > Rank(current) ? TransitionResult.Apply
-                : Rank(next) == Rank(current) ? TransitionResult.NoChange
-                : TransitionResult.Backwards;
+                currentFinal ? (current == next ? FederatedTaskTransition.NoChange : FederatedTaskTransition.AlreadyFinal)
+                : Rank(next) > Rank(current) ? FederatedTaskTransition.Apply
+                : Rank(next) == Rank(current) ? FederatedTaskTransition.NoChange
+                : FederatedTaskTransition.Backwards;
 
             Assert.Equal(expected, FederatedTaskSteps.Check(current, next));
             Assert.Equal(currentFinal, FederatedTaskSteps.IsFinal(current));
@@ -64,8 +66,6 @@ namespace Submission.Api.Tests
         [InlineData(FederatedTaskStep.Running, TesState.RUNNINGEnum)]
         [InlineData(FederatedTaskStep.WaitingForOutputApproval, TesState.PAUSEDEnum)]
         [InlineData(FederatedTaskStep.Released, TesState.COMPLETEEnum)]
-        [InlineData(FederatedTaskStep.RejectedByInputChecks, TesState.CANCELEDEnum)]
-        [InlineData(FederatedTaskStep.RejectedAtOutputApproval, TesState.CANCELEDEnum)]
         public void MoveTo_sets_tes_state(FederatedTaskStep step, TesState expected)
         {
             var task = new FederatedTask();
@@ -74,16 +74,68 @@ namespace Submission.Api.Tests
             Assert.Equal(expected, task.State);
         }
 
-        [Fact]
-        public void MoveTo_failed_needs_and_keeps_failed_state()
+        [Theory]
+        [InlineData(FederatedTaskStep.Failed)]
+        [InlineData(FederatedTaskStep.RejectedByInputChecks)]
+        [InlineData(FederatedTaskStep.RejectedAtOutputApproval)]
+        public void MoveTo_refuses_steps_that_need_a_reason(FederatedTaskStep step)
+        {
+            Assert.Throws<ArgumentException>(() => new FederatedTask().MoveTo(step, T0));
+        }
+
+        [Theory]
+        [InlineData(FederatedTaskStep.RejectedByInputChecks)]
+        [InlineData(FederatedTaskStep.RejectedAtOutputApproval)]
+        public void Reject_sets_canceled_and_keeps_the_reason(FederatedTaskStep step)
         {
             var task = new FederatedTask();
-            task.MoveTo(FederatedTaskStep.Failed, T0, TesState.SYSTEMERROREnum, "internal_error", "boom");
-            Assert.Equal(TesState.SYSTEMERROREnum, task.State);
+            task.Reject(step, T0, "output_rejected", "too few records");
+            Assert.Equal(step, task.Step);
+            Assert.Equal(TesState.CANCELEDEnum, task.State);
+            Assert.Equal("output_rejected", task.ErrorCode);
+            Assert.Equal("too few records", task.ResultErrorMessage);
+            Assert.Equal(T0, task.CompletedAt);
+        }
+
+        [Theory]
+        [InlineData(FederatedTaskStep.Queued)]
+        [InlineData(FederatedTaskStep.Released)]
+        [InlineData(FederatedTaskStep.Failed)]
+        public void Reject_refuses_steps_that_are_not_rejections(FederatedTaskStep step)
+        {
+            Assert.Throws<ArgumentException>(() => new FederatedTask().Reject(step, T0, "x", "y"));
+        }
+
+        [Theory]
+        [InlineData(TesState.EXECUTORERROREnum)]
+        [InlineData(TesState.SYSTEMERROREnum)]
+        public void Fail_keeps_the_reported_state_and_reason(TesState state)
+        {
+            var task = new FederatedTask();
+            task.Fail(T0, state, "internal_error", "boom");
+            Assert.Equal(FederatedTaskStep.Failed, task.Step);
+            Assert.Equal(state, task.State);
             Assert.Equal("internal_error", task.ErrorCode);
             Assert.Equal("boom", task.ResultErrorMessage);
+        }
 
-            Assert.Throws<ArgumentException>(() => new FederatedTask().MoveTo(FederatedTaskStep.Failed, T0));
+        [Theory]
+        [InlineData(TesState.COMPLETEEnum)]
+        [InlineData(TesState.CANCELEDEnum)]
+        [InlineData(TesState.QUEUEDEnum)]
+        public void Fail_refuses_states_that_are_not_errors(TesState state)
+        {
+            Assert.Throws<ArgumentException>(() => new FederatedTask().Fail(T0, state, "x", "y"));
+        }
+
+        [Fact]
+        public void IsUnfinishedTask_query_agrees_with_IsFinal_for_every_step()
+        {
+            var isUnfinished = FederatedTaskSteps.IsUnfinishedTask.Compile();
+            foreach (var step in Enum.GetValues<FederatedTaskStep>())
+            {
+                Assert.Equal(!FederatedTaskSteps.IsFinal(step), isUnfinished(new FederatedTask { Step = step }));
+            }
         }
 
         [Fact]
@@ -129,7 +181,7 @@ namespace Submission.Api.Tests
         {
             var task = NewTask();
             task.MoveTo(FederatedTaskStep.Queued, T0);
-            task.MoveTo(FederatedTaskStep.RejectedByInputChecks, T0.AddMinutes(1), null, "dataset_not_found", "dataset 'x' not found");
+            task.Reject(FederatedTaskStep.RejectedByInputChecks, T0.AddMinutes(1), "dataset_not_found", "dataset 'x' not found");
 
             var tes = task.ToTesTask();
             var m = tes.Logs![0].Metadata;
