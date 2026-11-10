@@ -89,9 +89,11 @@ public class DoFederatedTaskWorkTests
         }
     }
 
+    private static readonly DateTimeOffset Now = new(2026, 11, 5, 10, 0, 0, TimeSpan.Zero);
+
     private sealed class FixedClock : TimeProvider
     {
-        public override DateTimeOffset GetUtcNow() => new(2026, 11, 5, 10, 0, 0, TimeSpan.Zero);
+        public override DateTimeOffset GetUtcNow() => Now;
     }
 
     /// <summary>Finds any dataset, but throws if its data is read.</summary>
@@ -118,18 +120,22 @@ public class DoFederatedTaskWorkTests
         var task = FederatedTesProfile.Build(new FederatedTaskSpec(operation, dataset, column, filters, "study-1", "tre-a"));
         task.Id = id;
         task.State = TesState.QUEUEDEnum;
+        // Submission always sets it; a minute before FixedClock makes the task young enough to be retried.
+        task.CreationTime = Now.AddMinutes(-1);
         return task;
     }
 
     private static DoFederatedTaskWork Work(FakeClient client, FakeDatasetStore store, string? treName = "tre-a", FakeResultOutputStore? outputs = null)
         => Work(client, new DatasetReader(store, new FederatedTaskSettings()), treName, outputs);
 
-    private static DoFederatedTaskWork Work(FakeClient client, IDatasetReader reader, string? treName = "tre-a", FakeResultOutputStore? outputs = null)
+    private static DoFederatedTaskWork Work(FakeClient client, IDatasetReader reader, string? treName = "tre-a",
+        FakeResultOutputStore? outputs = null, FederatedTaskSettings? settings = null)
     {
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?> { ["TreName"] = treName })
             .Build();
-        return new DoFederatedTaskWork(client, reader, outputs ?? new FakeResultOutputStore(), config, new FixedClock());
+        return new DoFederatedTaskWork(client, reader, outputs ?? new FakeResultOutputStore(), config, new FixedClock(),
+            settings ?? new FederatedTaskSettings());
     }
 
     [Fact]
@@ -784,5 +790,45 @@ public class DoFederatedTaskWorkTests
 
         Assert.Single(client.Calls);
         Assert.Empty(outputs.Files);
+    }
+
+    [Theory]
+    [InlineData(60)]
+    [InlineData(600)]
+    public async Task Execute_dataset_bucket_unreachable_for_too_long_reports_internal_error(int ageMinutes)
+    {
+        var client = OneMean();
+        client.Pending[0].CreationTime = Now.AddMinutes(-ageMinutes);
+
+        await Work(client, new FailingResolveReader()).Execute();
+
+        Assert.Empty(client.ProgressCalls);
+        var report = Assert.Single(client.Reports);
+        Assert.Equal(TesState.SYSTEMERROREnum, report.State);
+        Assert.Equal("internal_error", report.ErrorCode);
+        Assert.Null(report.RejectedAt);
+        Assert.DoesNotContain("store down", report.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task Execute_dataset_bucket_unreachable_uses_the_configured_give_up_time()
+    {
+        var client = OneMean();
+        client.Pending[0].CreationTime = Now.AddMinutes(-10);
+
+        await Work(client, new FailingResolveReader(), settings: new FederatedTaskSettings { DatasetUnreachableGiveUpMinutes = 5 }).Execute();
+
+        Assert.Equal("internal_error", Assert.Single(client.Reports).ErrorCode);
+    }
+
+    [Fact]
+    public async Task Execute_dataset_bucket_unreachable_without_creation_time_reports_internal_error()
+    {
+        var client = OneMean();
+        client.Pending[0].CreationTime = null;
+
+        await Work(client, new FailingResolveReader()).Execute();
+
+        Assert.Equal("internal_error", Assert.Single(client.Reports).ErrorCode);
     }
 }

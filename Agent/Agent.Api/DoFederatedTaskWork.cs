@@ -1,3 +1,4 @@
+using Agent.Api.Models;
 using Agent.Api.FederatedTasks;
 using FiveSafesTes.Core.Models.FederatedTasks;
 using FiveSafesTes.Core.Models.Tes;
@@ -24,15 +25,17 @@ namespace Agent.Api
         private readonly IResultOutputStore _outputs;
         private readonly IConfiguration _config;
         private readonly TimeProvider _clock;
+        private readonly FederatedTaskSettings _settings;
 
         public DoFederatedTaskWork(IFederatedTaskClient client, IDatasetReader reader, IResultOutputStore outputs,
-            IConfiguration config, TimeProvider clock)
+            IConfiguration config, TimeProvider clock, FederatedTaskSettings settings)
         {
             _client = client;
             _reader = reader;
             _outputs = outputs;
             _config = config;
             _clock = clock;
+            _settings = settings;
         }
 
         public async Task Execute()
@@ -111,7 +114,26 @@ namespace Agent.Api
 
                 // Finding the dataset is the last input check: a task whose dataset is missing is rejected before it
                 // is marked running.
-                var resolved = await ResolveAsync(prepared.Spec!, taskId);
+                Resolved resolved;
+                try
+                {
+                    resolved = await ResolveAsync(prepared.Spec!, taskId);
+                }
+                catch (Exception ex)
+                {
+                    // An outage is retried at the next poll, but not for ever: a bucket that is wrongly configured or
+                    // denied would otherwise leave the task unfinished with nothing the orchestrator can see.
+                    if (!HasWaitedTooLong(task))
+                    {
+                        Log.Warning(ex, "Federated tasks: the dataset bucket could not be listed for task {TaskId}; it keeps its step and is tried again at the next poll",
+                            taskId);
+                        return;
+                    }
+
+                    await ReportErrorAsync(InternalError(taskId, ex));
+                    return;
+                }
+
                 if (resolved.ErrorReport != null)
                 {
                     await ReportErrorAsync(resolved.ErrorReport);
@@ -282,7 +304,7 @@ namespace Agent.Api
 
         /// <summary>
         /// Finds the task's dataset file. Returns its key or an error report. Reads no data values. A store failure
-        /// throws: the task keeps its step and is tried again at the next poll, because nothing about the task is wrong.
+        /// throws, and the caller decides whether to retry or give up.
         /// </summary>
         private async Task<Resolved> ResolveAsync(FederatedTaskSpec spec, string taskId)
         {
@@ -341,6 +363,14 @@ namespace Agent.Api
                 ErrorMessage = "an internal error occurred in the TRE; the TRE admin can find the details in the Agent log"
             };
         }
+
+        /// <summary>
+        /// True when the task was queued longer ago than DatasetUnreachableGiveUpMinutes. A task without a creation
+        /// time cannot be aged, so it is not retried.
+        /// </summary>
+        private bool HasWaitedTooLong(TesTask task) =>
+            task.CreationTime is not { } created
+            || _clock.GetUtcNow() - created >= TimeSpan.FromMinutes(_settings.DatasetUnreachableGiveUpMinutes);
 
         /// <summary>A 409 that says the task is already final on Submission; task_busy means "send it again".</summary>
         private static bool IsAlreadyFinal(FederatedReportOutcome outcome) =>
