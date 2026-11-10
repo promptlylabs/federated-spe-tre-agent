@@ -11,6 +11,8 @@ using Xunit;
 
 namespace Agent.Api.Tests;
 
+// Execute_without_approved_images_logs_once_per_poll swaps the global Serilog logger.
+[Collection(GlobalLoggerCollection.Name)]
 public class DoFederatedTaskWorkTests
 {
     private const string Csv = "person_id,age,sex\n1,34,F\n2,51,M\n3,47,F\n";

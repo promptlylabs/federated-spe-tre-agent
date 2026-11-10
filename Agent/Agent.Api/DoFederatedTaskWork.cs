@@ -27,7 +27,6 @@ namespace Agent.Api
         private readonly TimeProvider _clock;
         private readonly FederatedTaskSettings _settings;
         private readonly FederatedInputChecks _checks;
-        private int _heldThisPoll;
 
         public DoFederatedTaskWork(IFederatedTaskClient client, IDatasetReader reader, IResultOutputStore outputs,
             IConfiguration config, TimeProvider clock, FederatedTaskSettings settings)
@@ -62,7 +61,7 @@ namespace Agent.Api
             if (pending.Count == 0) return;
 
             Log.Information("Federated tasks: {Count} pending task(s)", pending.Count);
-            _heldThisPoll = 0;
+            var held = 0;
 
             foreach (var task in pending)
             {
@@ -78,7 +77,7 @@ namespace Agent.Api
 
                 try
                 {
-                    await ProcessAsync(task, treName.Trim());
+                    if (await ProcessAsync(task, treName.Trim())) held++;
                 }
                 catch (Exception ex)
                 {
@@ -88,15 +87,16 @@ namespace Agent.Api
             }
 
             // One line per poll, not per task, so a backlog does not flood the log.
-            if (_heldThisPoll > 0)
+            if (held > 0)
                 Log.Error("Federated tasks: FederatedTaskSettings:ApprovedImages is not configured; {Count} task(s) were not checked or run and keep their step",
-                    _heldThisPoll);
+                    held);
         }
 
         /// <summary>
-        /// Compute, save, release and verify one task. Throws on storage or report transport failure.
+        /// Compute, save, release and verify one task. Returns true when the input checks held it because the site has
+        /// not configured them, so the caller can log that once per poll. Throws on storage or report transport failure.
         /// </summary>
-        private async Task ProcessAsync(TesTask task, string treName)
+        private async Task<bool> ProcessAsync(TesTask task, string treName)
         {
             var taskId = task.Id ?? string.Empty;
 
@@ -104,7 +104,7 @@ namespace Agent.Api
             if (!Guid.TryParse(taskId, out var guid))
             {
                 await ReportErrorAsync(Error(taskId, FederatedTaskErrorCodes.InvalidTask, "the task id is not a valid GUID"));
-                return;
+                return false;
             }
             var storeKey = guid.ToString("D");
 
@@ -114,41 +114,37 @@ namespace Agent.Api
             if (bytes == null)
             {
                 var prepared = Prepare(task, taskId, treName);
-                if (prepared.Skip) return;
+                if (prepared.Skip) return false;
                 if (prepared.ErrorReport != null)
                 {
                     await ReportErrorAsync(prepared.ErrorReport);
-                    return;
+                    return false;
                 }
 
                 // The hospital's input checks run before the task is marked running and before any data is read.
                 // A task that fails one is rejected; one the TRE cannot judge now keeps its step.
-                InputCheckOutcome checks;
+                InputCheckOutcome checkOutcome;
                 try
                 {
-                    checks = await _checks.RunAsync(task, prepared.Spec!, CancellationToken.None);
+                    checkOutcome = await _checks.RunAsync(task, prepared.Spec!, CancellationToken.None);
                 }
                 catch (Exception ex)
                 {
                     await RetryOrGiveUpAsync(task, taskId, ex, "listed");
-                    return;
+                    return false;
                 }
 
-                if (checks.Kind == InputCheckKind.Held)
+                if (checkOutcome.Kind == InputCheckKind.Held) return true;
+                if (checkOutcome.Kind == InputCheckKind.Rejected)
                 {
-                    _heldThisPoll++;
-                    return;
-                }
-                if (checks.Kind == InputCheckKind.Rejected)
-                {
-                    await ReportErrorAsync(Error(taskId, checks.ErrorCode!, checks.ErrorMessage));
-                    return;
+                    await ReportErrorAsync(Error(taskId, checkOutcome.ErrorCode!, checkOutcome.ErrorMessage));
+                    return false;
                 }
 
                 // A QUEUED task is marked running before its data is read. A RUNNING one was marked by an earlier
                 // poll and is resumed. A transport failure here throws and leaves the task for the next poll.
                 if (task.State == TesState.QUEUEDEnum && !await ReportRunningAsync(taskId))
-                    return;
+                    return false;
 
                 // The task is running now. If the bucket fails during the read, it stays running and is resumed at the
                 // next poll, under the same time limit as a failed listing. Any other fault cannot be fixed by
@@ -156,24 +152,24 @@ namespace Agent.Api
                 DatasetReadResult dataset;
                 try
                 {
-                    dataset = await _reader.ReadAsync(checks.FileKey!, CancellationToken.None);
+                    dataset = await _reader.ReadAsync(checkOutcome.FileKey!, CancellationToken.None);
                 }
                 catch (DatasetStoreException ex)
                 {
                     await RetryOrGiveUpAsync(task, taskId, ex, "read");
-                    return;
+                    return false;
                 }
                 catch (Exception ex)
                 {
                     await ReportErrorAsync(InternalError(taskId, ex));
-                    return;
+                    return false;
                 }
 
                 var computed = Compute(prepared.Spec!, dataset, taskId);
                 if (computed.ErrorReport != null)
                 {
                     await ReportErrorAsync(computed.ErrorReport);
-                    return;
+                    return false;
                 }
 
                 bytes = FederatedResultDocumentJson.Serialize(computed.Document!);
@@ -188,6 +184,7 @@ namespace Agent.Api
             var outcome = await _client.ReportAsync(
                 new FederatedTaskResultReport { TaskId = taskId, State = TesState.COMPLETEEnum }, bytes);
             await HandleOutcomeAsync(taskId, storeKey, sha, bytes, outcome);
+            return false;
         }
 
         /// <summary>Reports an error state (no file) and logs when Submission does not accept it.</summary>

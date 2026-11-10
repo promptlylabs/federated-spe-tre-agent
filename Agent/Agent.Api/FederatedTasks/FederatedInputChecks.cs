@@ -43,17 +43,26 @@ namespace Agent.Api.FederatedTasks
             _settings = settings;
         }
 
+        /// <summary>
+        /// False when the site has not set ApprovedImages. That is a TRE-wide setting, not a property of one task: every
+        /// task that reaches the checks is held until it is set, because a forgotten setting must not reject anything.
+        /// </summary>
+        public bool IsConfigured => _settings.ApprovedImages.Length > 0;
+
+        /// <summary>
+        /// Each check returns a rejection, or null when the task passes it. The first rejection wins.
+        /// </summary>
         public async Task<InputCheckOutcome> RunAsync(TesTask task, FederatedTaskSpec spec, CancellationToken ct)
         {
-            // A forgotten setting must not reject anything: a rejection is final. The caller logs it once per poll.
-            if (_settings.ApprovedImages.Length == 0)
-                return InputCheckOutcome.Hold();
+            if (!IsConfigured) return InputCheckOutcome.Hold();
 
             // The image comes before the dataset, so a TRE that has not approved it never lists its bucket for the task.
-            var image = CheckImage(task);
-            if (image != null) return image;
+            if (CheckImage(task) is { } imageRejected) return imageRejected;
 
-            return await CheckDatasetAsync(spec, ct);
+            var dataset = await _reader.ResolveAsync(spec.Dataset, ct);
+            if (CheckDataset(dataset) is { } datasetRejected) return datasetRejected;
+
+            return InputCheckOutcome.Pass(dataset.FileKey!);
         }
 
         private InputCheckOutcome? CheckImage(TesTask task)
@@ -65,12 +74,7 @@ namespace Agent.Api.FederatedTasks
                 : InputCheckOutcome.Reject(FederatedTaskErrorCodes.ImageNotApproved, $"image '{image}' is not approved at this TRE");
         }
 
-        private async Task<InputCheckOutcome> CheckDatasetAsync(FederatedTaskSpec spec, CancellationToken ct)
-        {
-            var resolved = await _reader.ResolveAsync(spec.Dataset, ct);
-            return resolved.IsSuccess
-                ? InputCheckOutcome.Pass(resolved.FileKey!)
-                : InputCheckOutcome.Reject(resolved.ErrorCode!, resolved.ErrorMessage!);
-        }
+        private static InputCheckOutcome? CheckDataset(DatasetResolveResult dataset) =>
+            dataset.IsSuccess ? null : InputCheckOutcome.Reject(dataset.ErrorCode!, dataset.ErrorMessage!);
     }
 }
