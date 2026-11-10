@@ -131,8 +131,8 @@ builder.Services.AddSingleton(minioTRESettings);
 var federatedTaskSettings = FederatedTaskSettings.FromConfiguration(configuration);
 builder.Services.AddSingleton(federatedTaskSettings);
 builder.Services.AddSingleton(new AgentStartTime(TimeProvider.System.GetUtcNow()));
-if (federatedTaskSettings.ApprovedImagesWarning() is { } approvedImagesWarning)
-    Log.Error("Federated tasks: {Warning}", approvedImagesWarning);
+if (federatedTaskSettings.ApprovedImagesProblem() is { } approvedImagesProblem)
+    Log.Error("Federated tasks: {Problem}", approvedImagesProblem);
 
 
 var DmnPath = new FiveSafesTes.Core.Models.DmnPath();

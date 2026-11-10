@@ -11,8 +11,6 @@ using Xunit;
 
 namespace Agent.Api.Tests;
 
-// Execute_without_approved_images_logs_once_per_poll swaps the global Serilog logger.
-[Collection(GlobalLoggerCollection.Name)]
 public class DoFederatedTaskWorkTests
 {
     private const string Csv = "person_id,age,sex\n1,34,F\n2,51,M\n3,47,F\n";
@@ -193,92 +191,6 @@ public class DoFederatedTaskWorkTests
         Assert.Empty(client.Reports);
         Assert.Empty(client.ProgressCalls);
         Assert.Equal(0, store.ListCalls);
-    }
-
-    /// <summary>Collects Serilog events while it is the global logger.</summary>
-    private sealed class CollectingSink : Serilog.Core.ILogEventSink
-    {
-        public List<Serilog.Events.LogEvent> Events { get; } = new();
-
-        public void Emit(Serilog.Events.LogEvent logEvent)
-        {
-            lock (Events) Events.Add(logEvent);
-        }
-    }
-
-    [Fact]
-    public async Task Execute_without_approved_images_logs_once_per_poll()
-    {
-        var client = new FakeClient();
-        client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
-        client.Pending.Add(PendingTask(T2, "cohort_2024", "count", null));
-        client.Pending.Add(PendingTask("33333333-3333-3333-3333-333333333333", "cohort_2024", "count", null));
-        var sink = new CollectingSink();
-        var previous = Serilog.Log.Logger;
-        Serilog.Log.Logger = new Serilog.LoggerConfiguration().WriteTo.Sink(sink).CreateLogger();
-        try
-        {
-            await Work(client, Store(), Approving()).Execute();
-        }
-        finally
-        {
-            Serilog.Log.Logger = previous;
-        }
-
-        List<Serilog.Events.LogEvent> events;
-        lock (sink.Events) events = sink.Events.Where(e => e.MessageTemplate.Text.Contains("ApprovedImages")).ToList();
-        var logged = Assert.Single(events);
-        Assert.Equal(Serilog.Events.LogEventLevel.Error, logged.Level);
-    }
-
-    [Fact]
-    public async Task Execute_saved_result_whose_image_is_no_longer_approved_is_released_with_a_warning()
-    {
-        var client = new FakeClient();
-        client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
-        var outputs = new FakeResultOutputStore();
-        outputs.Files[T1] = Encoding.UTF8.GetBytes("{\"schemaVersion\":1}");
-        var sink = new CollectingSink();
-        var previous = Serilog.Log.Logger;
-        Serilog.Log.Logger = new Serilog.LoggerConfiguration().WriteTo.Sink(sink).CreateLogger();
-        try
-        {
-            await Work(client, new ThrowingReader(), outputs: outputs, settings: Approving("other:1")).Execute();
-        }
-        finally
-        {
-            Serilog.Log.Logger = previous;
-        }
-
-        // Releasing is output approval's call, not the input checks'; the site is told the image check was skipped.
-        Assert.Equal(TesState.COMPLETEEnum, Assert.Single(client.Reports).State);
-        List<Serilog.Events.LogEvent> events;
-        lock (sink.Events) events = sink.Events.Where(e => e.MessageTemplate.Text.Contains("no longer approved")).ToList();
-        var logged = Assert.Single(events);
-        Assert.Equal(Serilog.Events.LogEventLevel.Warning, logged.Level);
-    }
-
-    [Fact]
-    public async Task Execute_saved_result_whose_image_is_approved_is_released_without_a_warning()
-    {
-        var client = new FakeClient();
-        client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
-        var outputs = new FakeResultOutputStore();
-        outputs.Files[T1] = Encoding.UTF8.GetBytes("{\"schemaVersion\":1}");
-        var sink = new CollectingSink();
-        var previous = Serilog.Log.Logger;
-        Serilog.Log.Logger = new Serilog.LoggerConfiguration().WriteTo.Sink(sink).CreateLogger();
-        try
-        {
-            await Work(client, new ThrowingReader(), outputs: outputs).Execute();
-        }
-        finally
-        {
-            Serilog.Log.Logger = previous;
-        }
-
-        Assert.Equal(TesState.COMPLETEEnum, Assert.Single(client.Reports).State);
-        lock (sink.Events) Assert.DoesNotContain(sink.Events, e => e.MessageTemplate.Text.Contains("no longer approved"));
     }
 
     [Fact]
@@ -1091,5 +1003,103 @@ public class DoFederatedTaskWorkTests
         var report = Assert.Single(client.Reports);
         Assert.Equal(TesState.SYSTEMERROREnum, report.State);
         Assert.Equal("internal_error", report.ErrorCode);
+    }
+
+    /// <summary>
+    /// Tests that read the log. They swap Serilog's global logger, so they run alone in GlobalLoggerCollection; the rest
+    /// of this class runs in parallel as usual.
+    /// </summary>
+    [Collection(GlobalLoggerCollection.Name)]
+    public class LogTests
+    {
+        private sealed class CollectingSink : Serilog.Core.ILogEventSink
+        {
+            public List<Serilog.Events.LogEvent> Events { get; } = new();
+
+            public void Emit(Serilog.Events.LogEvent logEvent)
+            {
+                lock (Events) Events.Add(logEvent);
+            }
+        }
+
+        /// <summary>Runs the work with a collecting global logger; returns the events whose template contains the text.</summary>
+        private static async Task<List<Serilog.Events.LogEvent>> Logged(string text, Func<Task> work)
+        {
+            var sink = new CollectingSink();
+            var previous = Serilog.Log.Logger;
+            Serilog.Log.Logger = new Serilog.LoggerConfiguration().WriteTo.Sink(sink).CreateLogger();
+            try
+            {
+                await work();
+            }
+            finally
+            {
+                Serilog.Log.Logger = previous;
+            }
+
+            lock (sink.Events) return sink.Events.Where(e => e.MessageTemplate.Text.Contains(text)).ToList();
+        }
+
+        private static FakeResultOutputStore SavedResult()
+        {
+            var outputs = new FakeResultOutputStore();
+            outputs.Files[T1] = Encoding.UTF8.GetBytes("{\"schemaVersion\":1}");
+            return outputs;
+        }
+
+        [Fact]
+        public async Task Execute_without_approved_images_logs_once_per_poll()
+        {
+            var client = new FakeClient();
+            client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+            client.Pending.Add(PendingTask(T2, "cohort_2024", "count", null));
+            client.Pending.Add(PendingTask("33333333-3333-3333-3333-333333333333", "cohort_2024", "count", null));
+
+            var events = await Logged("ApprovedImages", () => Work(client, Store(), Approving()).Execute());
+
+            Assert.Equal(Serilog.Events.LogEventLevel.Error, Assert.Single(events).Level);
+        }
+
+        [Fact]
+        public async Task Execute_saved_result_whose_image_is_no_longer_approved_is_released_with_a_warning()
+        {
+            var client = new FakeClient();
+            client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+
+            var events = await Logged("no longer approved", () =>
+                Work(client, new ThrowingReader(), outputs: SavedResult(), settings: Approving("other:1")).Execute());
+
+            // Releasing is output approval's call, not the input checks'; the site is told the image check was skipped.
+            Assert.Equal(TesState.COMPLETEEnum, Assert.Single(client.Reports).State);
+            Assert.Equal(Serilog.Events.LogEventLevel.Warning, Assert.Single(events).Level);
+        }
+
+        [Fact]
+        public async Task Execute_saved_result_whose_image_is_approved_is_released_without_a_warning()
+        {
+            var client = new FakeClient();
+            client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+
+            var events = await Logged("no longer approved", () =>
+                Work(client, new ThrowingReader(), outputs: SavedResult()).Execute());
+
+            Assert.Equal(TesState.COMPLETEEnum, Assert.Single(client.Reports).State);
+            Assert.Empty(events);
+        }
+
+        [Fact]
+        public async Task Execute_saved_result_of_a_task_without_an_image_is_released_without_a_warning()
+        {
+            var client = new FakeClient();
+            var task = PendingTask(T1, "cohort_2024", "count", null);
+            task.Executors = null;
+            client.Pending.Add(task);
+
+            var events = await Logged("no longer approved", () =>
+                Work(client, new ThrowingReader(), outputs: SavedResult(), settings: Approving("other:1")).Execute());
+
+            Assert.Equal(TesState.COMPLETEEnum, Assert.Single(client.Reports).State);
+            Assert.Empty(events);
+        }
     }
 }

@@ -43,10 +43,12 @@ namespace Agent.Api.Models
         public string OutputReadPolicyName { get; set; } = "federated-outputs-read";
 
         /// <summary>
-        /// How long, in minutes after a task was queued, the Agent keeps retrying a task whose dataset bucket cannot
-        /// be listed or read. Until then a failure is treated as an outage and the task is tried again at the next
-        /// poll; after it, the task fails with internal_error so a bucket that is wrongly configured does not leave it
-        /// unfinished for good.
+        /// How long, in minutes, the Agent keeps retrying a task whose dataset bucket cannot be listed or read. The time
+        /// counts from when the task was queued, or from when the Agent started if that is later, so a task held while
+        /// ApprovedImages was missing, or queued while the Agent was down, gets the whole window. Each Agent restart gives
+        /// pending tasks the whole window again. Until then a failure is treated as an outage and the task is tried again
+        /// at the next poll; after it, the task fails with internal_error so a bucket that is wrongly configured does not
+        /// leave it unfinished for good.
         /// 0 or less gives up at the first failure.
         /// </summary>
         public int DatasetUnreachableGiveUpMinutes { get; set; } = 60;
@@ -72,9 +74,10 @@ namespace Agent.Api.Models
         /// <summary>
         /// A message for the site admin when the list is set but holds none of the images the federated profile accepts:
         /// every federated task is then rejected with image_not_approved. That can be a deliberate refusal or a typo
-        /// (for example a registry prefix), which the Agent cannot tell apart, so it only warns. Null otherwise.
+        /// (for example a registry prefix). The Agent cannot tell them apart, so it logs this as an error at startup but
+        /// still applies the list. Null otherwise.
         /// </summary>
-        public string? ApprovedImagesWarning() =>
+        public string? ApprovedImagesProblem() =>
             ApprovedImages.Length == 0 || ApprovedImages.Contains(FederatedTesProfile.ExecutorImage, StringComparer.Ordinal)
                 ? null
                 : $"FederatedTaskSettings:ApprovedImages does not list '{FederatedTesProfile.ExecutorImage}', the image every federated task uses, " +
@@ -92,10 +95,11 @@ namespace Agent.Api.Models
                 settings.AllowedExtensions = extensions;
             }
 
-            // A single value ("img" or "img1,img2") instead of indexed entries ("ApprovedImages:0") is split, not lost.
+            // A single value ("img" or "img1,img2") is split, not lost. It replaces any indexed entries
+            // ("ApprovedImages:0"), as an environment variable is expected to override appsettings.
             if (section[nameof(ApprovedImages)] is { } single && !string.IsNullOrWhiteSpace(single))
             {
-                settings.ApprovedImages = [.. settings.ApprovedImages, .. single.Split(',')];
+                settings.ApprovedImages = single.Split(',');
             }
 
             return settings;

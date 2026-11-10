@@ -81,19 +81,32 @@ public class FederatedTaskSettingsTests
     }
 
     [Fact]
-    public void ApprovedImagesWarning_is_null_when_the_list_is_empty_or_has_the_profile_image()
+    public void ApprovedImagesProblem_is_null_when_the_list_is_empty_or_has_the_profile_image()
     {
-        Assert.Null(new FederatedTaskSettings().ApprovedImagesWarning());
-        Assert.Null(new FederatedTaskSettings { ApprovedImages = ["other:1", FederatedTesProfile.ExecutorImage] }.ApprovedImagesWarning());
+        Assert.Null(new FederatedTaskSettings().ApprovedImagesProblem());
+        Assert.Null(new FederatedTaskSettings { ApprovedImages = ["other:1", FederatedTesProfile.ExecutorImage] }.ApprovedImagesProblem());
     }
 
     [Fact]
-    public void ApprovedImagesWarning_names_the_profile_image_when_the_list_lacks_it()
+    public void ApprovedImagesProblem_names_the_profile_image_when_the_list_lacks_it()
     {
-        var warning = new FederatedTaskSettings { ApprovedImages = ["docker.io/5s-tes/federated-ops:1"] }.ApprovedImagesWarning();
+        var warning = new FederatedTaskSettings { ApprovedImages = ["docker.io/5s-tes/federated-ops:1"] }.ApprovedImagesProblem();
 
         Assert.NotNull(warning);
         Assert.Contains("'5s-tes/federated-ops:1'", warning);
         Assert.Contains("image_not_approved", warning);
+    }
+
+    [Fact]
+    public void FromConfiguration_single_ApprovedImages_value_replaces_indexed_entries()
+    {
+        // appsettings lists ApprovedImages:0; an environment variable FederatedTaskSettings__ApprovedImages overrides it.
+        var settings = Bind(new Dictionary<string, string?>
+        {
+            ["FederatedTaskSettings:ApprovedImages:0"] = "5s-tes/federated-ops:1",
+            ["FederatedTaskSettings:ApprovedImages"] = "other:1",
+        });
+
+        Assert.Equal(["other:1"], settings.ApprovedImages);
     }
 }
