@@ -175,6 +175,15 @@ namespace Agent.Api
                 bytes = FederatedResultDocumentJson.Serialize(computed.Document!);
                 await _outputs.SaveAsync(storeKey, bytes, CancellationToken.None);
             }
+            else
+            {
+                // A saved result passed the input checks on an earlier poll, so they don't run again: releasing it is
+                // output approval's decision. If the site has since removed the task's image, say so in the log.
+                var image = FederatedInputChecks.ImageOf(task);
+                if (_checks.IsConfigured && !_checks.IsImageApproved(image))
+                    Log.Warning("Federated tasks: releasing the saved result of task {TaskId}, although its image {Image} is no longer approved at this TRE; the input checks passed before the result was saved",
+                        taskId, image);
+            }
 
             var sha = FederatedResultDocumentJson.Sha256Hex(bytes);
             Log.Information("Federated tasks: saved result for {TaskId} sha256 {Sha}", taskId, sha);

@@ -65,11 +65,19 @@ namespace Agent.Api.FederatedTasks
             return InputCheckOutcome.Pass(dataset.FileKey!);
         }
 
+        /// <summary>
+        /// The task's executor image, or null when the task has none. Safe on a task that was not parsed against the
+        /// profile, such as one whose saved result is released without running the checks again.
+        /// </summary>
+        public static string? ImageOf(TesTask task) => task.Executors?.FirstOrDefault()?.Image;
+
+        public bool IsImageApproved(string? image) =>
+            image != null && _settings.ApprovedImages.Contains(image, StringComparer.Ordinal);
+
         private InputCheckOutcome? CheckImage(TesTask task)
         {
-            // The profile has already checked there is exactly one executor.
-            var image = task.Executors[0].Image;
-            return _settings.ApprovedImages.Contains(image, StringComparer.Ordinal)
+            var image = ImageOf(task);
+            return IsImageApproved(image)
                 ? null
                 : InputCheckOutcome.Reject(FederatedTaskErrorCodes.ImageNotApproved, $"image '{image}' is not approved at this TRE");
         }

@@ -231,6 +231,56 @@ public class DoFederatedTaskWorkTests
     }
 
     [Fact]
+    public async Task Execute_saved_result_whose_image_is_no_longer_approved_is_released_with_a_warning()
+    {
+        var client = new FakeClient();
+        client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+        var outputs = new FakeResultOutputStore();
+        outputs.Files[T1] = Encoding.UTF8.GetBytes("{\"schemaVersion\":1}");
+        var sink = new CollectingSink();
+        var previous = Serilog.Log.Logger;
+        Serilog.Log.Logger = new Serilog.LoggerConfiguration().WriteTo.Sink(sink).CreateLogger();
+        try
+        {
+            await Work(client, new ThrowingReader(), outputs: outputs, settings: Approving("other:1")).Execute();
+        }
+        finally
+        {
+            Serilog.Log.Logger = previous;
+        }
+
+        // Releasing is output approval's call, not the input checks'; the site is told the image check was skipped.
+        Assert.Equal(TesState.COMPLETEEnum, Assert.Single(client.Reports).State);
+        List<Serilog.Events.LogEvent> events;
+        lock (sink.Events) events = sink.Events.Where(e => e.MessageTemplate.Text.Contains("no longer approved")).ToList();
+        var logged = Assert.Single(events);
+        Assert.Equal(Serilog.Events.LogEventLevel.Warning, logged.Level);
+    }
+
+    [Fact]
+    public async Task Execute_saved_result_whose_image_is_approved_is_released_without_a_warning()
+    {
+        var client = new FakeClient();
+        client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+        var outputs = new FakeResultOutputStore();
+        outputs.Files[T1] = Encoding.UTF8.GetBytes("{\"schemaVersion\":1}");
+        var sink = new CollectingSink();
+        var previous = Serilog.Log.Logger;
+        Serilog.Log.Logger = new Serilog.LoggerConfiguration().WriteTo.Sink(sink).CreateLogger();
+        try
+        {
+            await Work(client, new ThrowingReader(), outputs: outputs).Execute();
+        }
+        finally
+        {
+            Serilog.Log.Logger = previous;
+        }
+
+        Assert.Equal(TesState.COMPLETEEnum, Assert.Single(client.Reports).State);
+        lock (sink.Events) Assert.DoesNotContain(sink.Events, e => e.MessageTemplate.Text.Contains("no longer approved"));
+    }
+
+    [Fact]
     public async Task Execute_without_approved_images_still_releases_a_saved_result()
     {
         var client = new FakeClient();

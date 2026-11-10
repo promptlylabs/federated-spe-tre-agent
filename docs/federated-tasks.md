@@ -311,6 +311,8 @@ Set `FederatedTaskSettings:ApprovedImages` to the executor images that this TRE 
 
 There is no default, because the site approves the images. Only `appsettings.Development*.json` lists `5s-tes/federated-ops:1`. If the list is not set, the Agent logs an error. A task that fails the profile is still rejected. Other new tasks are not run or reported. They keep their step and run when the list is set. A task whose result file is already saved is still released. Every federated task uses `5s-tes/federated-ops:1` today, so a list without it rejects every federated task at this TRE with `image_not_approved`.
 
+The input checks run once, before the task runs. A task whose result file was saved on an earlier poll is released without checking again. Releasing a result is the decision of output approval, not of the input checks. If its image was removed from the list in the meantime, the Agent logs a warning and still releases the result.
+
 ### Agent identity
 
 The Agent must run with the TRE service account: `ConfigInputMethod` is `Upload` for the TRE in the Agent's own database. If it is not, the Agent logs a warning and runs no federated task. The service account is the Keycloak client of the TRE (`Tre.KeycloakClientId`), with the role `dare-tre-admin`.
