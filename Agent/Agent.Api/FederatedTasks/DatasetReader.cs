@@ -54,6 +54,8 @@ namespace Agent.Api.FederatedTasks
 
         public async Task<DatasetReadResult> ReadAsync(string fileKey, CancellationToken ct)
         {
+            // If the file was removed after ResolveAsync, this throws and the task fails with internal_error, not
+            // dataset_not_found. The window is a few milliseconds and datasets are not removed while tasks run.
             await using var stream = await _store.OpenReadAsync(fileKey, ct);
 
             var sha256 = Convert.ToHexString(await SHA256.HashDataAsync(stream, ct)).ToLowerInvariant();

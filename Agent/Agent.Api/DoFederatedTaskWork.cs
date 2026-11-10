@@ -280,20 +280,16 @@ namespace Agent.Api
             return false;
         }
 
-        /// <summary>Finds the task's dataset file. Returns its key or an error report. Reads no data values.</summary>
+        /// <summary>
+        /// Finds the task's dataset file. Returns its key or an error report. Reads no data values. A store failure
+        /// throws: the task keeps its step and is tried again at the next poll, because nothing about the task is wrong.
+        /// </summary>
         private async Task<Resolved> ResolveAsync(FederatedTaskSpec spec, string taskId)
         {
-            try
-            {
-                var resolved = await _reader.ResolveAsync(spec.Dataset, CancellationToken.None);
-                return resolved.IsSuccess
-                    ? new Resolved(resolved.FileKey, null)
-                    : new Resolved(null, Error(taskId, resolved.ErrorCode!, resolved.ErrorMessage));
-            }
-            catch (Exception ex)
-            {
-                return new Resolved(null, InternalError(taskId, ex));
-            }
+            var resolved = await _reader.ResolveAsync(spec.Dataset, CancellationToken.None);
+            return resolved.IsSuccess
+                ? new Resolved(resolved.FileKey, null)
+                : new Resolved(null, Error(taskId, resolved.ErrorCode!, resolved.ErrorMessage));
         }
 
         /// <summary>

@@ -10,7 +10,7 @@ To try the flow locally, see [dev/federated](../dev/federated/README.md). It is 
 
 1. A `dare-control-admin` user calls `POST /api/FederatedTask/Enqueue` with a TES task. Submission validates it against the federated profile. The task is stored at the step `queued`. The response holds the task id.
 2. The Agent job `Run Federated Tasks` (`JobSettings:FederatedTaskJobName`) runs every `JobSettings:federatedTaskSchedule` minutes. It calls `GET /api/FederatedTask/GetPendingTasksForTre`. The TRE is taken from the token.
-3. The Agent checks the task against the profile and finds the one `.csv` under `dataset/<name>/` in the dataset bucket. It reads no data values yet. If a check fails, or there is no file or more than one, the task is rejected (`rejected_by_input_checks`) and never reaches `running`.
+3. The Agent checks the task against the profile and finds the one `.csv` under `dataset/<name>/` in the dataset bucket. It reads no data values yet. If a check fails, or there is no file or more than one, the task is rejected (`rejected_by_input_checks`). A `queued` task rejected here never reaches `running`. A resumed `running` task is checked again, so if its dataset was removed in the meantime it is rejected with a `running_at` in its history. If the dataset bucket cannot be reached, the task keeps its step and is tried again at the next poll.
 4. For a `queued` task, the Agent calls `POST /api/FederatedTask/ReportProgress` with the step `running`. Submission moves the task to `running`. Then the Agent reads the file.
 5. The Agent runs the operation in-process. It does not start a container. The result is a JSON file (see "Task state and result").
 6. The Agent saves the file in the TRE bucket `federated-outputs` as `<taskId>.json`. If the file is already there from an earlier poll, the Agent reuses it and does not compute again.
@@ -40,6 +40,12 @@ sequenceDiagram
     loop every federatedTaskSchedule minutes
         Agent->>Sub: GET GetPendingTasksForTre (TRE from token)
         Sub-->>Agent: running, queued and waiting tasks for this TRE
+    end
+    Agent->>Agent: check the task against the profile
+    Agent->>TS: find the dataset CSV (no data read)
+    alt check fails, or no file or more than one
+        Agent->>Sub: POST ReportResult (CANCELED, RejectedAt input_checks, code + message)
+        Note over Agent,Sub: rejected_by_input_checks; a queued task never reaches running
     end
     Agent->>Sub: POST ReportProgress (step running), only for a queued task
     Sub-->>Agent: 200, task is running (409 if the task is past running)
@@ -124,6 +130,7 @@ A `ReportResult` with state `EXECUTOR_ERROR`, `SYSTEM_ERROR` or `CANCELED` must 
 - The task is already at that step: 200, nothing changes. The Agent can send the same report again.
 - The task is at a later step: 409 `invalid_transition`.
 - The task is final: 409 `task_already_reported`.
+- Other reports for the same task won the race three times in a row: 409 `task_busy`. Nothing changed. Send the report again.
 - The task belongs to another TRE, or does not exist: 404 `task_not_found`.
 
 The Agent sends only `running`. `waiting_for_output_approval` is for the egress review that is not built yet.

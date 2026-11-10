@@ -726,17 +726,16 @@ public class DoFederatedTaskWorkTests
     }
 
     [Fact]
-    public async Task Execute_store_failure_while_finding_dataset_reports_internal_error_without_running()
+    public async Task Execute_store_failure_while_finding_dataset_leaves_task_for_next_poll()
     {
         var client = OneMean();
+        client.Pending.Add(PendingTask(T2, "cohort_2024", "count", null));
 
         await Work(client, new FailingResolveReader()).Execute();
 
+        // Nothing is reported for either task, and the failure of the first does not stop the second being tried.
         Assert.Empty(client.ProgressCalls);
-        var report = Assert.Single(client.Reports);
-        Assert.Equal(TesState.SYSTEMERROREnum, report.State);
-        Assert.Equal("internal_error", report.ErrorCode);
-        Assert.Null(report.RejectedAt);
+        Assert.Empty(client.Calls);
     }
 
     private sealed class FailingResolveReader : IDatasetReader
@@ -756,5 +755,34 @@ public class DoFederatedTaskWorkTests
 
         Assert.Single(client.ProgressCalls);
         Assert.Empty(client.Calls);
+    }
+
+    [Fact]
+    public async Task Result_409_task_busy_does_not_mark_released_and_keeps_the_saved_file()
+    {
+        var client = OneMean();
+        client.Outcomes.Enqueue(new FederatedReportOutcome(409, "task_busy", "busy", null, null));
+        var outputs = new FakeResultOutputStore();
+
+        await Work(client, Store(), outputs: outputs).Execute();
+
+        // One release attempt, no follow-up report, the TRE copy is kept untagged for the next poll to release.
+        Assert.Single(client.Calls);
+        Assert.Empty(outputs.Released);
+        Assert.Single(outputs.Files);
+    }
+
+    [Fact]
+    public async Task Error_report_409_task_busy_sends_nothing_more()
+    {
+        var client = new FakeClient();
+        client.Pending.Add(PendingTask(T1, "nope", "count", null));
+        client.Outcomes.Enqueue(new FederatedReportOutcome(409, "task_busy", "busy", null, null));
+        var outputs = new FakeResultOutputStore();
+
+        await Work(client, Store(), outputs: outputs).Execute();
+
+        Assert.Single(client.Calls);
+        Assert.Empty(outputs.Files);
     }
 }

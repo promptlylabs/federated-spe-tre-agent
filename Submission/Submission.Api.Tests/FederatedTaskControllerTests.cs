@@ -32,6 +32,11 @@ namespace Submission.Api.Tests
         private static ApplicationDbContext OpenDb(string name) =>
             new(new DbContextOptionsBuilder<ApplicationDbContext>().UseInMemoryDatabase(name).Options);
 
+        // A context with a materialization interceptor gets its own EF service provider, and so its own in-memory
+        // store, unless every context names the same root.
+        private static ApplicationDbContext OpenDb(string name, Microsoft.EntityFrameworkCore.Storage.InMemoryDatabaseRoot root) =>
+            new(new DbContextOptionsBuilder<ApplicationDbContext>().UseInMemoryDatabase(name, root).Options);
+
         private static Tre NewTre(int id, string name, string admin, string clientId) => new()
         {
             Id = id,
@@ -1405,6 +1410,56 @@ namespace Submission.Api.Tests
             var row = Reload(check, seeded.TaskId);
             Assert.False(FederatedTaskSteps.IsFinal(row.Step));
             Assert.Equal(TesState.QUEUEDEnum, row.State);
+        }
+
+        /// <summary>
+        /// Before the first save, moves the task to running through another context so the save loses the race, then
+        /// makes the next read of a task fail, as if the database went away.
+        /// </summary>
+        private sealed class LoseRaceThenFailReread(string dbName, Microsoft.EntityFrameworkCore.Storage.InMemoryDatabaseRoot root)
+            : Microsoft.EntityFrameworkCore.Diagnostics.SaveChangesInterceptor, Microsoft.EntityFrameworkCore.Diagnostics.IMaterializationInterceptor
+        {
+            private bool _raced;
+
+            public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int>> SavingChangesAsync(
+                Microsoft.EntityFrameworkCore.Diagnostics.DbContextEventData eventData,
+                Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> result, CancellationToken cancellationToken = default)
+            {
+                if (!_raced)
+                {
+                    _raced = true;
+                    using var other = OpenDb(dbName, root);
+                    var t = other.FederatedTasks.Include(x => x.StepChanges).Single();
+                    t.MoveTo(FederatedTaskStep.Running, DateTime.UtcNow);
+                    other.SaveChanges();
+                }
+
+                return ValueTask.FromResult(result);
+            }
+
+            public object InitializedInstance(Microsoft.EntityFrameworkCore.Diagnostics.MaterializationInterceptionData materializationData, object entity) =>
+                _raced && entity is FederatedTask ? throw new InvalidOperationException("database unavailable") : entity;
+        }
+
+        [Fact]
+        public async Task ReportResult_reread_failure_after_a_race_is_503_and_records_nothing()
+        {
+            var name = Guid.NewGuid().ToString();
+            var root = new Microsoft.EntityFrameworkCore.Storage.InMemoryDatabaseRoot();
+            using var setup = OpenDb(name, root);
+            setup.Tres.Add(NewTre(1, "tre-a", "tre-a-admin", "tre-a-client"));
+            setup.SaveChanges();
+            var seeded = SeedAtStep(setup, FederatedTaskStep.Queued);
+            using var racing = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
+                .UseInMemoryDatabase(name, root).AddInterceptors(new LoseRaceThenFailReread(name, root)).Options);
+
+            var result = await ReportComplete(AgentControllerFor(racing, "tre-a-client", new FakeResultStore()), seeded);
+
+            AssertError(result, 503, FederatedTaskErrorCodes.StorageUnavailable);
+            using var check = OpenDb(name, root);
+            var row = Reload(check, seeded.TaskId);
+            Assert.Equal(FederatedTaskStep.Running, row.Step);
+            Assert.Equal(TesState.RUNNINGEnum, row.State);
         }
     }
 }
