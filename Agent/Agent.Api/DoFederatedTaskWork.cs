@@ -68,8 +68,8 @@ namespace Agent.Api
                 }
                 catch (Exception ex)
                 {
-                    // A task whose save or report failed stays QUEUED on the server and is retried on the next poll.
-                    Log.Error(ex, "Federated tasks: task {TaskId} could not be completed this poll; it stays QUEUED", task.Id);
+                    // A task whose save or report failed keeps its step on the server and is retried on the next poll.
+                    Log.Error(ex, "Federated tasks: task {TaskId} could not be completed this poll; it keeps its step", task.Id);
                 }
             }
         }
@@ -138,7 +138,7 @@ namespace Agent.Api
             }
             else if (!outcome.Accepted)
             {
-                Log.Warning("Federated tasks: Submission did not accept the error report for task {TaskId} (status {Status}, {ErrorCode}); it stays QUEUED",
+                Log.Warning("Federated tasks: Submission did not accept the error report for task {TaskId} (status {Status}, {ErrorCode}); it keeps its step",
                     report.TaskId, outcome.StatusCode, outcome.ErrorCode);
             }
         }
@@ -166,7 +166,7 @@ namespace Agent.Api
                 return;
             }
 
-            Log.Warning("Federated tasks: Submission did not accept the result for task {TaskId} (status {Status}, {ErrorCode}); it stays QUEUED",
+            Log.Warning("Federated tasks: Submission did not accept the result for task {TaskId} (status {Status}, {ErrorCode}); it keeps its step",
                 taskId, outcome.StatusCode, outcome.ErrorCode);
         }
 

@@ -240,7 +240,7 @@ public class DoFederatedTaskWorkTests
 
         await Work(client, store).Execute();
 
-        // t1 stays QUEUED on the server; t2 still runs.
+        // t1 keeps its step on the server; t2 still runs.
         var report = Assert.Single(client.Reports);
         Assert.Equal(T2, report.TaskId);
         Assert.Equal(TesState.COMPLETEEnum, report.State);

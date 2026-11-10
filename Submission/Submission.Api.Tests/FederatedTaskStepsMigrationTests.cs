@@ -15,5 +15,13 @@ namespace Submission.Api.Tests
             Assert.Contains(ops.OfType<CreateTableOperation>(), o => o.Name == "FederatedTaskStepChanges");
             Assert.NotEmpty(ops.OfType<SqlOperation>());
         }
+
+        [Fact]
+        public void Down_maps_new_states_back_before_dropping_step()
+        {
+            var ops = new AddFederatedTaskSteps().DownOperations;
+
+            Assert.NotEmpty(ops.OfType<SqlOperation>());
+        }
     }
 }

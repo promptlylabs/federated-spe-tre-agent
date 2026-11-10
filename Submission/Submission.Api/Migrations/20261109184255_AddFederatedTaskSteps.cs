@@ -80,6 +80,15 @@ namespace Submission.Api.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            // The old code only knows QUEUED, COMPLETE and the error states: RUNNING and PAUSED go back to
+            // QUEUED, CANCELED becomes EXECUTOR_ERROR.
+            migrationBuilder.Sql("""
+                UPDATE "FederatedTasks" SET "State" = 2 WHERE "State" IN (4, 5);
+                """);
+            migrationBuilder.Sql("""
+                UPDATE "FederatedTasks" SET "State" = 7 WHERE "State" = 9;
+                """);
+
             migrationBuilder.DropTable(
                 name: "FederatedTaskStepChanges");
 
