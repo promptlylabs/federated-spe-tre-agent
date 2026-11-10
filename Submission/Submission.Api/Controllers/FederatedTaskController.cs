@@ -105,8 +105,8 @@ namespace Submission.Api.Controllers
 
             var treName = tre.Name.ToLower();
 
-            // The Agent refuses tasks whose tres is not its own name and leaves them QUEUED. Tasks enqueued under a
-            // name the TRE no longer has would sit at the front of the queue forever, so they are not handed out.
+            // The Agent refuses tasks whose tres is not its own name and leaves them as they are. Tasks enqueued under a
+            // name the TRE no longer has would stay unfinished forever and fill the list, so they are not handed out.
             var tasks = await _DbContext.FederatedTasks
                 .AsNoTracking()
                 .Where(x => x.TreId == tre.Id && x.TreName == treName

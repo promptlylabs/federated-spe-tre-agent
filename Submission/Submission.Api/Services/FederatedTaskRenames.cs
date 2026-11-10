@@ -29,7 +29,7 @@ namespace Submission.Api.Services
             foreach (var task in orphaned)
             {
                 task.MoveTo(FederatedTaskStep.Failed, now, TesState.SYSTEMERROREnum, FederatedTaskErrorCodes.TreRenamed,
-                    $"the TRE was renamed to '{current}' before this task ran; enqueue it again under the new name");
+                    $"the TRE was renamed to '{current}' before this task finished; enqueue it again under the new name");
             }
 
             return orphaned.Count;
