@@ -229,7 +229,7 @@ The result is in `logs[0].metadata`. Every key and value is a string.
 - On `released`: `result_bucket`, `result_key` and `result_sha256` (where the result file is stored in the orchestrator, and its SHA-256). On a rejection or a failure: `error_code` and `error_message`.
 
 - The computed values (count, mean) are in the result file, not in the metadata.
-- `dataset_sha256` is added whenever the Agent read the dataset file, on success and on errors raised after the read (including `invalid_dataset`). It is the lowercase hex SHA-256 of the exact bytes of the CSV. It is absent when the file was not read (`invalid_task`, `dataset_not_found`, `ambiguous_dataset`, `invalid_dataset_name`, `tre_renamed`, and `internal_error` before the read). An empty file gives `invalid_dataset` with the hash.
+- `dataset_sha256` is added whenever the Agent read the dataset file, on success and on errors raised after the read (including `invalid_dataset`). It is the lowercase hex SHA-256 of the exact bytes of the CSV. It is absent when the file was not read: every input-check rejection (`invalid_task`, `unknown_operation`, `invalid_filter`, `image_not_approved`, `invalid_dataset_name`, `dataset_not_found`, `ambiguous_dataset`), `tre_renamed`, and `internal_error` before the read. An empty file gives `invalid_dataset` with the hash.
 
 ### How the steps fit the standards
 
