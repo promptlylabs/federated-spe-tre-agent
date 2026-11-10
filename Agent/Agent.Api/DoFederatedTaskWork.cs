@@ -26,6 +26,7 @@ namespace Agent.Api
         private readonly IConfiguration _config;
         private readonly TimeProvider _clock;
         private readonly FederatedTaskSettings _settings;
+        private readonly FederatedInputChecks _checks;
 
         public DoFederatedTaskWork(IFederatedTaskClient client, IDatasetReader reader, IResultOutputStore outputs,
             IConfiguration config, TimeProvider clock, FederatedTaskSettings settings)
@@ -36,6 +37,7 @@ namespace Agent.Api
             _config = config;
             _clock = clock;
             _settings = settings;
+            _checks = new FederatedInputChecks(reader, settings);
         }
 
         public async Task Execute()
@@ -112,12 +114,12 @@ namespace Agent.Api
                     return;
                 }
 
-                // Finding the dataset is the last input check: a task whose dataset is missing is rejected before it
-                // is marked running.
-                Resolved resolved;
+                // The hospital's input checks run before the task is marked running and before any data is read.
+                // A task that fails one is rejected; one the TRE cannot judge now keeps its step.
+                InputCheckOutcome checks;
                 try
                 {
-                    resolved = await ResolveAsync(prepared.Spec!, taskId);
+                    checks = await _checks.RunAsync(task, prepared.Spec!, CancellationToken.None);
                 }
                 catch (Exception ex)
                 {
@@ -125,9 +127,10 @@ namespace Agent.Api
                     return;
                 }
 
-                if (resolved.ErrorReport != null)
+                if (checks.Kind == InputCheckKind.Held) return;
+                if (checks.Kind == InputCheckKind.Rejected)
                 {
-                    await ReportErrorAsync(resolved.ErrorReport);
+                    await ReportErrorAsync(Error(taskId, checks.ErrorCode!, checks.ErrorMessage));
                     return;
                 }
 
@@ -142,7 +145,7 @@ namespace Agent.Api
                 DatasetReadResult dataset;
                 try
                 {
-                    dataset = await _reader.ReadAsync(resolved.FileKey!, CancellationToken.None);
+                    dataset = await _reader.ReadAsync(checks.FileKey!, CancellationToken.None);
                 }
                 catch (DatasetStoreException ex)
                 {
@@ -269,8 +272,6 @@ namespace Agent.Api
 
         private sealed record Prepared(FederatedTaskSpec? Spec, FederatedTaskResultReport? ErrorReport, bool Skip);
 
-        private sealed record Resolved(string? FileKey, FederatedTaskResultReport? ErrorReport);
-
         /// <summary>
         /// Parses the task and checks it is addressed to this TRE. Returns the spec, an error report, or Skip when
         /// the task must be left alone without a report.
@@ -310,18 +311,6 @@ namespace Agent.Api
                 Log.Warning("Federated tasks: Submission did not accept the running report for task {TaskId} (status {Status}, {ErrorCode}); it will be retried on the next poll",
                     taskId, outcome.StatusCode, outcome.ErrorCode);
             return false;
-        }
-
-        /// <summary>
-        /// Finds the task's dataset file. Returns its key or an error report. Reads no data values. A store failure
-        /// throws, and the caller decides whether to retry or give up.
-        /// </summary>
-        private async Task<Resolved> ResolveAsync(FederatedTaskSpec spec, string taskId)
-        {
-            var resolved = await _reader.ResolveAsync(spec.Dataset, CancellationToken.None);
-            return resolved.IsSuccess
-                ? new Resolved(resolved.FileKey, null)
-                : new Resolved(null, Error(taskId, resolved.ErrorCode!, resolved.ErrorMessage));
         }
 
         /// <summary>

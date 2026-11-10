@@ -135,7 +135,89 @@ public class DoFederatedTaskWorkTests
             .AddInMemoryCollection(new Dictionary<string, string?> { ["TreName"] = treName })
             .Build();
         return new DoFederatedTaskWork(client, reader, outputs ?? new FakeResultOutputStore(), config, new FixedClock(),
-            settings ?? new FederatedTaskSettings());
+            settings ?? Approving(FederatedTesProfile.ExecutorImage));
+    }
+
+    private static FederatedTaskSettings Approving(params string[] images) => new() { ApprovedImages = images };
+
+    private static DoFederatedTaskWork Work(FakeClient client, FakeDatasetStore store, FederatedTaskSettings settings,
+        FakeResultOutputStore? outputs = null)
+        => Work(client, new DatasetReader(store, new FederatedTaskSettings()), outputs: outputs, settings: settings);
+
+    [Fact]
+    public async Task Execute_unapproved_image_is_rejected_by_input_checks()
+    {
+        var store = Store();
+        var client = new FakeClient();
+        client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+
+        await Work(client, store, Approving("other:1")).Execute();
+
+        var report = Assert.Single(client.Reports);
+        Assert.Equal(TesState.CANCELEDEnum, report.State);
+        Assert.Equal("input_checks", report.RejectedAt);
+        Assert.Equal("image_not_approved", report.ErrorCode);
+        Assert.False(string.IsNullOrWhiteSpace(report.ErrorMessage));
+        Assert.Empty(client.ProgressCalls);
+        Assert.Equal(0, store.ListCalls);
+    }
+
+    [Fact]
+    public async Task Execute_running_task_whose_image_is_no_longer_approved_is_rejected()
+    {
+        var client = new FakeClient();
+        var task = PendingTask(T1, "cohort_2024", "count", null);
+        task.State = TesState.RUNNINGEnum;
+        client.Pending.Add(task);
+
+        await Work(client, Store(), Approving("other:1")).Execute();
+
+        var report = Assert.Single(client.Reports);
+        Assert.Equal(TesState.CANCELEDEnum, report.State);
+        Assert.Equal("image_not_approved", report.ErrorCode);
+        Assert.Empty(client.ProgressCalls);
+    }
+
+    [Fact]
+    public async Task Execute_without_approved_images_holds_tasks_and_reports_nothing()
+    {
+        var store = Store();
+        var client = new FakeClient();
+        client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+
+        await Work(client, store, Approving()).Execute();
+
+        Assert.Empty(client.Reports);
+        Assert.Empty(client.ProgressCalls);
+        Assert.Equal(0, store.ListCalls);
+    }
+
+    [Fact]
+    public async Task Execute_without_approved_images_still_releases_a_saved_result()
+    {
+        var client = new FakeClient();
+        client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+        var outputs = new FakeResultOutputStore();
+        outputs.Files[T1] = Encoding.UTF8.GetBytes("{\"schemaVersion\":1}");
+
+        await Work(client, new ThrowingReader(), outputs: outputs, settings: Approving()).Execute();
+
+        var report = Assert.Single(client.Reports);
+        Assert.Equal(TesState.COMPLETEEnum, report.State);
+    }
+
+    [Fact]
+    public async Task Execute_task_outside_profile_is_rejected_as_invalid_task_before_the_image_check()
+    {
+        var client = new FakeClient();
+        var task = PendingTask(T1, "cohort_2024", "count", null);
+        task.Executors[0].Image = "ubuntu:22.04";
+        client.Pending.Add(task);
+
+        await Work(client, Store(), Approving("other:1")).Execute();
+
+        var report = Assert.Single(client.Reports);
+        Assert.Equal("invalid_task", report.ErrorCode);
     }
 
     [Fact]
@@ -818,7 +900,7 @@ public class DoFederatedTaskWorkTests
         var client = OneMean();
         client.Pending[0].CreationTime = Now.AddMinutes(-10);
 
-        await Work(client, new FailingResolveReader(), settings: new FederatedTaskSettings { DatasetUnreachableGiveUpMinutes = 5 }).Execute();
+        await Work(client, new FailingResolveReader(), settings: new FederatedTaskSettings { DatasetUnreachableGiveUpMinutes = 5, ApprovedImages = [FederatedTesProfile.ExecutorImage] }).Execute();
 
         Assert.Equal("internal_error", Assert.Single(client.Reports).ErrorCode);
     }
