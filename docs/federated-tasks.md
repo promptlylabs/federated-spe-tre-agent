@@ -42,7 +42,7 @@ sequenceDiagram
         Sub-->>Agent: running, queued and waiting tasks for this TRE
     end
     Agent->>Sub: POST ReportProgress (step running), only for a queued task
-    Sub-->>Agent: 200, task is running (409 invalid_transition if it is past running)
+    Sub-->>Agent: 200, task is running (409 if the task is past running)
     Agent->>TS: read dataset CSV
     Agent->>Agent: compute result, build result JSON
     alt success
@@ -218,9 +218,9 @@ The result is in `logs[0].metadata`. Every key and value is a string.
 
 - `step`: the current step, as in the table.
 - `<step>_at` for each step the task has reached, for example `queued_at` and `running_at`. The value is a UTC time in ISO 8601 form (`O` format). A task rejected before it ran has no `running_at`. `logs[0].start_time` is `running_at`. `logs[0].end_time` is the time of the final step.
-- On `released`: `result_bucket`, `result_key` and `result_sha256`. On a rejection or a failure: `error_code` and `error_message`.
+- On `released`: `result_bucket`, `result_key` and `result_sha256` (where the result file is stored in the orchestrator, and its SHA-256). On a rejection or a failure: `error_code` and `error_message`.
 
-- `result_bucket`, `result_key` and `result_sha256` say where the result file is stored in the orchestrator, and its SHA-256. The values are in the file, not in the metadata.
+- The computed values (count, mean) are in the result file, not in the metadata.
 - `dataset_sha256` is added whenever the Agent read the dataset file, on success and on errors raised after the read (including `invalid_dataset`). It is the lowercase hex SHA-256 of the exact bytes of the CSV. It is absent when the file was not read (`invalid_task`, `dataset_not_found`, `ambiguous_dataset`, `invalid_dataset_name`, `tre_renamed`, and `internal_error` before the read). An empty file gives `invalid_dataset` with the hash.
 
 ### Result document
@@ -382,6 +382,8 @@ Submission.Api keeps result files in its own RustFS, not in the TRE and not in t
 - Keep the keys in secrets or configuration, never in the repository.
 
 Upgrading from inline results: the migration `FederatedResultFiles` drops the old `ResultValue` and `ResultRowCount` columns. A task that was COMPLETE before the migration keeps its state but has no result file, so `GetTaskResult` returns 404 `result_not_found` for it. The values cannot be recovered, not even by a rollback. Deploy Agent.Api and Submission.Api together.
+
+Upgrading to task steps: deploy Submission.Api before (or together with) the Agent. A new Agent gets 404 from an old Submission's `ReportProgress` and does not run tasks. The migration `AddFederatedTaskSteps` fills in the step of existing rows from their TES state. Input-check errors reported before this change stay `failed`.
 
 TODO: store results in the project's output bucket once study_id → project mapping exists
 
