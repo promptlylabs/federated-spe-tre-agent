@@ -192,6 +192,42 @@ public class DoFederatedTaskWorkTests
         Assert.Equal(0, store.ListCalls);
     }
 
+    /// <summary>Collects Serilog events while it is the global logger.</summary>
+    private sealed class CollectingSink : Serilog.Core.ILogEventSink
+    {
+        public List<Serilog.Events.LogEvent> Events { get; } = new();
+
+        public void Emit(Serilog.Events.LogEvent logEvent)
+        {
+            lock (Events) Events.Add(logEvent);
+        }
+    }
+
+    [Fact]
+    public async Task Execute_without_approved_images_logs_once_per_poll()
+    {
+        var client = new FakeClient();
+        client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+        client.Pending.Add(PendingTask(T2, "cohort_2024", "count", null));
+        client.Pending.Add(PendingTask("33333333-3333-3333-3333-333333333333", "cohort_2024", "count", null));
+        var sink = new CollectingSink();
+        var previous = Serilog.Log.Logger;
+        Serilog.Log.Logger = new Serilog.LoggerConfiguration().WriteTo.Sink(sink).CreateLogger();
+        try
+        {
+            await Work(client, Store(), Approving()).Execute();
+        }
+        finally
+        {
+            Serilog.Log.Logger = previous;
+        }
+
+        List<Serilog.Events.LogEvent> events;
+        lock (sink.Events) events = sink.Events.Where(e => e.MessageTemplate.Text.Contains("ApprovedImages")).ToList();
+        var logged = Assert.Single(events);
+        Assert.Equal(Serilog.Events.LogEventLevel.Error, logged.Level);
+    }
+
     [Fact]
     public async Task Execute_without_approved_images_still_releases_a_saved_result()
     {

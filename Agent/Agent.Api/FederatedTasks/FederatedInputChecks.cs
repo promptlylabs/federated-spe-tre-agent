@@ -1,7 +1,6 @@
 using Agent.Api.Models;
 using FiveSafesTes.Core.Models.FederatedTasks;
 using FiveSafesTes.Core.Models.Tes;
-using Serilog;
 
 namespace Agent.Api.FederatedTasks
 {
@@ -30,6 +29,8 @@ namespace Agent.Api.FederatedTasks
     /// <summary>
     /// The hospital's automatic checks on a parsed task, run before it is marked running. The first failure wins.
     /// Reads no data values. A dataset store failure throws; the caller decides whether to retry or give up.
+    /// The format check (FederatedTesProfile.Parse) and the TreName routing run before this step, in the caller: the
+    /// task must be parsed to be checked at all.
     /// </summary>
     public sealed class FederatedInputChecks
     {
@@ -44,12 +45,9 @@ namespace Agent.Api.FederatedTasks
 
         public async Task<InputCheckOutcome> RunAsync(TesTask task, FederatedTaskSpec spec, CancellationToken ct)
         {
-            // A forgotten setting must not reject anything: a rejection is final.
+            // A forgotten setting must not reject anything: a rejection is final. The caller logs it once per poll.
             if (_settings.ApprovedImages.Length == 0)
-            {
-                Log.Error("Federated tasks: FederatedTaskSettings:ApprovedImages is not configured; task {TaskId} is not checked or run", task.Id);
                 return InputCheckOutcome.Hold();
-            }
 
             // The image comes before the dataset, so a TRE that has not approved it never lists its bucket for the task.
             var image = CheckImage(task);

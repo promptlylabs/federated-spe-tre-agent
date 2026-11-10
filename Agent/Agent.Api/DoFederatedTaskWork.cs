@@ -27,6 +27,7 @@ namespace Agent.Api
         private readonly TimeProvider _clock;
         private readonly FederatedTaskSettings _settings;
         private readonly FederatedInputChecks _checks;
+        private int _heldThisPoll;
 
         public DoFederatedTaskWork(IFederatedTaskClient client, IDatasetReader reader, IResultOutputStore outputs,
             IConfiguration config, TimeProvider clock, FederatedTaskSettings settings)
@@ -61,6 +62,7 @@ namespace Agent.Api
             if (pending.Count == 0) return;
 
             Log.Information("Federated tasks: {Count} pending task(s)", pending.Count);
+            _heldThisPoll = 0;
 
             foreach (var task in pending)
             {
@@ -84,6 +86,11 @@ namespace Agent.Api
                     Log.Error(ex, "Federated tasks: task {TaskId} could not be completed this poll; it keeps its step", task.Id);
                 }
             }
+
+            // One line per poll, not per task, so a backlog does not flood the log.
+            if (_heldThisPoll > 0)
+                Log.Error("Federated tasks: FederatedTaskSettings:ApprovedImages is not configured; {Count} task(s) were not checked or run and keep their step",
+                    _heldThisPoll);
         }
 
         /// <summary>
@@ -127,7 +134,11 @@ namespace Agent.Api
                     return;
                 }
 
-                if (checks.Kind == InputCheckKind.Held) return;
+                if (checks.Kind == InputCheckKind.Held)
+                {
+                    _heldThisPoll++;
+                    return;
+                }
                 if (checks.Kind == InputCheckKind.Rejected)
                 {
                     await ReportErrorAsync(Error(taskId, checks.ErrorCode!, checks.ErrorMessage));
