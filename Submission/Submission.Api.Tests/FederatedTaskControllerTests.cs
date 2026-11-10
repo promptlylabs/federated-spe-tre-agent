@@ -1152,6 +1152,61 @@ namespace Submission.Api.Tests
             Assert.Equal(queued.TaskId.ToString(), tasks[1].Id);
         }
 
+        /// <summary>Runs a competing write once, just before the first save of the context it is attached to.</summary>
+        private sealed class BeforeFirstSave(Action competingWrite) : Microsoft.EntityFrameworkCore.Diagnostics.SaveChangesInterceptor
+        {
+            private bool _done;
+
+            public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int>> SavingChangesAsync(
+                Microsoft.EntityFrameworkCore.Diagnostics.DbContextEventData eventData,
+                Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> result, CancellationToken cancellationToken = default)
+            {
+                if (!_done)
+                {
+                    _done = true;
+                    competingWrite();
+                }
+
+                return ValueTask.FromResult(result);
+            }
+        }
+
+        [Fact]
+        public async Task ReportResult_complete_retries_on_top_of_a_concurrent_progress_report()
+        {
+            var name = Guid.NewGuid().ToString();
+            using var setup = OpenDb(name);
+            setup.Tres.Add(NewTre(1, "tre-a", "tre-a-admin", "tre-a-client"));
+            setup.SaveChanges();
+            var seeded = SeedAtStep(setup, FederatedTaskStep.Queued);
+
+            // The competing progress report is saved after ReportResult has loaded the task and before its first save,
+            // so that save hits the Step concurrency token and the retry has to apply on top of 'running'.
+            var interceptor = new BeforeFirstSave(() =>
+            {
+                using var other = OpenDb(name);
+                var t = other.FederatedTasks.Include(x => x.StepChanges).Single();
+                t.MoveTo(FederatedTaskStep.Running, DateTime.UtcNow);
+                other.SaveChanges();
+            });
+            using var dbA = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
+                .UseInMemoryDatabase(name).AddInterceptors(interceptor).Options);
+
+            var result = await ReportComplete(AgentControllerFor(dbA, "tre-a-client", new FakeResultStore()), seeded);
+
+            Assert.IsType<OkObjectResult>(result);
+            using var check = OpenDb(name);
+            var row = Reload(check, seeded.TaskId);
+            Assert.Equal(FederatedTaskStep.Released, row.Step);
+            Assert.Equal(TesState.COMPLETEEnum, row.State);
+            // The in-memory provider has no transactions, so the history row added by the conflicted first save can
+            // survive as a duplicate 'released' row; a relational provider rolls the whole save back. Distinct order is
+            // asserted, which still proves the retry applied on top of 'running'.
+            Assert.Equal(
+                new[] { FederatedTaskStep.Queued, FederatedTaskStep.Running, FederatedTaskStep.Released },
+                row.StepChanges.OrderBy(c => c.Id).Select(c => c.Step).Distinct().ToArray());
+        }
+
         private static Task<IActionResult> Progress(FederatedTaskController controller, Guid taskId, string? step) =>
             controller.ReportProgress(new FederatedTaskProgressReport { TaskId = taskId.ToString(), Step = step });
 
