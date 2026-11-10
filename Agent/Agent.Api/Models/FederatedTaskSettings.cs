@@ -53,10 +53,20 @@ namespace Agent.Api.Models
         /// <summary>
         /// Executor images this TRE has approved. A task whose image is not listed is rejected by the input checks with
         /// image_not_approved. There is no default: approving an image is the site's decision. When the list is missing
-        /// or empty the Agent runs no new task and reports none, so a forgotten setting never rejects anything.
-        /// Entries are trimmed and blank ones dropped; matching is exact and case-sensitive.
+        /// or empty, a task that fails the profile is still rejected, but no other new task is checked, run or
+        /// reported: a forgotten setting never rejects anything. Entries are trimmed and blank ones dropped, however the
+        /// list is set; matching is exact and case-sensitive.
         /// </summary>
-        public string[] ApprovedImages { get; set; } = [];
+        public string[] ApprovedImages
+        {
+            get => _approvedImages;
+            set => _approvedImages = (value ?? [])
+                .Where(image => !string.IsNullOrWhiteSpace(image))
+                .Select(image => image.Trim())
+                .ToArray();
+        }
+
+        private string[] _approvedImages = [];
 
         public static FederatedTaskSettings FromConfiguration(IConfiguration configuration)
         {
@@ -69,11 +79,6 @@ namespace Agent.Api.Models
             {
                 settings.AllowedExtensions = extensions;
             }
-
-            settings.ApprovedImages = settings.ApprovedImages
-                .Where(image => !string.IsNullOrWhiteSpace(image))
-                .Select(image => image.Trim())
-                .ToArray();
 
             return settings;
         }

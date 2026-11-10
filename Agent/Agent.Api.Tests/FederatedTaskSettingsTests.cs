@@ -60,4 +60,12 @@ public class FederatedTaskSettingsTests
     [Fact]
     public void Image_not_approved_is_an_input_check_code() =>
         Assert.Contains("image_not_approved", FederatedTaskErrorCodes.InputCheckCodes);
+
+    [Fact]
+    public void ApprovedImages_set_directly_are_trimmed_and_blank_entries_dropped()
+    {
+        var settings = new FederatedTaskSettings { ApprovedImages = [" 5s-tes/federated-ops:1 ", "", "  "] };
+
+        Assert.Equal(["5s-tes/federated-ops:1"], settings.ApprovedImages);
+    }
 }
