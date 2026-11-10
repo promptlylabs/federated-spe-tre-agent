@@ -131,13 +131,14 @@ public class DoFederatedTaskWorkTests
         => Work(client, new DatasetReader(store, new FederatedTaskSettings()), treName, outputs);
 
     private static DoFederatedTaskWork Work(FakeClient client, IDatasetReader reader, string? treName = "tre-a",
-        FakeResultOutputStore? outputs = null, FederatedTaskSettings? settings = null)
+        FakeResultOutputStore? outputs = null, FederatedTaskSettings? settings = null, DateTimeOffset? startedAt = null)
     {
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?> { ["TreName"] = treName })
             .Build();
+        // An Agent that started long ago, so the give-up window counts from when the task was queued.
         return new DoFederatedTaskWork(client, reader, outputs ?? new FakeResultOutputStore(), config, new FixedClock(),
-            settings ?? Approving(FederatedTesProfile.ExecutorImage));
+            settings ?? Approving(FederatedTesProfile.ExecutorImage), new AgentStartTime(startedAt ?? Now.AddDays(-1)));
     }
 
     private static FederatedTaskSettings Approving(params string[] images) => new() { ApprovedImages = images };
@@ -962,6 +963,29 @@ public class DoFederatedTaskWorkTests
 
         Assert.Single(client.Calls);
         Assert.Empty(outputs.Files);
+    }
+
+    [Fact]
+    public async Task Execute_dataset_bucket_unreachable_soon_after_agent_start_retries_a_long_queued_task()
+    {
+        // Queued 10 hours ago, for example held while ApprovedImages was missing; the Agent was restarted a minute ago.
+        var client = OneMean();
+        client.Pending[0].CreationTime = Now.AddMinutes(-600);
+
+        await Work(client, new FailingResolveReader(), startedAt: Now.AddMinutes(-1)).Execute();
+
+        Assert.Empty(client.Reports);
+    }
+
+    [Fact]
+    public async Task Execute_dataset_bucket_unreachable_gives_up_once_the_agent_has_run_for_the_whole_window()
+    {
+        var client = OneMean();
+        client.Pending[0].CreationTime = Now.AddMinutes(-600);
+
+        await Work(client, new FailingResolveReader(), startedAt: Now.AddMinutes(-60)).Execute();
+
+        Assert.Equal("internal_error", Assert.Single(client.Reports).ErrorCode);
     }
 
     [Theory]

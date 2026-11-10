@@ -1,3 +1,4 @@
+using FiveSafesTes.Core.Models.FederatedTasks;
 using Microsoft.Extensions.Configuration;
 
 namespace Agent.Api.Models
@@ -68,6 +69,17 @@ namespace Agent.Api.Models
 
         private string[] _approvedImages = [];
 
+        /// <summary>
+        /// A message for the site admin when the list is set but holds none of the images the federated profile accepts:
+        /// every federated task is then rejected with image_not_approved. That can be a deliberate refusal or a typo
+        /// (for example a registry prefix), which the Agent cannot tell apart, so it only warns. Null otherwise.
+        /// </summary>
+        public string? ApprovedImagesWarning() =>
+            ApprovedImages.Length == 0 || ApprovedImages.Contains(FederatedTesProfile.ExecutorImage, StringComparer.Ordinal)
+                ? null
+                : $"FederatedTaskSettings:ApprovedImages does not list '{FederatedTesProfile.ExecutorImage}', the image every federated task uses, " +
+                  "so every federated task will be rejected with image_not_approved. If that is not intended, check the list for a typo or a registry prefix.";
+
         public static FederatedTaskSettings FromConfiguration(IConfiguration configuration)
         {
             var section = configuration.GetSection(nameof(FederatedTaskSettings));
@@ -78,6 +90,12 @@ namespace Agent.Api.Models
             if (section.GetSection(nameof(AllowedExtensions)).Get<string[]>() is { Length: > 0 } extensions)
             {
                 settings.AllowedExtensions = extensions;
+            }
+
+            // A single value ("img" or "img1,img2") instead of indexed entries ("ApprovedImages:0") is split, not lost.
+            if (section[nameof(ApprovedImages)] is { } single && !string.IsNullOrWhiteSpace(single))
+            {
+                settings.ApprovedImages = [.. settings.ApprovedImages, .. single.Split(',')];
             }
 
             return settings;

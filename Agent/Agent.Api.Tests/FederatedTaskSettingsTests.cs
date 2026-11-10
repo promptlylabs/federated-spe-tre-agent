@@ -68,4 +68,32 @@ public class FederatedTaskSettingsTests
 
         Assert.Equal(["5s-tes/federated-ops:1"], settings.ApprovedImages);
     }
+
+    [Fact]
+    public void FromConfiguration_ApprovedImages_as_one_comma_separated_value_is_split()
+    {
+        var settings = Bind(new Dictionary<string, string?>
+        {
+            ["FederatedTaskSettings:ApprovedImages"] = "5s-tes/federated-ops:1, other:2",
+        });
+
+        Assert.Equal(["5s-tes/federated-ops:1", "other:2"], settings.ApprovedImages);
+    }
+
+    [Fact]
+    public void ApprovedImagesWarning_is_null_when_the_list_is_empty_or_has_the_profile_image()
+    {
+        Assert.Null(new FederatedTaskSettings().ApprovedImagesWarning());
+        Assert.Null(new FederatedTaskSettings { ApprovedImages = ["other:1", FederatedTesProfile.ExecutorImage] }.ApprovedImagesWarning());
+    }
+
+    [Fact]
+    public void ApprovedImagesWarning_names_the_profile_image_when_the_list_lacks_it()
+    {
+        var warning = new FederatedTaskSettings { ApprovedImages = ["docker.io/5s-tes/federated-ops:1"] }.ApprovedImagesWarning();
+
+        Assert.NotNull(warning);
+        Assert.Contains("'5s-tes/federated-ops:1'", warning);
+        Assert.Contains("image_not_approved", warning);
+    }
 }

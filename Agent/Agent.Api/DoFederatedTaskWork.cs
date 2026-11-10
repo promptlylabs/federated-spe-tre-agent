@@ -27,9 +27,10 @@ namespace Agent.Api
         private readonly TimeProvider _clock;
         private readonly FederatedTaskSettings _settings;
         private readonly FederatedInputChecks _checks;
+        private readonly AgentStartTime _startedAt;
 
         public DoFederatedTaskWork(IFederatedTaskClient client, IDatasetReader reader, IResultOutputStore outputs,
-            IConfiguration config, TimeProvider clock, FederatedTaskSettings settings)
+            IConfiguration config, TimeProvider clock, FederatedTaskSettings settings, AgentStartTime startedAt)
         {
             _client = client;
             _reader = reader;
@@ -38,6 +39,7 @@ namespace Agent.Api
             _clock = clock;
             _settings = settings;
             _checks = new FederatedInputChecks(reader, settings);
+            _startedAt = startedAt;
         }
 
         public async Task Execute()
@@ -396,12 +398,18 @@ namespace Agent.Api
         }
 
         /// <summary>
-        /// True when the task was queued longer ago than DatasetUnreachableGiveUpMinutes. A task without a creation
-        /// time cannot be aged, so it is not retried.
+        /// True when DatasetUnreachableGiveUpMinutes have passed since the later of enqueue and Agent start. A task
+        /// without a creation time cannot be aged, so it is not retried.
         /// </summary>
-        private bool HasWaitedTooLong(TesTask task) =>
-            task.CreationTime is not { } created
-            || _clock.GetUtcNow() - created >= TimeSpan.FromMinutes(_settings.DatasetUnreachableGiveUpMinutes);
+        private bool HasWaitedTooLong(TesTask task)
+        {
+            if (task.CreationTime is not { } created) return true;
+
+            // Count from the later of enqueue and Agent start. A task held while ApprovedImages was missing (setting it
+            // means a restart), or queued while the Agent was down, gets the full window once this Agent can try it.
+            var since = created > _startedAt.Value ? created : _startedAt.Value;
+            return _clock.GetUtcNow() - since >= TimeSpan.FromMinutes(_settings.DatasetUnreachableGiveUpMinutes);
+        }
 
         /// <summary>A 409 that says the task is already final on Submission; task_busy means "send it again".</summary>
         private static bool IsAlreadyFinal(FederatedReportOutcome outcome) =>
