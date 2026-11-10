@@ -8,18 +8,21 @@ To try the flow locally, see [dev/federated](../dev/federated/README.md). It is 
 
 ## Flow
 
-1. A `dare-control-admin` user calls `POST /api/FederatedTask/Enqueue` with a TES task. Submission validates it against the federated profile. The task is stored as `QUEUED`. The response holds the task id.
+1. A `dare-control-admin` user calls `POST /api/FederatedTask/Enqueue` with a TES task. Submission validates it against the federated profile. The task is stored at the step `queued`. The response holds the task id.
 2. The Agent job `Run Federated Tasks` (`JobSettings:FederatedTaskJobName`) runs every `JobSettings:federatedTaskSchedule` minutes. It calls `GET /api/FederatedTask/GetPendingTasksForTre`. The TRE is taken from the token.
-3. The Agent reads the one `.csv` under `dataset/<name>/` in the dataset bucket.
-4. The Agent runs the operation in-process. It does not start a container. The result is a JSON file (see "Task state and result").
-5. The Agent saves the file in the TRE bucket `federated-outputs` as `<taskId>.json`. If the file is already there from an earlier poll, the Agent reuses it and does not compute again.
-6. The Agent releases the file: `POST /api/FederatedTask/ReportResult` with the file as an upload. Submission checks the caller and the file, and stores it in the orchestrator bucket `federated-results`.
-7. The Agent compares the SHA-256 that Submission stored with the SHA-256 of its own copy. If they match, it adds the metadata `released-key` and `released-sha256` to the TRE copy.
-8. A `dare-control-admin` user calls `GET /api/FederatedTask/GetTask?id=<taskId>` for the state and where the result is stored, and `GET /api/FederatedTask/GetTaskResult?id=<taskId>` for the file.
+3. For a `queued` task, the Agent calls `POST /api/FederatedTask/ReportProgress` with the step `running`. Submission moves the task to `running`.
+4. The Agent reads the one `.csv` under `dataset/<name>/` in the dataset bucket.
+5. The Agent runs the operation in-process. It does not start a container. The result is a JSON file (see "Task state and result").
+6. The Agent saves the file in the TRE bucket `federated-outputs` as `<taskId>.json`. If the file is already there from an earlier poll, the Agent reuses it and does not compute again.
+7. The Agent releases the file: `POST /api/FederatedTask/ReportResult` with the file as an upload. Submission checks the caller and the file, and stores it in the orchestrator bucket `federated-results`. The task moves to `released`.
+8. The Agent compares the SHA-256 that Submission stored with the SHA-256 of its own copy. If they match, it adds the metadata `released-key` and `released-sha256` to the TRE copy.
+9. A `dare-control-admin` user calls `GET /api/FederatedTask/GetTask?id=<taskId>` for the step, the state and where the result is stored, and `GET /api/FederatedTask/GetTaskResult?id=<taskId>` for the file.
 
-If the Agent cannot save the file, or the release fails (network error, 5xx, or a 4xx that is not listed under "Reporting a result"), the task stays `QUEUED` and the Agent tries again at the next poll. A task that fails before there is a file (for example `dataset_not_found`) is reported as an error state, with no file, and does not go through save and release.
+If the Agent cannot save the file, or the release fails (network error, 5xx, or a 4xx that is not listed under "Reporting a result"), the task stays `running` and the Agent tries again at the next poll. A task that fails before there is a file (for example `dataset_not_found`) is reported as a rejection or a failure, with no file, and does not go through save and release.
 
-`GetPendingTasksForTre` and `ReportResult` accept only the TRE Agent's service account (role `dare-tre-admin`). See "Reporting a result". `Enqueue`, `GetTask` and `GetTaskResult` need `dare-control-admin`.
+`GetPendingTasksForTre` returns the tasks that are not finished: `running` first, then `queued`, then `waiting_for_output_approval`, oldest first inside each group. The Agent skips `waiting_for_output_approval` tasks, because it has nothing to do for them. A `running` task was marked by an earlier poll that did not finish. The Agent resumes it, and does not report `running` again. If the result file from the earlier poll is in the TRE bucket, the Agent reuses it.
+
+`GetPendingTasksForTre`, `ReportProgress` and `ReportResult` accept only the TRE Agent's service account (role `dare-tre-admin`). See "Reporting a result". `Enqueue`, `GetTask` and `GetTaskResult` need `dare-control-admin`.
 
 ```mermaid
 sequenceDiagram
@@ -33,11 +36,13 @@ sequenceDiagram
     end
 
     Admin->>Sub: POST Enqueue (TES task)
-    Sub-->>Admin: task id (QUEUED)
+    Sub-->>Admin: task id (step queued)
     loop every federatedTaskSchedule minutes
         Agent->>Sub: GET GetPendingTasksForTre (TRE from token)
-        Sub-->>Agent: QUEUED tasks for this TRE
+        Sub-->>Agent: running, queued and waiting tasks for this TRE
     end
+    Agent->>Sub: POST ReportProgress (step running), only for a queued task
+    Sub-->>Agent: 200, task is running (409 invalid_transition if it is past running)
     Agent->>TS: read dataset CSV
     Agent->>Agent: compute result, build result JSON
     alt success
@@ -45,30 +50,33 @@ sequenceDiagram
         Note over Agent,TS: future: egress review by TRE custodian happens here
         Agent->>Sub: POST ReportResult (state + result file upload)
         Sub->>Sub: check caller is this TRE's Agent service account
-        Sub->>Sub: check owner + QUEUED, validate file, hash
+        Sub->>Sub: check owner + not final, validate file, hash
         alt file rejected (400 invalid_result / result_too_large)
             Sub-->>Agent: 400, nothing stored
             Agent->>Sub: POST ReportResult (EXECUTOR_ERROR, same code, no file)
         else already reported (409)
-            Sub-->>Agent: 409 task_already_reported (+ result_sha256 and result_key if COMPLETE)
+            Sub-->>Agent: 409 task_already_reported (+ result_sha256 and result_key if released)
             Agent->>Agent: check result_sha256 equals own sha256
             Agent->>TS: tag TRE copy with released-key / released-sha256
         else storage write fails
             Sub->>OS: put treId/taskId/sha256.json
-            Sub-->>Agent: 503 storage_unavailable, task stays QUEUED, retried next poll
+            Sub-->>Agent: 503 storage_unavailable, task keeps its step, retried next poll
         else stored
             Sub->>OS: put treId/taskId/sha256.json
-            Sub->>Sub: save COMPLETE + bucket/key/sha256
+            Sub->>Sub: save step released + bucket/key/sha256
             Sub-->>Agent: 200 + result_key/result_sha256
             Agent->>Agent: check result_sha256 equals own sha256
             Agent->>TS: tag TRE copy with released-key / released-sha256
         end
-    else task fails (e.g. dataset_not_found)
-        Agent->>Sub: POST ReportResult (error_code, error_message, no file)
-        Sub-->>Agent: 200, no file written
+    else input check fails (e.g. dataset_not_found)
+        Agent->>Sub: POST ReportResult (CANCELED, RejectedAt input_checks, error_code, error_message, no file)
+        Sub-->>Agent: 200, step rejected_by_input_checks, no file written
+    else task fails (e.g. column_not_found)
+        Agent->>Sub: POST ReportResult (EXECUTOR_ERROR or SYSTEM_ERROR, error_code, no file)
+        Sub-->>Agent: 200, step failed, no file written
     end
     Admin->>Sub: GET GetTask
-    Sub-->>Admin: state + result_bucket/result_key/result_sha256
+    Sub-->>Admin: state + step + step times + result_bucket/result_key/result_sha256
     Admin->>Sub: GET GetTaskResult
     Sub->>OS: get object
     Sub->>Sub: verify sha256
@@ -88,17 +96,36 @@ Every 4xx from these endpoints has the same JSON body. Its keys are the same as 
 | 400 | `invalid_task`, or any profile code from the table below (for example `unknown_operation`) | The request or the task is not valid. This includes a form with an unknown `State` value or a bad `ErrorCode`, and a request over the size limit of `ReportResult` (73728 bytes). |
 | 400 | `invalid_result` | `ReportResult`: the result file is not valid, or does not match the task. |
 | 400 | `result_too_large` | `ReportResult`: the result file is over 65536 bytes. |
-| 404 | `task_not_found` | No such task. `ReportResult` also returns this for a task that belongs to another TRE. |
-| 404 | `result_not_found` | `GetTaskResult`: the task is not `COMPLETE`. |
-| 409 | `task_already_reported` | `ReportResult` for a task that already has a result. When the task is `COMPLETE`, the body also has `result_sha256` and `result_key`. |
+| 404 | `task_not_found` | No such task. `ReportProgress` and `ReportResult` also return this for a task that belongs to another TRE. |
+| 404 | `result_not_found` | `GetTaskResult`: the task is not `released`. |
+| 409 | `task_already_reported` | `ReportResult` or `ReportProgress` for a task that is already final. When the task is `released`, the body also has `result_sha256` and `result_key`. |
+| 409 | `invalid_transition` | `ReportProgress` asks to go back to an earlier step. Also, a report that lost a race with other reports three times in a row. |
 | 500 | `internal_error` | `GetTaskResult`: the stored file does not match its SHA-256. The file is not returned. |
-| 503 | `storage_unavailable` | The orchestrator bucket cannot be reached. For `ReportResult` the task stays `QUEUED`. |
+| 503 | `storage_unavailable` | The orchestrator bucket cannot be reached. For `ReportResult` the task keeps its step. |
 
 `result_not_found` and `storage_unavailable` are returned by the API only. An Agent never reports them as a task result.
 
-401 and 403 come from authentication and have no body. `ReportResult` and `GetPendingTasksForTre` return 403 to any caller that is not a TRE Agent service account.
+401 and 403 come from authentication and have no body. `ReportProgress`, `ReportResult` and `GetPendingTasksForTre` return 403 to any caller that is not a TRE Agent service account.
 
-A `ReportResult` with state `EXECUTOR_ERROR` or `SYSTEM_ERROR` must have an `ErrorCode`, or it gets a 400. Any code that matches `^[a-z_]{1,64}$` is accepted, not only the ones listed below. `ErrorMessage` is at most 512 characters and has no control characters.
+A `ReportResult` with state `EXECUTOR_ERROR`, `SYSTEM_ERROR` or `CANCELED` must have an `ErrorCode`, or it gets a 400. Any code that matches `^[a-z_]{1,64}$` is accepted, not only the ones listed below. `ErrorMessage` is at most 512 characters and has no control characters.
+
+### Reporting progress
+
+`POST /api/FederatedTask/ReportProgress` takes a JSON body:
+
+```json
+{ "task_id": "0b9a3c4e-6f1d-4c1e-9a52-3d7b8e2f1a10", "step": "running" }
+```
+
+`step` is `running` or `waiting_for_output_approval`. Any other value, or a `task_id` that is not a GUID, gets 400 `invalid_task`. A 200 response is `{ "step": "<the step the task is at now>" }`.
+
+- The task is at an earlier step: it moves to the new step and the time is recorded.
+- The task is already at that step: 200, nothing changes. The Agent can send the same report again.
+- The task is at a later step: 409 `invalid_transition`.
+- The task is final: 409 `task_already_reported`.
+- The task belongs to another TRE, or does not exist: 404 `task_not_found`.
+
+The Agent sends only `running`. `waiting_for_output_approval` is for the egress review that is not built yet.
 
 ### Reporting a result
 
@@ -107,10 +134,13 @@ A `ReportResult` with state `EXECUTOR_ERROR` or `SYSTEM_ERROR` must have an `Err
 | Field | Rule |
 |---|---|
 | `TaskId` | The task GUID. |
-| `State` | `COMPLETE`, `EXECUTOR_ERROR` or `SYSTEM_ERROR`. |
-| `ErrorCode`, `ErrorMessage` | Error states only. See the limits above. |
-| `DatasetSha256` | Error states only. 64 lowercase hex characters. On `COMPLETE` Submission takes it from the result file. |
-| `result` (file) | Required for `COMPLETE`. Not allowed for an error state. One file only. |
+| `State` | `COMPLETE`, `CANCELED`, `EXECUTOR_ERROR` or `SYSTEM_ERROR`. |
+| `RejectedAt` | `CANCELED` only, and required there: `input_checks` or `output_approval`. Any other value is 400 `invalid_task`. It is not allowed with another state. |
+| `ErrorCode`, `ErrorMessage` | Error states and `CANCELED`. See the limits above. A rejection (`CANCELED`) also needs a non-empty `ErrorMessage`. |
+| `DatasetSha256` | Error states and `CANCELED`. 64 lowercase hex characters. On `COMPLETE` Submission takes it from the result file. |
+| `result` (file) | Required for `COMPLETE`. Not allowed for `CANCELED` or an error state. One file only. |
+
+A report is accepted from any step that is not final, so a `queued`, `running` or `waiting_for_output_approval` task can be finished. `COMPLETE` moves the task to `released`. `CANCELED` moves it to `rejected_by_input_checks` or `rejected_at_output_approval`, as `RejectedAt` says. `EXECUTOR_ERROR` and `SYSTEM_ERROR` move it to `failed`.
 
 Submission checks the caller first. Only the Agent service account of a TRE is accepted: the token `azp` is the TRE's Keycloak client id, and `preferred_username` is `service-account-<clientId>`, with role `dare-tre-admin`. Anyone else gets 403, whatever the request holds. The TRE comes from the token, never from the form or the file. A request over 73728 bytes is rejected by the framework with 400 `invalid_task`, before this check.
 
@@ -122,9 +152,9 @@ The `result` file:
 
 A 200 response has `result`, `result_bucket`, `result_key` and `result_sha256`. The last three are only for `COMPLETE`.
 
-If Submission cannot write the file, it answers 503 `storage_unavailable` and the task stays `QUEUED`. If the Agent gets 400 `invalid_result` or `result_too_large`, it sends a follow-up `EXECUTOR_ERROR` report with the same code. A 409 for a `COMPLETE` task carries `result_sha256` and `result_key`, because the Agent cannot call `GetTask`. The Agent compares the sha256 with its own copy and, if they are equal, tags the TRE copy with the key. The Agent only gets this 409 when two reports for the same task race. It does not ask again later.
+If Submission cannot write the file, it answers 503 `storage_unavailable` and the task keeps its step. If the Agent gets 400 `invalid_result` or `result_too_large`, it sends a follow-up `EXECUTOR_ERROR` report with the same code. A 409 for a `released` task carries `result_sha256` and `result_key`, because the Agent cannot call `GetTask`. The Agent compares the sha256 with its own copy and, if they are equal, tags the TRE copy with the key. The Agent only gets this 409 when two reports for the same task race. It does not ask again later.
 
-The tag can be missing on a released file. This happens when the Agent does not get the 200 (a timeout after Submission saved the result, or an Agent restart), or when tagging fails. Submission then has the task as `COMPLETE` and never gives it to the Agent again, so nothing adds the tag later. A missing tag does not mean the file was not released. To check, compare the TRE copy's SHA-256 with `result_sha256` from `GetTask`.
+The tag can be missing on a released file. This happens when the Agent does not get the 200 (a timeout after Submission saved the result, or an Agent restart), or when tagging fails. Submission then has the task as `released` and never gives it to the Agent again, so nothing adds the tag later. A missing tag does not mean the file was not released. To check, compare the TRE copy's SHA-256 with `result_sha256` from `GetTask`.
 
 TODO: re-tag released TRE copies that have no `released-key` (follow-up ticket).
 
@@ -168,19 +198,29 @@ Example: the mean of `age` on dataset `cohort_2024`, for rows where `sex` is `F`
 }
 ```
 
-### Task state and result
+### Task steps and state
 
-| State | When |
-|---|---|
-| `QUEUED` | The task is enqueued. |
-| `COMPLETE` | The task succeeded. |
-| `EXECUTOR_ERROR` | The task could not run against the data. All error codes except `internal_error` and `tre_renamed`. |
-| `SYSTEM_ERROR` | `internal_error` or `tre_renamed`. |
+A task has a step. It says where the task is, from intake to release. `GetTask` returns a valid TES task, so `state` is always a standard TES state. The step is in the metadata.
 
-The result is in `logs[0].metadata`.
+| Step | TES `state` | When |
+|---|---|---|
+| `queued` | `QUEUED` | The task is enqueued. |
+| `running` | `RUNNING` | The Agent has picked the task up. |
+| `waiting_for_output_approval` | `PAUSED` | The result waits for approval in the TRE. Nothing sets this step yet. |
+| `released` | `COMPLETE` | The result file is stored in the orchestrator. |
+| `rejected_by_input_checks` | `CANCELED` | The task was refused before it ran. The error code is one of `invalid_task`, `unknown_operation`, `invalid_filter`, `invalid_dataset_name`, `dataset_not_found` or `ambiguous_dataset`. |
+| `rejected_at_output_approval` | `CANCELED` | The result was refused at approval. Nothing sets this step yet. |
+| `failed` | `EXECUTOR_ERROR` or `SYSTEM_ERROR` | Any other error. The Agent sends the state. `SYSTEM_ERROR` is for `internal_error` and `tre_renamed`. `EXECUTOR_ERROR` is for the other codes. |
 
-- On success: `result_bucket`, `result_key` and `result_sha256`. They say where the result file is stored in the orchestrator, and its SHA-256. The values are in the file, not in the metadata.
-- On error: `error_code` and `error_message`.
+A task only moves forward: `queued`, `running`, `waiting_for_output_approval`, then one final step (`released`, a `rejected_*` step or `failed`). A final step never changes. The Agent decides between a rejection and a failure by the error code.
+
+The result is in `logs[0].metadata`. Every key and value is a string.
+
+- `step`: the current step, as in the table.
+- `<step>_at` for each step the task has reached, for example `queued_at` and `running_at`. The value is a UTC time in ISO 8601 form (`O` format). A task rejected before it ran has no `running_at`. `logs[0].start_time` is `running_at`. `logs[0].end_time` is the time of the final step.
+- On `released`: `result_bucket`, `result_key` and `result_sha256`. On a rejection or a failure: `error_code` and `error_message`.
+
+- `result_bucket`, `result_key` and `result_sha256` say where the result file is stored in the orchestrator, and its SHA-256. The values are in the file, not in the metadata.
 - `dataset_sha256` is added whenever the Agent read the dataset file, on success and on errors raised after the read (including `invalid_dataset`). It is the lowercase hex SHA-256 of the exact bytes of the CSV. It is absent when the file was not read (`invalid_task`, `dataset_not_found`, `ambiguous_dataset`, `invalid_dataset_name`, `tre_renamed`, and `internal_error` before the read). An empty file gives `invalid_dataset` with the hash.
 
 ### Result document
@@ -229,7 +269,8 @@ TODO: researcher access scoped by study once study_id → project mapping exists
 | `column_not_found` | The column, or a filter column, is not in the dataset. |
 | `non_numeric_value` | `mean` found a value that is not a number. |
 | `internal_error` | An unexpected failure, for example storage is unreachable. The message is generic, so that bucket names and hosts do not leave the TRE. The details are in the Agent log. |
-| `tre_renamed` | The TRE was renamed in Submission before the task ran. Set by Submission, not the Agent. Enqueue the task again under the new name. |
+| `tre_renamed` | The TRE was renamed in Submission before the task finished. Set by Submission, not the Agent. Enqueue the task again under the new name. |
+| `invalid_transition` | API only (`ReportProgress`, `ReportResult`). The report asks for an earlier step, or lost a race. |
 | `invalid_result` | Submission refused the result file. The Agent sends it as the code of a follow-up `EXECUTOR_ERROR`. The message names the field. |
 | `result_too_large` | The result file is over 65536 bytes. Set by the Agent's follow-up report after a 400 from Submission. |
 | `result_not_found` | API only (`GetTaskResult`). The task has no result file. |
@@ -241,9 +282,9 @@ TODO: researcher access scoped by study once study_id → project mapping exists
 
 Set `TreName` in the Agent's settings to the name of the TRE as registered in Submission. The shipped default is `SAIL`, so every other site must override it. The comparison ignores case.
 
-The Agent does not run a task whose `tres` is not its own `TreName`. It logs an error, does not read the dataset, and does not report, so the task stays `QUEUED` and runs once `TreName` is fixed. If `TreName` is empty, the Agent logs an error and runs no task.
+The Agent does not run a task whose `tres` is not its own `TreName`. It logs an error, does not read the dataset, and does not report, so the task stays as it is and runs once `TreName` is fixed. If `TreName` is empty, the Agent logs an error and runs no task.
 
-If a TRE is renamed in Submission, its `QUEUED` tasks that were enqueued under the old name fail at once with `SYSTEM_ERROR` / `tre_renamed`. Enqueue them again under the new name. A change of case only (`My-TRE` to `my-tre`) is not a rename. If the name is changed directly in the database instead, the old tasks are not failed, but they are no longer sent to the Agent.
+If a TRE is renamed in Submission, its unfinished tasks (`queued`, `running` or `waiting_for_output_approval`) that were enqueued under the old name fail at once with the step `failed`, `SYSTEM_ERROR` and `tre_renamed`. Enqueue them again under the new name. A change of case only (`My-TRE` to `my-tre`) is not a rename. If the name is changed directly in the database instead, the old tasks are not failed, but they are no longer sent to the Agent.
 
 A TRE that has federated tasks cannot be deleted. The tasks are the record of which results left the TRE.
 
@@ -370,14 +411,14 @@ Known risks:
 - There is no disclosure control and no egress review yet. A result is released as computed, so a narrow filter can give a `count` of 1 or the exact value of one person in a `mean`. Until this is added, the orchestrator side must only enqueue tasks that are safe to release. This is the largest remaining risk.
 - Orchestrator admins are trusted not to change stored results or hashes, until signed results are added.
 - Any `dare-control-admin` user can read the results of every study.
-- Orphan files. Submission writes the file before it saves the `COMPLETE` row. If the row save fails, or a concurrent report wins, the file stays in the orchestrator bucket with no row that points to it. The key holds the SHA-256, so it never overwrites another result. No API call can reach an orphan. An orchestrator admin can find and delete orphans in the bucket.
+- Orphan files. Submission writes the file before it saves the `released` step. If the row save fails, or a concurrent report wins, the file stays in the orchestrator bucket with no row that points to it. The key holds the SHA-256, so it never overwrites another result. No API call can reach an orphan. An orchestrator admin can find and delete orphans in the bucket.
 
 TODO: researcher access scoped by study once study_id → project mapping exists
 
 Planned follow-ups:
 
 - Signed results. Each Agent signs the result bytes with its own key, and Submission verifies and stores the signature. This gives a result that does not depend on trusting the orchestrator.
-- Egress review in the TRE, between save and release, with the status `awaiting_egress_review` in `GetTask`. Error reports skip save and release, so egress must also decide whether error messages come from a fixed list or are reviewed too.
+- Egress review in the TRE, between save and release. The steps `waiting_for_output_approval` and `rejected_at_output_approval` are already in the model, but the Agent does not report them yet. Error reports skip save and release, so egress must also decide whether error messages come from a fixed list or are reviewed too.
 - A rule for the TRE name in `SaveTre`.
 - Separate storage credentials for the Agent.
 

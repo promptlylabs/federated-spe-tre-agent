@@ -49,7 +49,7 @@ cd dev/federated
 ./task.sh run cohort_2024 mean --column age --filter sex:eq:F   # COMPLETE {"result_bucket": "federated-results", "result_key": "<treId>/<taskId>/<sha256>.json", ...}
 ./task.sh run cohort_2024 count                                 # COMPLETE {"result_key": ...}
 ./task.sh result <task-id>                                      # downloads and prints the result file
-./task.sh run nope count                                        # EXECUTOR_ERROR {"error_code": "dataset_not_found", ...}
+./task.sh run nope count                                        # CANCELED, step rejected_by_input_checks {"error_code": "dataset_not_found", ...}
 ./task.sh enqueue cohort_2024 median                            # rejected: unknown_operation
 ```
 

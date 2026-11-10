@@ -2,14 +2,14 @@
 # Helper for the local federated stack (dev/federated/docker-compose.yml).
 #
 #   ./task.sh enqueue <dataset> [operation] [extra args...]   queue a task, prints its id
-#   ./task.sh get <task-id>                                   show state and result location
+#   ./task.sh get <task-id>                                   show state, step, step times and result location
 #   ./task.sh result <task-id>                                download and print the result file
 #   ./task.sh run <dataset> [operation] [extra args...]       enqueue, wait for the agent, show the result
 #
 # Examples:
 #   ./task.sh run cohort_2024 mean --column age --filter sex:eq:F    -> COMPLETE, result_key <treId>/<taskId>/<sha256>.json
 #   ./task.sh run cohort_2024 count                                  -> COMPLETE, result_key ...
-#   ./task.sh run nope count                                         -> EXECUTOR_ERROR, dataset_not_found
+#   ./task.sh run nope count                                         -> CANCELED, step rejected_by_input_checks, dataset_not_found
 set -euo pipefail
 
 SUBMISSION=http://localhost:5034
@@ -79,13 +79,13 @@ run() {
   for _ in $(seq 1 30); do
     local state
     state=$(get "$id")
-    if [[ $state != QUEUED* ]]; then
+    if [[ $state != QUEUED* && $state != RUNNING* ]]; then
       echo "$state"
       return 0
     fi
     sleep 5
   done
-  echo "still QUEUED after 150s; check: docker compose -f dev/federated/docker-compose.yml logs agent-api" >&2
+  echo "still QUEUED or RUNNING after 150s; check: docker compose -f dev/federated/docker-compose.yml logs agent-api" >&2
   return 1
 }
 
