@@ -21,7 +21,7 @@ namespace Agent.Api
     public class DoFederatedTaskWork : IDoFederatedTaskWork
     {
         private readonly IFederatedTaskClient _client;
-        private readonly IDatasetReader _reader;
+        private readonly IFederatedTaskExecution _execution;
         private readonly IResultOutputStore _outputs;
         private readonly IConfiguration _config;
         private readonly TimeProvider _clock;
@@ -29,11 +29,12 @@ namespace Agent.Api
         private readonly FederatedInputChecks _checks;
         private readonly AgentStartTime _startedAt;
 
-        public DoFederatedTaskWork(IFederatedTaskClient client, IDatasetReader reader, IResultOutputStore outputs,
-            IConfiguration config, TimeProvider clock, FederatedTaskSettings settings, AgentStartTime startedAt)
+        public DoFederatedTaskWork(IFederatedTaskClient client, IDatasetReader reader, IFederatedTaskExecution execution,
+            IResultOutputStore outputs, IConfiguration config, TimeProvider clock, FederatedTaskSettings settings,
+            AgentStartTime startedAt)
         {
             _client = client;
-            _reader = reader;
+            _execution = execution;
             _outputs = outputs;
             _config = config;
             _clock = clock;
@@ -151,10 +152,10 @@ namespace Agent.Api
                 // The task is running now. If the bucket fails during the read, it stays running and is resumed at the
                 // next poll, under the same time limit as a failed listing. Any other fault cannot be fixed by
                 // waiting, so it is reported at once.
-                DatasetReadResult dataset;
+                ExecutionResult executed;
                 try
                 {
-                    dataset = await _reader.ReadAsync(checkOutcome.FileKey!, CancellationToken.None);
+                    executed = await _execution.RunAsync(task, prepared.Spec!, checkOutcome.FileKey!, CancellationToken.None);
                 }
                 catch (DatasetStoreException ex)
                 {
@@ -167,14 +168,13 @@ namespace Agent.Api
                     return false;
                 }
 
-                var computed = Compute(prepared.Spec!, dataset, taskId);
-                if (computed.ErrorReport != null)
+                if (!executed.IsSuccess)
                 {
-                    await ReportErrorAsync(computed.ErrorReport);
+                    await ReportErrorAsync(Error(taskId, executed.ErrorCode!, executed.ErrorMessage, executed.DatasetSha256));
                     return false;
                 }
 
-                bytes = FederatedResultDocumentJson.Serialize(computed.Document!);
+                bytes = FederatedResultDocumentJson.Serialize(executed.Document!);
                 await _outputs.SaveAsync(storeKey, bytes, CancellationToken.None);
             }
             else
@@ -287,8 +287,6 @@ namespace Agent.Api
             return null;
         }
 
-        private sealed record Computed(FederatedResultDocument? Document, FederatedTaskResultReport? ErrorReport);
-
         private sealed record Prepared(FederatedTaskSpec? Spec, FederatedTaskResultReport? ErrorReport, bool Skip);
 
         /// <summary>
@@ -330,39 +328,6 @@ namespace Agent.Api
                 Log.Warning("Federated tasks: Submission did not accept the running report for task {TaskId} (status {Status}, {ErrorCode}); it will be retried on the next poll",
                     taskId, outcome.StatusCode, outcome.ErrorCode);
             return false;
-        }
-
-        /// <summary>
-        /// Runs one task against its parsed dataset. Returns a document or an error report. Does not touch storage.
-        /// </summary>
-        private Computed Compute(FederatedTaskSpec spec, DatasetReadResult dataset, string taskId)
-        {
-            try
-            {
-                if (!dataset.IsSuccess)
-                    return new Computed(null, Error(taskId, dataset.ErrorCode!, dataset.ErrorMessage, dataset.Sha256));
-
-                var result = FederatedOperationExecutor.Execute(spec, dataset.Table!);
-                if (!result.IsSuccess)
-                    return new Computed(null, Error(taskId, result.ErrorCode!, result.ErrorMessage, dataset.Sha256));
-
-                var document = new FederatedResultDocument
-                {
-                    TaskId = taskId,
-                    Tre = spec.TreName,
-                    StudyId = spec.StudyId,
-                    Operation = spec.Operation,
-                    Dataset = spec.Dataset,
-                    DatasetSha256 = dataset.Sha256,
-                    CompletedAt = _clock.GetUtcNow(),
-                    Result = new FederatedScalarResult { Value = result.Value, RowCount = result.RowCount }
-                };
-                return new Computed(document, null);
-            }
-            catch (Exception ex)
-            {
-                return new Computed(null, InternalError(taskId, ex));
-            }
         }
 
         /// <summary>

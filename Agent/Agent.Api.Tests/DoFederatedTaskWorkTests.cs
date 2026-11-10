@@ -129,13 +129,16 @@ public class DoFederatedTaskWorkTests
         => Work(client, new DatasetReader(store, new FederatedTaskSettings()), treName, outputs);
 
     private static DoFederatedTaskWork Work(FakeClient client, IDatasetReader reader, string? treName = "tre-a",
-        FakeResultOutputStore? outputs = null, FederatedTaskSettings? settings = null, DateTimeOffset? startedAt = null)
+        FakeResultOutputStore? outputs = null, FederatedTaskSettings? settings = null, DateTimeOffset? startedAt = null,
+        IFederatedTaskExecution? execution = null)
     {
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?> { ["TreName"] = treName })
             .Build();
+        var clock = new FixedClock();
         // An Agent that started long ago, so the give-up window counts from when the task was queued.
-        return new DoFederatedTaskWork(client, reader, outputs ?? new FakeResultOutputStore(), config, new FixedClock(),
+        return new DoFederatedTaskWork(client, reader, execution ?? new OperationExecution(reader, clock),
+            outputs ?? new FakeResultOutputStore(), config, clock,
             settings ?? Approving(FederatedTesProfile.ExecutorImage), new AgentStartTime(startedAt ?? Now.AddDays(-1)));
     }
 
@@ -1000,6 +1003,110 @@ public class DoFederatedTaskWorkTests
 
         // A young task: a bucket failure would be retried, but waiting cannot fix a fault in the TRE.
         Assert.Single(client.ProgressCalls);
+        var report = Assert.Single(client.Reports);
+        Assert.Equal(TesState.SYSTEMERROREnum, report.State);
+        Assert.Equal("internal_error", report.ErrorCode);
+    }
+
+    /// <summary>Stands in for the task execution; records what it was asked to run.</summary>
+    private sealed class FakeExecution(Func<ExecutionResult> run) : IFederatedTaskExecution
+    {
+        public List<(string? TaskId, FederatedTaskSpec Spec, string FileKey)> Runs { get; } = new();
+
+        public Task<ExecutionResult> RunAsync(TesTask task, FederatedTaskSpec spec, string fileKey, CancellationToken ct)
+        {
+            Runs.Add((task.Id, spec, fileKey));
+            return Task.FromResult(run());
+        }
+    }
+
+    private static FederatedResultDocument SubstituteDocument() => new()
+    {
+        TaskId = T1,
+        Tre = "tre-a",
+        StudyId = "study-1",
+        Operation = "mean",
+        Dataset = "cohort_2024",
+        DatasetSha256 = new string('a', 64),
+        CompletedAt = Now,
+        Result = new FederatedScalarResult { Value = 42m, RowCount = 7 }
+    };
+
+    [Fact]
+    public async Task Execute_substituted_execution_result_is_saved_and_released()
+    {
+        var client = OneMean();
+        var outputs = new FakeResultOutputStore();
+        var document = SubstituteDocument();
+        var execution = new FakeExecution(() => ExecutionResult.Ok(document));
+
+        // The reader only finds the dataset for the input checks; the substitute does not read it.
+        await Work(client, new ThrowingReader(), outputs: outputs, execution: execution).Execute();
+
+        var run = Assert.Single(execution.Runs);
+        Assert.Equal(T1, run.TaskId);
+        Assert.Equal("mean", run.Spec.Operation);
+        Assert.Equal("dataset/cohort_2024/data.csv", run.FileKey);
+        Assert.Equal(new[] { "progress:running", "report:COMPLETEEnum" }, client.Order);
+
+        var expected = FederatedResultDocumentJson.Serialize(document);
+        Assert.Equal(expected, outputs.Files[T1]);
+        var call = Assert.Single(client.Calls);
+        Assert.Equal(TesState.COMPLETEEnum, call.Report.State);
+        Assert.Equal(expected, call.Bytes);
+    }
+
+    [Fact]
+    public async Task Execute_substituted_execution_error_is_reported_as_executor_error()
+    {
+        var client = OneMean();
+        var outputs = new FakeResultOutputStore();
+        var sha = new string('b', 64);
+        var execution = new FakeExecution(() => ExecutionResult.Fail("non_numeric_value", "column 'age' contains a non-numeric value", sha));
+
+        await Work(client, new ThrowingReader(), outputs: outputs, execution: execution).Execute();
+
+        var report = Assert.Single(client.Reports);
+        Assert.Equal(TesState.EXECUTORERROREnum, report.State);
+        Assert.Null(report.RejectedAt);
+        Assert.Equal("non_numeric_value", report.ErrorCode);
+        Assert.Equal("column 'age' contains a non-numeric value", report.ErrorMessage);
+        Assert.Equal(sha, report.DatasetSha256);
+        Assert.Empty(outputs.Files);
+    }
+
+    [Fact]
+    public async Task Execute_substituted_execution_does_not_run_when_input_checks_reject_the_task()
+    {
+        var client = OneMean();
+        var execution = new FakeExecution(() => ExecutionResult.Ok(SubstituteDocument()));
+
+        await Work(client, new ThrowingReader(), settings: Approving("other:1"), execution: execution).Execute();
+
+        Assert.Empty(execution.Runs);
+        Assert.Equal("image_not_approved", Assert.Single(client.Reports).ErrorCode);
+    }
+
+    [Fact]
+    public async Task Execute_substituted_execution_store_failure_on_a_young_task_keeps_it_running()
+    {
+        var client = OneMean();
+        var execution = new FakeExecution(() => throw new DatasetStoreException("read failed", new IOException("store down")));
+
+        await Work(client, new ThrowingReader(), execution: execution).Execute();
+
+        Assert.Single(client.ProgressCalls);
+        Assert.Empty(client.Calls);
+    }
+
+    [Fact]
+    public async Task Execute_substituted_execution_that_throws_reports_internal_error()
+    {
+        var client = OneMean();
+        var execution = new FakeExecution(() => throw new InvalidOperationException("container crashed"));
+
+        await Work(client, new ThrowingReader(), execution: execution).Execute();
+
         var report = Assert.Single(client.Reports);
         Assert.Equal(TesState.SYSTEMERROREnum, report.State);
         Assert.Equal("internal_error", report.ErrorCode);
