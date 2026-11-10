@@ -34,5 +34,37 @@ namespace Submission.Api.Services
 
             return orphaned.Count;
         }
+
+        // An Agent reports each task at most a few times per poll, so a third conflict in a row is not expected.
+        private const int MaxSaveAttempts = 3;
+
+        /// <summary>
+        /// Runs <see cref="FailUnfinishedUnderOtherNames"/> and saves it together with the caller's other tracked
+        /// changes (the rename). An Agent report can change a swept task between the read and the save. Step is a
+        /// concurrency token, so that save fails; the swept tasks are then read again and the sweep is redone. A
+        /// task the report finished is left as it is.
+        /// </summary>
+        /// <returns>The number of tasks failed.</returns>
+        public static async Task<int> SaveWithSweepAsync(ApplicationDbContext db, int treId, string treName)
+        {
+            for (var attempt = 1; ; attempt++)
+            {
+                var failed = FailUnfinishedUnderOtherNames(db, treId, treName);
+                try
+                {
+                    await db.SaveChangesAsync();
+                    return failed;
+                }
+                catch (DbUpdateConcurrencyException) when (attempt < MaxSaveAttempts)
+                {
+                    // Forget the sweep's stale tasks and history; the rename itself stays tracked for the next save.
+                    foreach (var entry in db.ChangeTracker.Entries()
+                                 .Where(e => e.Entity is FederatedTask or FederatedTaskStepChange).ToList())
+                    {
+                        entry.State = EntityState.Detached;
+                    }
+                }
+            }
+        }
     }
 }

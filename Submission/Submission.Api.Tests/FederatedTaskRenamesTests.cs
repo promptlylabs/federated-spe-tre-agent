@@ -98,5 +98,93 @@ namespace Submission.Api.Tests
             Assert.Equal(0, failed);
             Assert.Equal(TesState.QUEUEDEnum, db.FederatedTasks.AsNoTracking().Single().State);
         }
+    
+        private static ApplicationDbContext OpenDb(string name, params Microsoft.EntityFrameworkCore.Diagnostics.IInterceptor[] interceptors) =>
+            new(new DbContextOptionsBuilder<ApplicationDbContext>().UseInMemoryDatabase(name).AddInterceptors(interceptors).Options);
+
+        private static (string Name, Guid TaskId) SeedRunningUnderOldName()
+        {
+            var name = Guid.NewGuid().ToString();
+            using var db = OpenDb(name);
+            db.Tres.Add(new Tre { Id = 1, Name = "tre-a", AdminUsername = "a", About = "", FormData = "" });
+            var task = new FederatedTask
+            {
+                TaskId = Guid.NewGuid(), TreId = 1, TreName = "tre-a", StudyId = "s", Operation = "count",
+                Dataset = "d", TesTaskJson = "{}", State = TesState.QUEUEDEnum, SubmittedAt = DateTime.UtcNow,
+                Step = FederatedTaskStep.Queued
+            };
+            task.MoveTo(FederatedTaskStep.Running, DateTime.UtcNow);
+            db.FederatedTasks.Add(task);
+            db.SaveChanges();
+            return (name, task.TaskId);
+        }
+
+        /// <summary>An Agent report in a second context, just before the rename's first save.</summary>
+        private static BeforeFirstSave AgentReports(string dbName, Guid taskId, FederatedTaskStep step) => new(() =>
+        {
+            using var other = OpenDb(dbName);
+            other.FederatedTasks.Single(x => x.TaskId == taskId).MoveTo(step, DateTime.UtcNow);
+            other.SaveChanges();
+        });
+
+        private static void Rename(ApplicationDbContext db, string newName) => db.Tres.Single(x => x.Id == 1).Name = newName;
+
+        [Fact]
+        public async Task SaveWithSweep_report_racing_the_sweep_is_redone_and_the_task_still_fails()
+        {
+            var (name, taskId) = SeedRunningUnderOldName();
+            await using var db = OpenDb(name, AgentReports(name, taskId, FederatedTaskStep.WaitingForOutputApproval));
+            Rename(db, "tre-a-2");
+
+            var failed = await FederatedTaskRenames.SaveWithSweepAsync(db, 1, "tre-a-2");
+
+            Assert.Equal(1, failed);
+            await using var check = OpenDb(name);
+            Assert.Equal("tre-a-2", check.Tres.Single().Name);
+            var row = check.FederatedTasks.Include(x => x.StepChanges).Single();
+            Assert.Equal(FederatedTaskStep.Failed, row.Step);
+            Assert.Equal(FederatedTaskErrorCodes.TreRenamed, row.ErrorCode);
+            // The Agent's report is kept in the history, then the rename's failure. Only the order is checked: the
+            // in-memory provider does not roll back the failed first save, Postgres does (one transaction per save).
+            var steps = row.StepChanges.OrderBy(c => c.Id).Select(c => c.Step).ToList();
+            Assert.Equal([FederatedTaskStep.Running, FederatedTaskStep.WaitingForOutputApproval], steps.Take(2));
+            Assert.Equal(FederatedTaskStep.Failed, steps.Last());
+        }
+
+        [Fact]
+        public async Task SaveWithSweep_task_released_during_the_sweep_stays_released()
+        {
+            var (name, taskId) = SeedRunningUnderOldName();
+            await using var db = OpenDb(name, AgentReports(name, taskId, FederatedTaskStep.Released));
+            Rename(db, "tre-a-2");
+
+            var failed = await FederatedTaskRenames.SaveWithSweepAsync(db, 1, "tre-a-2");
+
+            Assert.Equal(0, failed);
+            await using var check = OpenDb(name);
+            Assert.Equal("tre-a-2", check.Tres.Single().Name);
+            var row = check.FederatedTasks.Single();
+            Assert.Equal(FederatedTaskStep.Released, row.Step);
+            Assert.Null(row.ErrorCode);
+        }
+
+        /// <summary>Runs a competing write once, just before the first save of the context it is attached to.</summary>
+        private sealed class BeforeFirstSave(Action competingWrite) : Microsoft.EntityFrameworkCore.Diagnostics.SaveChangesInterceptor
+        {
+            private bool _done;
+
+            public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int>> SavingChangesAsync(
+                Microsoft.EntityFrameworkCore.Diagnostics.DbContextEventData eventData,
+                Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> result, CancellationToken cancellationToken = default)
+            {
+                if (!_done)
+                {
+                    _done = true;
+                    competingWrite();
+                }
+
+                return ValueTask.FromResult(result);
+            }
+        }
     }
 }

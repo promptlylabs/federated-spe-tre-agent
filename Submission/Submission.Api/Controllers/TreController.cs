@@ -71,19 +71,14 @@ namespace Submission.Api.Controllers
                 tre.FormData = data.FormIoString;
 
                 var logtype = LogType.AddTre;
+                var isUpdate = false;
                 if (tre.Id > 0)
                 {
                     if (_DbContext.Tres.Select(x => x.Id == tre.Id).Any())
                     {
                         _DbContext.Tres.Update(tre);
                         logtype = LogType.UpdateTre;
-
-                        var failedTasks = FederatedTaskRenames.FailUnfinishedUnderOtherNames(_DbContext, tre.Id, tre.Name);
-                        if (failedTasks > 0)
-                        {
-                            Log.Information("{Function} Failed {Count} unfinished federated task(s) enqueued under an old name of TRE {TreName}",
-                                "SaveTre", failedTasks, tre.Name);
-                        }
+                        isUpdate = true;
                     }
                     else
                     {
@@ -94,7 +89,21 @@ namespace Submission.Api.Controllers
                 {
                     _DbContext.Tres.Add(tre);
                 }
-                await _DbContext.SaveChangesAsync();
+
+                if (isUpdate)
+                {
+                    // Saved with the rename; redone if an Agent report races the sweep.
+                    var failedTasks = await FederatedTaskRenames.SaveWithSweepAsync(_DbContext, tre.Id, tre.Name);
+                    if (failedTasks > 0)
+                    {
+                        Log.Information("{Function} Failed {Count} unfinished federated task(s) enqueued under an old name of TRE {TreName}",
+                            "SaveTre", failedTasks, tre.Name);
+                    }
+                }
+                else
+                {
+                    await _DbContext.SaveChangesAsync();
+                }
                 await ControllerHelpers.AddAuditLog(logtype, null, null, tre, null, null, _httpContextAccessor, User, _DbContext);
 
                 // Provision whenever the TRE has no service account yet, not just on first add. This lets a
