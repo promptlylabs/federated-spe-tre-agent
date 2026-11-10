@@ -1138,6 +1138,27 @@ namespace Submission.Api.Tests
         }
 
         [Fact]
+        public async Task GetPending_loads_each_tasks_history_with_the_tasks()
+        {
+            // The test provider has no lazy loading, so the step times are there only if the query includes them.
+            var name = Guid.NewGuid().ToString();
+            using (var setup = OpenDb(name))
+            {
+                setup.Tres.Add(NewTre(1, "tre-a", "tre-a-admin", "tre-a-client"));
+                setup.SaveChanges();
+                SeedAtStep(setup, FederatedTaskStep.Running);
+            }
+
+            using var db = OpenDb(name);
+            var result = await AgentControllerFor(db, "tre-a-client").GetPendingTasksForTre();
+
+            var task = Assert.Single(Assert.IsType<List<TesTask>>(Assert.IsType<OkObjectResult>(result).Value));
+            var metadata = Assert.Single(task.Logs!).Metadata;
+            Assert.True(metadata.ContainsKey("queued_at"));
+            Assert.True(metadata.ContainsKey("running_at"));
+        }
+
+        [Fact]
         public async Task GetPending_waiting_tasks_do_not_crowd_out_queued()
         {
             using var db = NewDb();

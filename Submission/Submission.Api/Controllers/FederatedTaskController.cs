@@ -110,8 +110,10 @@ namespace Submission.Api.Controllers
 
             // The Agent refuses tasks whose tres is not its own name and leaves them as they are. Tasks enqueued under a
             // name the TRE no longer has would stay unfinished forever and fill the list, so they are not handed out.
+            // ToTesTask reads the history. Without the Include, lazy loading would run one query per task.
             var tasks = await _DbContext.FederatedTasks
                 .AsNoTracking()
+                .Include(x => x.StepChanges)
                 .Where(x => x.TreId == tre.Id && x.TreName == treName)
                 .Where(FederatedTaskSteps.IsUnfinishedTask)
                 // Running first (the Agent may need to resume it), then queued, then waiting: waiting tasks are
