@@ -50,6 +50,14 @@ namespace Agent.Api.Models
         /// </summary>
         public int DatasetUnreachableGiveUpMinutes { get; set; } = 60;
 
+        /// <summary>
+        /// Executor images this TRE has approved. A task whose image is not listed is rejected by the input checks with
+        /// image_not_approved. There is no default: approving an image is the site's decision. When the list is missing
+        /// or empty the Agent runs no new task and reports none, so a forgotten setting never rejects anything.
+        /// Entries are trimmed and blank ones dropped; matching is exact and case-sensitive.
+        /// </summary>
+        public string[] ApprovedImages { get; set; } = [];
+
         public static FederatedTaskSettings FromConfiguration(IConfiguration configuration)
         {
             var section = configuration.GetSection(nameof(FederatedTaskSettings));
@@ -61,6 +69,11 @@ namespace Agent.Api.Models
             {
                 settings.AllowedExtensions = extensions;
             }
+
+            settings.ApprovedImages = settings.ApprovedImages
+                .Where(image => !string.IsNullOrWhiteSpace(image))
+                .Select(image => image.Trim())
+                .ToArray();
 
             return settings;
         }

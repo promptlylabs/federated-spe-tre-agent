@@ -1,4 +1,5 @@
 using Agent.Api.Models;
+using FiveSafesTes.Core.Models.FederatedTasks;
 using Microsoft.Extensions.Configuration;
 using Xunit;
 
@@ -39,4 +40,24 @@ public class FederatedTaskSettingsTests
         Assert.Equal("federated-outputs", settings.OutputBucket);
         Assert.Equal("federated-outputs-read", settings.OutputReadPolicyName);
     }
+
+    [Fact]
+    public void FromConfiguration_ApprovedImages_unset_is_empty() =>
+        Assert.Empty(Bind(new Dictionary<string, string?>()).ApprovedImages);
+
+    [Fact]
+    public void FromConfiguration_ApprovedImages_are_trimmed_and_blank_entries_dropped()
+    {
+        var settings = Bind(new Dictionary<string, string?>
+        {
+            ["FederatedTaskSettings:ApprovedImages:0"] = " 5s-tes/federated-ops:1 ",
+            ["FederatedTaskSettings:ApprovedImages:1"] = "  ",
+        });
+
+        Assert.Equal(["5s-tes/federated-ops:1"], settings.ApprovedImages);
+    }
+
+    [Fact]
+    public void Image_not_approved_is_an_input_check_code() =>
+        Assert.Contains("image_not_approved", FederatedTaskErrorCodes.InputCheckCodes);
 }
