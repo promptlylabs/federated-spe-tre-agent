@@ -1349,5 +1349,62 @@ namespace Submission.Api.Tests
             // The in-memory provider has no transactions, so a running history row added in the failed save can
             // survive here; a relational provider rolls the whole save back. Step and State are the guarantee tested.
         }
+
+        /// <summary>Before every save, flips the task between queued and running so the save always loses the race.</summary>
+        private sealed class BeforeEverySave(string dbName) : Microsoft.EntityFrameworkCore.Diagnostics.SaveChangesInterceptor
+        {
+            public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int>> SavingChangesAsync(
+                Microsoft.EntityFrameworkCore.Diagnostics.DbContextEventData eventData,
+                Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> result, CancellationToken cancellationToken = default)
+            {
+                using var other = OpenDb(dbName);
+                var t = other.FederatedTasks.Single();
+                t.Step = t.Step == FederatedTaskStep.Queued ? FederatedTaskStep.Running : FederatedTaskStep.Queued;
+                other.SaveChanges();
+                return ValueTask.FromResult(result);
+            }
+        }
+
+        private static (string Name, FederatedTask Seeded, ApplicationDbContext Racing) AlwaysRacing()
+        {
+            var name = Guid.NewGuid().ToString();
+            using (var setup = OpenDb(name))
+            {
+                setup.Tres.Add(NewTre(1, "tre-a", "tre-a-admin", "tre-a-client"));
+                setup.SaveChanges();
+                var seeded = SeedAtStep(setup, FederatedTaskStep.Queued);
+                var racing = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
+                    .UseInMemoryDatabase(name).AddInterceptors(new BeforeEverySave(name)).Options);
+                return (name, seeded, racing);
+            }
+        }
+
+        [Fact]
+        public async Task ReportProgress_that_keeps_losing_the_race_is_409_task_busy()
+        {
+            var (name, seeded, racing) = AlwaysRacing();
+            using var _ = racing;
+
+            var result = await Progress(AgentControllerFor(racing, "tre-a-client"), seeded.TaskId, "waiting_for_output_approval");
+
+            AssertError(result, 409, FederatedTaskErrorCodes.TaskBusy);
+            using var check = OpenDb(name);
+            Assert.NotEqual(FederatedTaskStep.WaitingForOutputApproval, Reload(check, seeded.TaskId).Step);
+        }
+
+        [Fact]
+        public async Task ReportResult_that_keeps_losing_the_race_is_409_task_busy()
+        {
+            var (name, seeded, racing) = AlwaysRacing();
+            using var _ = racing;
+
+            var result = await ReportComplete(AgentControllerFor(racing, "tre-a-client", new FakeResultStore()), seeded);
+
+            AssertError(result, 409, FederatedTaskErrorCodes.TaskBusy);
+            using var check = OpenDb(name);
+            var row = Reload(check, seeded.TaskId);
+            Assert.False(FederatedTaskSteps.IsFinal(row.Step));
+            Assert.Equal(TesState.QUEUEDEnum, row.State);
+        }
     }
 }

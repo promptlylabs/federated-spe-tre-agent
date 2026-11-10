@@ -20,7 +20,7 @@ To try the flow locally, see [dev/federated](../dev/federated/README.md). It is 
 
 If the Agent cannot save the file, or the release fails (network error, 5xx, or a 4xx that is not listed under "Reporting a result"), the task stays `running` and the Agent tries again at the next poll. A task that fails before there is a file (for example `dataset_not_found`) is reported as a rejection or a failure, with no file, and does not go through save and release.
 
-`GetPendingTasksForTre` returns the tasks that are not finished: `running` first, then `queued`, then `waiting_for_output_approval`, oldest first inside each group. The Agent skips `waiting_for_output_approval` tasks, because it has nothing to do for them. A `running` task was marked by an earlier poll that did not finish. The Agent resumes it, and does not report `running` again. If the result file from the earlier poll is in the TRE bucket, the Agent reuses it.
+`GetPendingTasksForTre` returns the tasks that are not finished: `running` first, then `queued`, then `waiting_for_output_approval`, oldest first inside each group. The Agent skips `waiting_for_output_approval` tasks, because it has nothing to do for them. A `running` task was marked by an earlier poll that did not finish. The Agent resumes it, and does not report `running` again. If the result file from the earlier poll is in the TRE bucket, the Agent reuses it. Otherwise it runs the task again from the start, so every step the Agent does before it reports must be safe to do twice. The Agent skips, and logs, a pending task in any state other than `QUEUED`, `RUNNING` or `PAUSED`.
 
 `GetPendingTasksForTre`, `ReportProgress` and `ReportResult` accept only the TRE Agent's service account (role `dare-tre-admin`). See "Reporting a result". `Enqueue`, `GetTask` and `GetTaskResult` need `dare-control-admin`.
 
@@ -99,7 +99,8 @@ Every 4xx from these endpoints has the same JSON body. Its keys are the same as 
 | 404 | `task_not_found` | No such task. `ReportProgress` and `ReportResult` also return this for a task that belongs to another TRE. |
 | 404 | `result_not_found` | `GetTaskResult`: the task is not `released`. |
 | 409 | `task_already_reported` | `ReportResult` or `ReportProgress` for a task that is already final. When the task is `released`, the body also has `result_sha256` and `result_key`. |
-| 409 | `invalid_transition` | `ReportProgress` asks to go back to an earlier step. Also, a report that lost a race with other reports three times in a row. |
+| 409 | `invalid_transition` | `ReportProgress` asks to go back to an earlier step. |
+| 409 | `task_busy` | `ReportProgress` or `ReportResult` lost a race with other reports for the same task three times in a row. Nothing was recorded. Send the report again. |
 | 500 | `internal_error` | `GetTaskResult`: the stored file does not match its SHA-256. The file is not returned. |
 | 503 | `storage_unavailable` | The orchestrator bucket cannot be reached. For `ReportResult` the task keeps its step. |
 
@@ -270,7 +271,8 @@ TODO: researcher access scoped by study once study_id → project mapping exists
 | `non_numeric_value` | `mean` found a value that is not a number. |
 | `internal_error` | An unexpected failure, for example storage is unreachable. The message is generic, so that bucket names and hosts do not leave the TRE. The details are in the Agent log. |
 | `tre_renamed` | The TRE was renamed in Submission before the task finished. Set by Submission, not the Agent. Enqueue the task again under the new name. |
-| `invalid_transition` | API only (`ReportProgress`, `ReportResult`). The report asks for an earlier step, or lost a race. |
+| `invalid_transition` | API only (`ReportProgress`). The report asks for an earlier step. |
+| `task_busy` | API only (`ReportProgress`, `ReportResult`). The report lost a race with other reports three times in a row. Send it again. |
 | `invalid_result` | Submission refused the result file. The Agent sends it as the code of a follow-up `EXECUTOR_ERROR`. The message names the field. |
 | `result_too_large` | The result file is over 65536 bytes. Set by the Agent's follow-up report after a 400 from Submission. |
 | `result_not_found` | API only (`GetTaskResult`). The task has no result file. |
@@ -420,7 +422,7 @@ TODO: researcher access scoped by study once study_id → project mapping exists
 Planned follow-ups:
 
 - Signed results. Each Agent signs the result bytes with its own key, and Submission verifies and stores the signature. This gives a result that does not depend on trusting the orchestrator.
-- Egress review in the TRE, between save and release. The steps `waiting_for_output_approval` and `rejected_at_output_approval` are already in the model, but the Agent does not report them yet. Error reports skip save and release, so egress must also decide whether error messages come from a fixed list or are reviewed too.
+- Egress review in the TRE, between save and release. The steps `waiting_for_output_approval` and `rejected_at_output_approval` are already in the model, but the Agent does not report them yet. Error reports skip save and release, so egress must also decide whether error messages come from a fixed list or are reviewed too. A resumed task can reach the egress step twice (for example, if the Agent stops after it sends the review request and before it reports `waiting_for_output_approval`). Send the request with the task id as its key, so that the second send finds the first request and does not make a new one.
 - A rule for the TRE name in `SaveTre`.
 - Separate storage credentials for the Agent.
 

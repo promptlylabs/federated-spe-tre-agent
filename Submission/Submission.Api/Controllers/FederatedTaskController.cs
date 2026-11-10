@@ -25,6 +25,9 @@ namespace Submission.Api.Controllers
     [ApiController]
     public class FederatedTaskController : Controller
     {
+        /// <summary>Attempts at one report when other reports for the same task keep winning the race.</summary>
+        private const int MaxProgressAttempts = 3;
+
         /// <summary>Upper bound on tasks returned to a TRE Agent in a single poll.</summary>
         private const int MaxPendingTasks = 50;
 
@@ -339,12 +342,9 @@ namespace Submission.Api.Controllers
                 }
             }
 
-            return Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.InvalidTransition,
+            return Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.TaskBusy,
                 "the task is being updated by other reports, try again");
         }
-
-        /// <summary>Attempts at one report when other reports for the same task keep winning the race.</summary>
-        private const int MaxProgressAttempts = 3;
 
         [Authorize(Roles = "dare-tre-admin")]
         [HttpPost]
@@ -412,7 +412,7 @@ namespace Submission.Api.Controllers
                 }
             }
 
-            return Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.InvalidTransition,
+            return Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.TaskBusy,
                 "the task is being updated by other reports, try again");
         }
 

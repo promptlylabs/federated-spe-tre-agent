@@ -559,6 +559,7 @@ public class DoFederatedTaskWorkTests
         var client = new FakeClient();
         var task = FederatedTesProfile.Build(new FederatedTaskSpec("count", "cohort_2024", null, Array.Empty<TaskFilter>(), new string('s', 1025), "tre-a"));
         task.Id = T1;
+        task.State = TesState.QUEUEDEnum;
         client.Pending.Add(task);
         var outputs = new FakeResultOutputStore();
 
@@ -677,6 +678,22 @@ public class DoFederatedTaskWorkTests
         var task = PendingTask(T1, "cohort_2024", "count", null);
         task.Tags!["tres"] = "tre-b";
         client.Pending.Add(task);
+
+        await Work(client, new ThrowingReader()).Execute();
+
+        Assert.Empty(client.ProgressCalls);
+        Assert.Empty(client.Calls);
+    }
+
+    [Theory]
+    [InlineData(TesState.COMPLETEEnum)]
+    [InlineData(TesState.CANCELEDEnum)]
+    [InlineData(TesState.EXECUTORERROREnum)]
+    [InlineData(TesState.UNKNOWNEnum)]
+    public async Task Execute_task_in_unexpected_state_is_skipped(TesState state)
+    {
+        var client = OneMean();
+        client.Pending[0].State = state;
 
         await Work(client, new ThrowingReader()).Execute();
 

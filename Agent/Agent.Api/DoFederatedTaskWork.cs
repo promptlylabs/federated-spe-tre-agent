@@ -62,6 +62,13 @@ namespace Agent.Api
                 // Waiting for output approval: the TRE has nothing to do until Submission records a decision.
                 if (task.State == TesState.PAUSEDEnum) continue;
 
+                // Only QUEUED and RUNNING tasks are the Agent's to work on. Any other state here is unexpected.
+                if (task.State is not (TesState.QUEUEDEnum or TesState.RUNNINGEnum))
+                {
+                    Log.Warning("Federated tasks: task {TaskId} is pending in unexpected state {State}; skipping it", task.Id, task.State);
+                    continue;
+                }
+
                 try
                 {
                     await ProcessAsync(task, treName.Trim());
@@ -132,7 +139,7 @@ namespace Agent.Api
         private async Task ReportErrorAsync(FederatedTaskResultReport report)
         {
             var outcome = await _client.ReportAsync(report, null);
-            if (outcome.StatusCode == 409)
+            if (outcome.StatusCode == 409 && outcome.ErrorCode != FederatedTaskErrorCodes.TaskBusy)
             {
                 Log.Warning("Federated tasks: task {TaskId} was already reported to Submission; the error report was not recorded", report.TaskId);
             }
@@ -159,7 +166,7 @@ namespace Agent.Api
                 return;
             }
 
-            if (outcome.StatusCode == 409)
+            if (outcome.StatusCode == 409 && outcome.ErrorCode != FederatedTaskErrorCodes.TaskBusy)
             {
                 // The task is already terminal on the server (an error state, or a COMPLETE without a stored sha).
                 Log.Warning("Federated tasks: task {TaskId} was already reported to Submission and carries no result sha256; nothing more to do", taskId);
@@ -253,7 +260,7 @@ namespace Agent.Api
             var outcome = await _client.ReportProgressAsync(taskId, FederatedTaskStep.Running);
             if (outcome.Accepted) return true;
 
-            if (outcome.StatusCode == 409)
+            if (outcome.StatusCode == 409 && outcome.ErrorCode != FederatedTaskErrorCodes.TaskBusy)
                 Log.Warning("Federated tasks: task {TaskId} is already past the running step on Submission ({ErrorCode}); not running it",
                     taskId, outcome.ErrorCode);
             else

@@ -31,5 +31,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         public const string TaskNotFound = "task_not_found";
         public const string TaskAlreadyReported = "task_already_reported";
         public const string InvalidTransition = "invalid_transition";
+        // Other reports for the same task kept winning the race; the report was not applied and can be sent again.
+        public const string TaskBusy = "task_busy";
     }
 }
