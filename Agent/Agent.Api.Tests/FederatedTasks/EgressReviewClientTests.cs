@@ -1,0 +1,123 @@
+using System.Net;
+using System.Text;
+using Agent.Api.FederatedTasks;
+using FiveSafesTes.Core.Models.Settings;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Options;
+using Newtonsoft.Json.Linq;
+using Xunit;
+
+namespace Agent.Api.Tests.FederatedTasks;
+
+public class EgressReviewClientTests
+{
+    private const string TaskId = "11111111-1111-1111-1111-111111111111";
+
+    private sealed class StubHandler : HttpMessageHandler
+    {
+        private readonly HttpStatusCode _status;
+        private readonly string _body;
+        public HttpRequestMessage? Request;
+        public string? Body;
+
+        public StubHandler(HttpStatusCode status, string body)
+        {
+            _status = status;
+            _body = body;
+        }
+
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
+        {
+            Request = request;
+            if (request.Content != null)
+                Body = await request.Content.ReadAsStringAsync(ct);
+            return new HttpResponseMessage(_status) { Content = new StringContent(_body, Encoding.UTF8, "application/json") };
+        }
+    }
+
+    private sealed class Factory : IHttpClientFactory
+    {
+        private readonly HttpMessageHandler _handler;
+        public Factory(HttpMessageHandler handler) => _handler = handler;
+        public HttpClient CreateClient(string name) => new(_handler, disposeHandler: false);
+    }
+
+    private sealed class FixedMonitor : IOptionsMonitor<DataEgressKeyCloakSettings>
+    {
+        public FixedMonitor(DataEgressKeyCloakSettings value) => CurrentValue = value;
+        public DataEgressKeyCloakSettings CurrentValue { get; }
+        public DataEgressKeyCloakSettings Get(string? name) => CurrentValue;
+        public IDisposable? OnChange(Action<DataEgressKeyCloakSettings, string?> listener) => null;
+    }
+
+    /// <summary>Skips Keycloak: the token call is the only part not under test here.</summary>
+    private sealed class TestClient : EgressReviewClient
+    {
+        public TestClient(IHttpClientFactory f, IOptionsMonitor<DataEgressKeyCloakSettings> k, IOptions<ApiEndpointSettings> e)
+            : base(f, k, e, new ConfigurationBuilder().Build()) { }
+
+        protected override Task<string> GetTokenAsync() => Task.FromResult("fake-token");
+    }
+
+    private static EgressReviewClient Client(StubHandler handler, string clientId = "agent", string clientSecret = "secret") =>
+        new TestClient(
+            new Factory(handler),
+            new FixedMonitor(new DataEgressKeyCloakSettings { ClientId = clientId, ClientSecret = clientSecret }),
+            Options.Create(new ApiEndpointSettings { EgressApiUrl = "http://egress" }));
+
+    private static EgressRegistration Registration() =>
+        new(TaskId, "Count by sex", "study-1", "print(1)", "{\"n\":1}", "abc123");
+
+    [Fact]
+    public async Task Client_treats_already_registered_as_success()
+    {
+        var handler = new StubHandler(HttpStatusCode.OK, "{\"Result\":false}");
+
+        await Client(handler).RegisterAsync(Registration(), CancellationToken.None);
+
+        Assert.NotNull(handler.Request);
+    }
+
+    [Fact]
+    public async Task Client_sends_kind_federated_study_code_result_and_one_file()
+    {
+        var handler = new StubHandler(HttpStatusCode.OK, "{\"Result\":true}");
+
+        await Client(handler).RegisterAsync(Registration(), CancellationToken.None);
+
+        Assert.Equal(HttpMethod.Post, handler.Request!.Method);
+        Assert.Equal("http://egress/api/DataEgress/AddNewDataEgress/", handler.Request.RequestUri!.ToString());
+        Assert.Equal("Bearer", handler.Request.Headers.Authorization!.Scheme);
+        Assert.Equal("fake-token", handler.Request.Headers.Authorization.Parameter);
+        Assert.Equal("application/json", handler.Request.Content!.Headers.ContentType!.MediaType);
+
+        var json = JObject.Parse(handler.Body!);
+        Assert.Equal(TaskId, (string?)json["SubmissionId"]);
+        Assert.Equal("Count by sex", (string?)json["Name"]);
+        Assert.Equal("federated", (string?)json["Kind"]);
+        Assert.Equal("study-1", (string?)json["Study"]!["Id"]);
+        Assert.Equal("print(1)", (string?)json["Code"]);
+        Assert.Equal("{\"n\":1}", (string?)json["ResultContent"]);
+        Assert.Equal("abc123", (string?)json["ResultSha256"]);
+        var file = Assert.Single((JArray)json["Files"]!);
+        Assert.Equal($"{TaskId}.json", (string?)file["Name"]);
+        Assert.Equal(0, (int?)file["Status"]);
+    }
+
+    [Fact]
+    public async Task Client_throws_on_non_success()
+    {
+        var handler = new StubHandler(HttpStatusCode.Forbidden, "");
+
+        await Assert.ThrowsAsync<HttpRequestException>(() => Client(handler).RegisterAsync(Registration(), CancellationToken.None));
+    }
+
+    [Theory]
+    [InlineData("agent", "secret", true)]
+    [InlineData("", "secret", false)]
+    [InlineData("agent", "", false)]
+    public void Client_is_configured_only_with_id_and_secret(string id, string secret, bool expected)
+    {
+        Assert.Equal(expected, Client(new StubHandler(HttpStatusCode.OK, ""), id, secret).IsConfigured);
+    }
+}
