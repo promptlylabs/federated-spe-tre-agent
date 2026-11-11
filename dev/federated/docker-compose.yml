@@ -6,6 +6,8 @@
 # Browsers and curl on the host use localhost; containers talk to each other by service name.
 # Keycloak's dynamic backchannel lets both work: tokens carry the localhost issuer, and the APIs
 # skip issuer-name checks (KeycloakCommon / Submission JwtBearer), so internal discovery is fine.
+# Agent.Api and the Egress app do check the issuer, against Authority: theirs is the localhost URL, while discovery,
+# keys and tokens go through MetadataAddress / BaseUrl on keycloak:8080.
 
 name: federated-dev
 
@@ -150,8 +152,19 @@ services:
       SubmissionKeyCloakSettings__ClientSecret: dev-tre-my-tre-secret
       SubmissionKeyCloakSettings__Username: tre-my-tre
       SubmissionKeyCloakSettings__PasswordEnc: dev-tre-my-tre-secret
-      TreKeyCloakSettings__Authority: http://keycloak:8080/realms/tre-test
+      # The Agent checks the issuer of incoming tokens against Authority, so it is the localhost issuer the tokens carry;
+      # the keys come from MetadataAddress. Dare-TRE-API is the audience of the Egress app's callback token.
+      TreKeyCloakSettings__Authority: http://localhost:8180/realms/tre-test
       TreKeyCloakSettings__MetadataAddress: http://keycloak:8080/realms/tre-test/.well-known/openid-configuration
+      TreKeyCloakSettings__ValidAudiences: Dare-TRE-API,Dare-TRE-UI
+      # Output approval: the Agent registers each result with the Egress app as the service account of client
+      # tre-agent (realm Data-Egress, role dare-tre-admin), then acts on the reviewer's decision at the next poll.
+      ApiEndpoints__EgressApiUrl: http://egress-api:8080
+      DataEgressKeyCloakSettings__Authority: http://localhost:8180/realms/Data-Egress
+      DataEgressKeyCloakSettings__MetadataAddress: http://keycloak:8080/realms/Data-Egress/.well-known/openid-configuration
+      DataEgressKeyCloakSettings__BaseUrl: http://keycloak:8080/realms/Data-Egress
+      DataEgressKeyCloakSettings__ClientId: tre-agent
+      DataEgressKeyCloakSettings__ClientSecret: dev-tre-agent-egress-secret
       # Admin key: the Agent creates the dataset bucket and the dataset-upload policy at startup.
       MinioTRESettings__Url: http://rustfs:9000
       MinioTRESettings__AccessKey: rustfsadmin
@@ -177,6 +190,98 @@ services:
         condition: service_started
       submission-api:
         condition: service_started
+
+  # The hospital's Data Egress app: a reviewer approves or rejects each federated result before it leaves the TRE.
+  # Reviewers log in through realm Data-Egress; the app calls the Agent back as user egress-app of realm tre-test.
+  egress-api:
+    build:
+      context: ../..
+      dockerfile: Egress/Data-Egress-API/Dockerfile
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__DefaultConnection: Server=postgres;Port=5432;Database=DataEgress;User Id=postgres;Password=postgres;Include Error Detail=true
+      KeycloakDemoMode: "true"
+      DemoMode: "false"
+      # Incoming tokens are checked against Authority (the localhost issuer they carry); keys come from MetadataAddress.
+      DataEgressKeyCloakSettings__Authority: http://localhost:8180/realms/Data-Egress
+      DataEgressKeyCloakSettings__MetadataAddress: http://keycloak:8080/realms/Data-Egress/.well-known/openid-configuration
+      DataEgressKeyCloakSettings__BaseUrl: http://keycloak:8080/realms/Data-Egress
+      DataEgressKeyCloakSettings__Realm: Data-Egress
+      DataEgressKeyCloakSettings__ClientId: Data-Egress-API
+      DataEgressKeyCloakSettings__ClientSecret: dev-data-egress-api-secret
+      DataEgressKeyCloakSettings__ValidAudiences: Data-Egress-API,Data-Egress-UI
+      # The login the app uses to call the Agent back (stored by seed-egress-creds below).
+      TreKeyCloakSettings__Authority: http://localhost:8180/realms/tre-test
+      TreKeyCloakSettings__MetadataAddress: http://keycloak:8080/realms/tre-test/.well-known/openid-configuration
+      TreKeyCloakSettings__BaseUrl: http://keycloak:8080/realms/tre-test
+      TreKeyCloakSettings__Realm: tre-test
+      TreKeyCloakSettings__ClientId: Dare-TRE-API
+      TreKeyCloakSettings__ClientSecret: dev-dare-tre-api-secret
+      TreAPISettings__Address: http://agent-api:8080
+      DataEgressAPISettings__Address: http://localhost:5279
+      MinioSettings__Url: http://rustfs:9000
+      MinioSettings__AccessKey: rustfsadmin
+      MinioSettings__SecretKey: rustfsadmin123
+      # Email is off (EmailSettings:Enabled is false); a send failure would only be logged.
+      EmailSettings__EmailOverride: reviewer@localhost
+    ports:
+      - "5279:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
+
+  egress-ui:
+    build:
+      context: ../..
+      dockerfile: Egress/Data-Egress-UI/Dockerfile
+    environment:
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      KeycloakDemoMode: "true"
+      DemoMode: "false"
+      # The browser is sent to Keycloak on localhost; the UI fetches discovery, tokens and keys from keycloak:8080.
+      DataEgressKeyCloakSettings__Authority: http://localhost:8180/realms/Data-Egress
+      DataEgressKeyCloakSettings__MetadataAddress: http://keycloak:8080/realms/Data-Egress/.well-known/openid-configuration
+      DataEgressKeyCloakSettings__BaseUrl: http://keycloak:8080/realms/Data-Egress
+      DataEgressKeyCloakSettings__AccountManagementURL: http://localhost:8180/realms/Data-Egress/account
+      DataEgressKeyCloakSettings__ClientId: Data-Egress-UI
+      DataEgressKeyCloakSettings__ClientSecret: dev-data-egress-ui-secret
+      DataEgressKeyCloakSettings__TokenExpiredAddress: http://localhost:5280/Account/LoginAfterTokenExpired
+      DataEgressKeyCloakSettings__Proxy: "false"
+      DataEgressAPISettings__Address: http://egress-api:8080
+      S3Settings__Url: http://localhost:9001
+    ports:
+      - "5280:8080"
+    depends_on:
+      egress-api:
+        condition: service_started
+
+  # One-shot: stores egress-app's tre-test login in the Egress app, as the reviewer, so the app can call the Agent back.
+  seed-egress-creds:
+    image: curlimages/curl:8.10.1
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        until curl -sf http://egress-api:8080/health >/dev/null; do echo "waiting for the Egress API"; sleep 3; done
+        token=$$(curl -sf http://keycloak:8080/realms/Data-Egress/protocol/openid-connect/token \
+          -d grant_type=password -d client_id=Data-Egress-API -d client_secret=dev-data-egress-api-secret \
+          -d username=reviewer -d 'password=Reviewer1!' | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
+        [ -n "$$token" ] || { echo "no token for reviewer"; exit 1; }
+        # Stored already (a restart): skip, as the upstream UpdateCredentials fails when it replaces a stored login.
+        if curl -sf http://egress-api:8080/api/TreCredentials/CheckCredentialsAreValid -H "Authorization: Bearer $$token" | grep -qi '"result":true'; then
+          echo "egress-app login already stored"; exit 0
+        fi
+        response=$$(curl -s -X POST http://egress-api:8080/api/TreCredentials/UpdateCredentials \
+          -H "Authorization: Bearer $$token" -H 'Content-Type: application/json' \
+          -d '{"userName":"egress-app","passwordEnc":"EgressApp1!","confirmPassword":"EgressApp1!"}')
+        if echo "$$response" | grep -qi '"valid":true'; then echo "egress-app login stored"; else echo "UpdateCredentials failed: $$(echo "$$response" | sed -n 's/.*"errorMessage":\("[^"]*"\|null\).*/\1/p')"; exit 1; fi
+    depends_on:
+      egress-api:
+        condition: service_started
+    restart: "no"
 
   # One-shot: registers TRE "my-tre" in Submission once its migrations have created the Tres table.
   seed-tre:
