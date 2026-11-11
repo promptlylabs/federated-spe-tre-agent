@@ -45,7 +45,7 @@ public class FederatedEgressTests
         return controller;
     }
 
-    private (int egressId, int fileId) Seed(string? kind)
+    private (int egressId, int fileId) Seed(string? kind, bool extraFile = false)
     {
         using var db = NewDb();
         var row = new EgressSubmission
@@ -63,6 +63,10 @@ public class FederatedEgressTests
             row.Code = "print('hello')";
             row.ResultContent = ResultJson;
             row.ResultSha256 = Sha;
+        }
+        if (extraFile)
+        {
+            row.Files.Add(new EgressFile { Name = "task-1-extra.json", Status = FileStatus.Undecided });
         }
         db.EgressSubmissions.Add(row);
         db.SaveChanges();
@@ -164,6 +168,68 @@ public class FederatedEgressTests
             NewController(NewDb()).CompleteEgressAsync(Form(id, fileId, FileStatus.Approved, null)));
         Assert.Equal("Egress has already been completed", ex.Message);
         Assert.Single(_tre.Sent);
+    }
+
+    [Fact]
+    public async Task CompleteEgress_federated_already_delivered_throws()
+    {
+        var (id, fileId) = Seed("federated");
+        await NewController(NewDb()).CompleteEgressAsync(Form(id, fileId, FileStatus.Rejected, "small cells"));
+
+        var ex = await Assert.ThrowsAnyAsync<Exception>(() =>
+            NewController(NewDb()).CompleteEgressAsync(Form(id, fileId, FileStatus.Rejected, "small cells")));
+
+        Assert.Equal("Egress has already been completed", ex.Message);
+        Assert.Single(_tre.Sent);
+    }
+
+    [Fact]
+    public async Task UpdateFileData_federated_completed_but_undelivered_is_refused_and_retry_sends_the_rejection()
+    {
+        var (id, fileId) = Seed("federated");
+        _tre.Throw = true;
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            NewController(NewDb()).CompleteEgressAsync(Form(id, fileId, FileStatus.Rejected, "small cells")));
+        _tre.Throw = false;
+
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            NewController(NewDb()).UpdateFileData(fileId, FileStatus.Approved));
+        Assert.Equal(FileStatus.Rejected, Load(id).Files[0].Status);
+
+        await NewController(NewDb()).CompleteEgressAsync(Form(id, fileId, FileStatus.Approved, null));
+        var sent = Assert.Single(_tre.Sent);
+        Assert.False(Assert.Single(sent.FileResults).Approved);
+        Assert.Equal("small cells", sent.Reason);
+    }
+
+    [Fact]
+    public async Task CompleteEgress_federated_empty_file_list_is_refused_and_nothing_changes()
+    {
+        var (id, _) = Seed("federated");
+        var form = new EgressSubmission { Id = id, Files = new List<EgressFile>() };
+
+        await Assert.ThrowsAnyAsync<Exception>(() => NewController(NewDb()).CompleteEgressAsync(form));
+
+        Assert.Empty(_tre.Sent);
+        var row = Load(id);
+        Assert.Equal(EgressStatus.NotCompleted, row.Status);
+        Assert.Null(row.Completed);
+    }
+
+    [Fact]
+    public async Task CompleteEgress_federated_form_missing_a_file_is_refused_and_nothing_changes()
+    {
+        var (id, fileId) = Seed("federated", extraFile: true);
+        // The second file was already rejected outside the form (e.g. via UpdateFileData).
+        await NewController(NewDb()).UpdateFileData(fileId + 1, FileStatus.Rejected);
+
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            NewController(NewDb()).CompleteEgressAsync(Form(id, fileId, FileStatus.Approved, null)));
+
+        Assert.Empty(_tre.Sent);
+        var row = Load(id);
+        Assert.Equal(EgressStatus.NotCompleted, row.Status);
+        Assert.Equal(FileStatus.Undecided, row.Files.Single(f => f.Id == fileId).Status);
     }
 
     [Fact]

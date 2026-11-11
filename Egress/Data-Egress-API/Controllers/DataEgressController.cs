@@ -1,4 +1,4 @@
-﻿using BL.Models;
+using BL.Models;
 using BL.Models.APISimpleTypeReturns;
 using Microsoft.AspNetCore.Mvc;
 using Data_Egress_API.Repositories.DbContexts;
@@ -272,6 +272,15 @@ namespace Data_Egress_API.Controllers
                 approvedBy = "[Unknown]";
             }
 
+            // The form must decide every file of the row, so the status and the reason rule
+            // below cover the whole result and not just the files the form happens to post.
+            var formFileIds = (egress.Files ?? new List<EgressFile>()).Select(x => x.Id).OrderBy(x => x).ToList();
+            var rowFileIds = dbegress.Files.Select(x => x.Id).OrderBy(x => x).ToList();
+            if (rowFileIds.Count == 0 || !formFileIds.SequenceEqual(rowFileIds))
+            {
+                throw new Exception("The review must decide every file of the federated result");
+            }
+
             if (egress.Files.Any(x => x.Status == FileStatus.Undecided))
             {
                 throw new Exception("Not all files reviewed");
@@ -420,6 +429,13 @@ namespace Data_Egress_API.Controllers
                 var approvedDate = DateTime.Now.ToUniversalTime();
 
                 var returned = _DbContext.EgressFiles.First(x => x.Id == fileId);
+
+                // A completed federated decision is final, even while its callback is still pending.
+                if (returned.EgressSubmission?.IsFederated == true &&
+                    returned.EgressSubmission.Status != EgressStatus.NotCompleted)
+                {
+                    throw new Exception("Egress has already been completed");
+                }
 
                 returned.Status = status;
                 returned.Reviewer = approvedBy;
