@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.ComponentModel.DataAnnotations;
+using System.ComponentModel.DataAnnotations.Schema;
 using System.Linq;
 using System.Reflection;
 using System.Text;
@@ -25,6 +26,18 @@ namespace BL.Models
         public string? tesId { get; set; }
 
         public string? Name { get; set; } 
+
+        // Federated review context (set by the TRE Agent; null on native egress rows).
+        public string? Kind { get; set; }
+        public virtual FederatedStudy? Study { get; set; }
+        public string? Code { get; set; }
+        public string? ResultContent { get; set; }
+        public string? ResultSha256 { get; set; }
+        public string? DecisionReason { get; set; }
+        public bool DecisionDelivered { get; set; }
+
+        [NotMapped]
+        public bool IsFederated => Kind == "federated";
         
         public string GetS3BucketUrl(string minioBaseUrl = "http://localhost:9003", string bucketPath = "/rustfs/console/browser/?bucket=")
         {

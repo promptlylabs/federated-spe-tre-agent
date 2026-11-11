@@ -1,4 +1,4 @@
-using BL.Models;
+﻿using BL.Models;
 using BL.Models.APISimpleTypeReturns;
 using Microsoft.AspNetCore.Mvc;
 using Data_Egress_API.Repositories.DbContexts;
@@ -14,6 +14,7 @@ using Amazon.S3.Model;
 using Amazon.S3;
 using Amazon;
 using System.Net;
+using System.Text;
 using System.Collections.Generic;
 using BL.Services;
 using System.Net.Mime;
@@ -185,6 +186,11 @@ namespace Data_Egress_API.Controllers
             try
             {
                 var dbegress = _DbContext.EgressSubmissions.First(x => x.Id == egress.Id);
+                if (dbegress.IsFederated)
+                {
+                    return await CompleteFederatedEgressAsync(egress, dbegress);
+                }
+
                 if (dbegress.Status != EgressStatus.NotCompleted)
                 {
                     throw new Exception("Egress has already been completed");
@@ -240,6 +246,91 @@ namespace Data_Egress_API.Controllers
                 throw;
             }
 
+        }
+
+        // A federated decision is saved before the TRE Agent is called back, so a failed callback
+        // never loses it. A retry re-sends the stored decision and ignores what the form now says.
+        private async Task<EgressSubmission> CompleteFederatedEgressAsync(EgressSubmission egress,
+            EgressSubmission dbegress)
+        {
+            if (dbegress.Status != EgressStatus.NotCompleted)
+            {
+                if (dbegress.DecisionDelivered)
+                {
+                    throw new Exception("Egress has already been completed");
+                }
+
+                Log.Information("{Function} Re-sending stored decision for Submission {SubId}", "CompleteEgress",
+                    dbegress.SubmissionId);
+                return await DeliverFederatedDecisionAsync(dbegress);
+            }
+
+            var approvedBy = (from x in User.Claims where x.Type == "preferred_username" select x.Value)
+                .FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(approvedBy))
+            {
+                approvedBy = "[Unknown]";
+            }
+
+            if (egress.Files.Any(x => x.Status == FileStatus.Undecided))
+            {
+                throw new Exception("Not all files reviewed");
+            }
+
+            if (egress.Files.Any(x => x.Status == FileStatus.Rejected) &&
+                string.IsNullOrWhiteSpace(egress.DecisionReason))
+            {
+                throw new Exception("A reason is required to reject a federated result");
+            }
+
+            if (egress.Files.All(x => x.Status == FileStatus.Rejected))
+            {
+                dbegress.Status = EgressStatus.FullyRejected;
+            }
+            else if (egress.Files.All(x => x.Status == FileStatus.Approved))
+            {
+                dbegress.Status = EgressStatus.FullyApproved;
+            }
+            else
+            {
+                dbegress.Status = EgressStatus.PartiallyApproved;
+            }
+
+            dbegress.DecisionReason = string.IsNullOrWhiteSpace(egress.DecisionReason)
+                ? null
+                : egress.DecisionReason.Trim();
+            dbegress.DecisionDelivered = false;
+            ReviewFilesGuts(egress, dbegress, approvedBy, DateTime.Now.ToUniversalTime());
+            await _DbContext.SaveChangesAsync();
+
+            return await DeliverFederatedDecisionAsync(dbegress);
+        }
+
+        private async Task<EgressSubmission> DeliverFederatedDecisionAsync(EgressSubmission dbegress)
+        {
+            var review = new EgressReview()
+            {
+                SubId = dbegress.SubmissionId,
+                OutputBucket = dbegress.OutputBucket,
+                FileResults = dbegress.Files.Select(x => new EgressResult()
+                {
+                    FileName = x.Name,
+                    Approved = x.Status == FileStatus.Approved,
+                }).ToList(),
+                Reviewer = dbegress.Reviewer,
+                DecidedAt = dbegress.Completed,
+                Reason = dbegress.DecisionReason,
+                ResultSha256 = dbegress.ResultSha256,
+            };
+
+            await _treClientHelper.CallAPI<EgressReview, Submission>("/api/Submission/EgressResults", review);
+
+            dbegress.DecisionDelivered = true;
+            await _DbContext.SaveChangesAsync();
+
+            Log.Information("{Function} Federated decision delivered for Submission {SubId}", "CompleteEgress",
+                dbegress.SubmissionId);
+            return dbegress;
         }
 
         private static EgressReview ReviewFilesGuts(EgressSubmission egress, EgressSubmission dbegress,
@@ -315,7 +406,7 @@ namespace Data_Egress_API.Controllers
 
         [Authorize(Roles = "data-egress-admin")]
         [HttpPost("UpdateFileData")]
-        public EgressFile UpdateFileData(int fileId, FileStatus status)
+        public async Task<EgressFile> UpdateFileData(int fileId, FileStatus status)
         {
             try
             {
@@ -335,7 +426,7 @@ namespace Data_Egress_API.Controllers
                 returned.LastUpdate = approvedDate;
 
 
-                _DbContext.SaveChangesAsync();
+                await _DbContext.SaveChangesAsync();
                 Log.Information("{Function} File updated", "UpdateFileData");
                 return returned;
             }
@@ -372,6 +463,13 @@ namespace Data_Egress_API.Controllers
             {
 
                 var egressFile = _DbContext.EgressFiles.First(x => x.Id == id);
+
+                // A federated result is held in the database, not in the bucket.
+                if (egressFile.EgressSubmission?.IsFederated == true)
+                {
+                    return File(Encoding.UTF8.GetBytes(egressFile.EgressSubmission.ResultContent ?? string.Empty),
+                        "application/json", egressFile.Name);
+                }
 
                 var response = await _minioHelper.GetCopyObject(egressFile.EgressSubmission.OutputBucket, egressFile.Name);
 

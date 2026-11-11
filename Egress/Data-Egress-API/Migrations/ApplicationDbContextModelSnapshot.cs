@@ -17,7 +17,7 @@ namespace Data_Egress_API.Migrations
         {
 #pragma warning disable 612, 618
             modelBuilder
-                .HasAnnotation("ProductVersion", "7.0.13")
+                .HasAnnotation("ProductVersion", "8.0.22")
                 .HasAnnotation("Proxies:ChangeTracking", false)
                 .HasAnnotation("Proxies:CheckEquality", false)
                 .HasAnnotation("Proxies:LazyLoading", true)
@@ -63,13 +63,31 @@ namespace Data_Egress_API.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
+                    b.Property<string>("Code")
+                        .HasColumnType("text");
+
                     b.Property<DateTime?>("Completed")
                         .HasColumnType("timestamp with time zone");
+
+                    b.Property<bool>("DecisionDelivered")
+                        .HasColumnType("boolean");
+
+                    b.Property<string>("DecisionReason")
+                        .HasColumnType("text");
+
+                    b.Property<string>("Kind")
+                        .HasColumnType("text");
 
                     b.Property<string>("Name")
                         .HasColumnType("text");
 
                     b.Property<string>("OutputBucket")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ResultContent")
+                        .HasColumnType("text");
+
+                    b.Property<string>("ResultSha256")
                         .HasColumnType("text");
 
                     b.Property<string>("Reviewer")
@@ -120,6 +138,77 @@ namespace Data_Egress_API.Migrations
                         .HasForeignKey("EgressSubmissionId");
 
                     b.Navigation("EgressSubmission");
+                });
+
+            modelBuilder.Entity("BL.Models.EgressSubmission", b =>
+                {
+                    b.OwnsOne("BL.Models.FederatedStudy", "Study", b1 =>
+                        {
+                            b1.Property<int>("EgressSubmissionId")
+                                .HasColumnType("integer");
+
+                            b1.Property<string>("Id")
+                                .HasColumnType("text");
+
+                            b1.Property<string>("Name")
+                                .HasColumnType("text");
+
+                            b1.Property<string>("Researcher")
+                                .HasColumnType("text");
+
+                            b1.HasKey("EgressSubmissionId");
+
+                            b1.ToTable("EgressSubmissions");
+
+                            b1.ToJson("Study");
+
+                            b1.WithOwner()
+                                .HasForeignKey("EgressSubmissionId");
+
+                            b1.OwnsOne("BL.Models.DataPermit", "DataPermit", b2 =>
+                                {
+                                    b2.Property<int>("FederatedStudyEgressSubmissionId")
+                                        .HasColumnType("integer");
+
+                                    b2.Property<string[]>("AuthorisedPersons")
+                                        .HasColumnType("text[]");
+
+                                    b2.Property<string>("Conditions")
+                                        .HasColumnType("text");
+
+                                    b2.Property<string[]>("DataCategories")
+                                        .HasColumnType("text[]");
+
+                                    b2.Property<string>("Identifier")
+                                        .HasColumnType("text");
+
+                                    b2.Property<string>("Issuer")
+                                        .HasColumnType("text");
+
+                                    b2.Property<string>("PrincipalInvestigator")
+                                        .HasColumnType("text");
+
+                                    b2.Property<string>("Purpose")
+                                        .HasColumnType("text");
+
+                                    b2.Property<DateOnly?>("ValidFrom")
+                                        .HasColumnType("date");
+
+                                    b2.Property<DateOnly?>("ValidUntil")
+                                        .HasColumnType("date");
+
+                                    b2.HasKey("FederatedStudyEgressSubmissionId");
+
+                                    b2.ToTable("EgressSubmissions");
+
+                                    b2.WithOwner()
+                                        .HasForeignKey("FederatedStudyEgressSubmissionId");
+                                });
+
+                            b1.Navigation("DataPermit");
+                        });
+
+                    b.Navigation("Study");
                 });
 
             modelBuilder.Entity("BL.Models.EgressSubmission", b =>
