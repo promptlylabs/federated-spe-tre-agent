@@ -63,7 +63,19 @@ namespace Data_Egress_UI.Controllers
         {
             if (submitButton == "SubmitButton")
             {
-                var egress = _dataClientHelper.CallAPI<EgressSubmission, EgressSubmission>("/api/DataEgress/CompleteEgress/", model).Result;
+                try
+                {
+                    var egress = _dataClientHelper.CallAPI<EgressSubmission, EgressSubmission>("/api/DataEgress/CompleteEgress/", model).Result;
+                }
+                catch (AggregateException ex) when (model.IsFederated)
+                {
+                    // Federated rows are refused with a message (reason missing, files mismatch): show it on the page.
+                    _logger.LogWarning(ex, "CompleteEgress refused for federated egress {Id}", model.Id);
+                    var reloaded = ReloadFederatedForm(model);
+                    ModelState.Clear();
+                    ModelState.AddModelError(string.Empty, ex.GetBaseException().Message);
+                    return View(reloaded);
+                }
 
             }
             else if (submitButton == "SaveButton")
@@ -75,6 +87,22 @@ namespace Data_Egress_UI.Controllers
             return RedirectToAction("GetAllEgresses", "Data", new { unprocessedonly = true });
 
         }
+        /// <summary>Reloads the stored row for re-display, keeping what the reviewer just entered.</summary>
+        private EgressSubmission ReloadFederatedForm(EgressSubmission posted)
+        {
+            var stored = _dataClientHelper.CallAPIWithoutModel<EgressSubmission>(
+                "/api/DataEgress/GetEgress/", new Dictionary<string, string> { { "id", posted.Id.ToString() } }).Result!;
+            stored.DecisionReason = posted.DecisionReason;
+            foreach (var file in stored.Files)
+            {
+                var entered = posted.Files?.FirstOrDefault(f => f.Id == file.Id);
+                if (entered != null) file.Status = entered.Status;
+            }
+            ViewBag.S3Url = _configuration["S3Settings:Url"] ?? "http://localhost:9003";
+            ViewBag.S3BucketPath = _configuration["S3Settings:BucketPath"] ?? "/rustfs/console/browser/?bucket=";
+            return stored;
+        }
+
         public static string GetContentType(string fileName)
         {
             // Create a new FileExtensionContentTypeProvider

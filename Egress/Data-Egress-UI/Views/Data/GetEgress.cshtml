@@ -1,4 +1,5 @@
 ﻿@using BL.Models.Enums
+@using Data_Egress_UI.Helpers
 @model BL.Models.EgressSubmission
 
 @{
@@ -26,9 +27,46 @@
             }
         </div>
     </div>
+    @if (Model.IsFederated)
+    {
+        <div class="mt-4">
+            <h2 class="fs-5">Study and approval <small class="text-muted">(as provided by the orchestrator)</small></h2>
+            @if (Model.Study != null)
+            {
+                <p class="mb-1"><strong>Study:</strong> @Model.Study.Id</p>
+            }
+            @if (FederatedReviewFormatter.NothingProvided(Model.Study))
+            {
+                <p class="text-muted">Study details and data permit are not provided yet.</p>
+            }
+            else
+            {
+                <dl class="row">
+                    @foreach (var (label, value) in FederatedReviewFormatter.StudyRows(Model.Study!))
+                    {
+                        <dt class="col-sm-3">@label</dt>
+                        <dd class="col-sm-9">@value</dd>
+                    }
+                </dl>
+            }
+            <h2 class="fs-5 mt-4">Code</h2>
+            <pre class="border p-2 bg-light">@Model.Code</pre>
+            <h2 class="fs-5 mt-4">Result</h2>
+            <pre class="border p-2 bg-light">@FederatedReviewFormatter.PrettyPrintJson(Model.ResultContent)</pre>
+            <p class="text-muted">SHA-256: @Model.ResultSha256</p>
+            @if (Model.Status != EgressStatus.NotCompleted && !Model.DecisionDelivered)
+            {
+                <div class="alert alert-warning">This decision is saved but has not reached the TRE yet. Complete &amp; Close sends the saved decision again.</div>
+            }
+        </div>
+    }
     @using (Html.BeginForm("GetEgress", "Data", FormMethod.Post, new { id = "frmMain" }))
     {
         @Html.HiddenFor(x => x.Id)
+        @if (Model.IsFederated)
+        {
+            @Html.HiddenFor(x => x.Kind)
+        }
         ;
         <div class="form-group mb-4">
             @Html.ValidationSummary(false, "", new { @class = "text-danger" })
@@ -66,6 +104,13 @@
             
         }
         </ul>
+        @if (Model.IsFederated)
+        {
+            <div class="form-group mt-4">
+                @Html.LabelFor(x => x.DecisionReason, "Reason (required to reject)", new { @class = "form-label" })
+                @Html.TextAreaFor(x => x.DecisionReason, 3, 80, new { @class = "form-control" })
+            </div>
+        }
         <div class="mt-4">
             <button type="submit" name="submitButton" value="SubmitButton" class="btn btn-sm btn-primary">Complete &amp; Close Request</button>
             <button type="submit" name="submitButton" value="SaveButton" class=" btn btn-sm btn-primary">Save</button>
