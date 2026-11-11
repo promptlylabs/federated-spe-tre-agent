@@ -219,12 +219,22 @@ namespace Agent.Api
                 // output approval's decision. If the site has since removed the task's image, say so in the log.
                 var image = FederatedInputChecks.ImageOf(task);
                 if (image != null && _checks.IsConfigured && !_checks.IsImageApproved(image))
-                    Log.Warning("Federated tasks: releasing the saved result of task {TaskId}, although its image {Image} is no longer approved at this TRE; the input checks passed before the result was saved",
+                    Log.Warning("Federated tasks: the saved result of task {TaskId} goes on to output approval, although its image {Image} is no longer approved at this TRE; the input checks passed before the result was saved",
                         taskId, image);
             }
 
             var sha = FederatedResultDocumentJson.Sha256Hex(bytes);
             Log.Information("Federated tasks: saved result for {TaskId} sha256 {Sha}", taskId, sha);
+
+            // A review that is still pending was made for one set of bytes. If the saved file differs, registering or
+            // waiting would end in a SHA-256 mismatch at every decision, so the task is failed now.
+            if (review is { IsPending: true } && !string.Equals(sha, review.ResultSha256, StringComparison.Ordinal))
+            {
+                Log.Error("Federated tasks: the saved result of task {TaskId} (sha256 {Saved}) does not match the pending review (sha256 {Reviewed}); not registering or waiting",
+                    taskId, sha, review.ResultSha256);
+                await ReportErrorAsync(ResultChanged(taskId));
+                return Hold.None;
+            }
 
             // The hospital approves each result before it leaves. A result not yet sent for review is registered with
             // the Egress app; a registration that failed part-way is sent again.

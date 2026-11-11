@@ -913,6 +913,28 @@ public class DoFederatedTaskWorkTests
         Assert.Empty(outputs.Released);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Pending_task_whose_file_changed_since_the_review_record_is_failed_not_registered_or_waiting(bool registered)
+    {
+        var client = OneMean();
+        client.Pending[0].State = TesState.RUNNINGEnum;
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(new string('d', 64), registered));
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+
+        var call = Assert.Single(client.Calls);
+        Assert.Equal(TesState.SYSTEMERROREnum, call.Report.State);
+        Assert.Equal("result_changed_after_review", call.Report.ErrorCode);
+        Assert.Equal("the saved result no longer matches the reviewed result", call.Report.ErrorMessage);
+        Assert.Null(call.Bytes);
+        Assert.Equal(0, approval.RegisterCalls);
+        Assert.Empty(client.ProgressCalls);
+        Assert.Empty(outputs.Released);
+    }
+
     [Fact]
     public async Task Approved_task_whose_file_is_gone_is_failed_without_recomputing()
     {
