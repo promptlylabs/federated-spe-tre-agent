@@ -840,6 +840,7 @@ public class DoFederatedTaskWorkTests
         Assert.Equal("5s-tes/federated-ops:1 mean --column age", r.Code);
         Assert.Equal($"Federated task {T1}: mean --column age", r.Name);
         Assert.Equal(Encoding.UTF8.GetString(outputs.Files[T1]), r.ResultContent);
+        Assert.Equal(new FederatedTaskSettings().OutputBucket, r.OutputBucket);
     }
 
     [Fact]

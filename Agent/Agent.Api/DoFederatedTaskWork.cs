@@ -263,7 +263,7 @@ namespace Agent.Api
         }
 
         /// <summary>What the reviewer sees in the Egress app: the study, the code that ran and the result itself.</summary>
-        private static EgressRegistration Registration(TesTask task, string storeKey, byte[] bytes, string sha)
+        private EgressRegistration Registration(TesTask task, string storeKey, byte[] bytes, string sha)
         {
             var executor = task.Executors?.FirstOrDefault();
             var command = string.Join(' ', executor?.Command ?? []);
@@ -278,7 +278,8 @@ namespace Agent.Api
                 studyId,
                 $"{executor?.Image} {command}".Trim(),
                 System.Text.Encoding.UTF8.GetString(bytes),
-                sha);
+                sha,
+                _settings.OutputBucket);
         }
 
         /// <summary>Tells Submission the result is waiting for output approval; logs when it is not accepted.</summary>

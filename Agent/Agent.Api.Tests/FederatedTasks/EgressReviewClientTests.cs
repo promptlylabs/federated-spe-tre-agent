@@ -66,7 +66,7 @@ public class EgressReviewClientTests
             Options.Create(new ApiEndpointSettings { EgressApiUrl = "http://egress" }));
 
     private static EgressRegistration Registration() =>
-        new(TaskId, "Count by sex", "study-1", "print(1)", "{\"n\":1}", "abc123");
+        new(TaskId, "Count by sex", "study-1", "print(1)", "{\"n\":1}", "abc123", "federated-outputs");
 
     [Fact]
     public async Task Client_treats_already_registered_as_success()
@@ -99,6 +99,7 @@ public class EgressReviewClientTests
         Assert.Equal("print(1)", (string?)json["Code"]);
         Assert.Equal("{\"n\":1}", (string?)json["ResultContent"]);
         Assert.Equal("abc123", (string?)json["ResultSha256"]);
+        Assert.Equal("federated-outputs", (string?)json["OutputBucket"]);
         var file = Assert.Single((JArray)json["Files"]!);
         Assert.Equal($"{TaskId}.json", (string?)file["Name"]);
         Assert.Equal(0, (int?)file["Status"]);

@@ -47,7 +47,7 @@ public class EgressOutputApprovalTests
     }
 
     private static EgressRegistration Registration(string sha = Sha) =>
-        new(TaskId, "Count by sex", "study-1", "print(1)", "{\"n\":1}", sha);
+        new(TaskId, "Count by sex", "study-1", "print(1)", "{\"n\":1}", sha, "federated-outputs");
 
     private static ReviewDecision Approve(string? reason = null, string sha = Sha) =>
         new(true, "reviewer@hospital.example", DecidedAt, reason, sha);

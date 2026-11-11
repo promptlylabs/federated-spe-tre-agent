@@ -7,7 +7,8 @@ namespace Agent.Api.FederatedTasks
         string StudyId,
         string Code,
         string ResultContent,
-        string ResultSha256);
+        string ResultSha256,
+        string OutputBucket);
 
     /// <summary>Registers a federated result with the Data Egress app for review.</summary>
     public interface IEgressReviewClient

@@ -52,6 +52,8 @@ namespace Agent.Api.FederatedTasks
                 r.Code,
                 r.ResultContent,
                 r.ResultSha256,
+                // The Egress app sends it back with the decision, and the Agent's EgressResults requires it.
+                r.OutputBucket,
                 Files = new[] { new { Name = $"{r.TaskId}.json", Status = 0 } }
             };
 
