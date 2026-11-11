@@ -21,6 +21,8 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         public const string ResultTooLarge = "result_too_large";
         public const string ResultNotFound = "result_not_found";
         public const string StorageUnavailable = "storage_unavailable";
+        public const string RejectedByReviewer = "rejected_by_reviewer";
+        public const string ResultChangedAfterReview = "result_changed_after_review";
 
         /// <summary>Codes that mean the task was rejected by the input checks; every other code is a failure.</summary>
         public static readonly IReadOnlySet<string> InputCheckCodes = new HashSet<string>
