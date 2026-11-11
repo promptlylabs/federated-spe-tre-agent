@@ -1,5 +1,6 @@
 ﻿using Agent.Api.Attributes;
 using Agent.Api.Constants;
+using Agent.Api.FederatedTasks;
 using Agent.Api.Models;
 using Agent.Api.Services;
 using EasyNetQ;
@@ -29,6 +30,7 @@ namespace Agent.Api.Controllers
         private readonly MinioTRESettings _minioTreSettings;
         private readonly AgentSettings _agentSettings;
         private readonly IFeatureManager _features;
+        private readonly IOutputApproval _outputApproval;
 
         public SubmissionController(           
             IBus rabbit,
@@ -37,7 +39,8 @@ namespace Agent.Api.Controllers
             IProjectS3SubHelperFactory projectS3SubHelperFactory,
             IDareClientWithoutTokenHelper dareHelper,
             MinioTRESettings minioTreSettings,
-            AgentSettings agentSettings, IFeatureManager features)
+            AgentSettings agentSettings, IFeatureManager features,
+            IOutputApproval outputApproval)
         {            
             _rabbit = rabbit;
             _subHelper = subHelper;
@@ -47,6 +50,7 @@ namespace Agent.Api.Controllers
             _minioTreSettings = minioTreSettings;
             _agentSettings = agentSettings;
             _features = features;
+            _outputApproval = outputApproval;
         }
 
 
@@ -178,6 +182,9 @@ namespace Agent.Api.Controllers
         [SwaggerResponse(statusCode: 200, type: typeof(BoolReturn), description: "")]
         public async Task<IActionResult> EgressResults([FromBody] EgressReview review)
         {
+            if (await FederatedEgressDecision.TryHandleAsync(review, User, _outputApproval, HttpContext.RequestAborted) is int status)
+                return StatusCode(status, new BoolReturn { Result = status == 200 });
+
             try
             {               
                 ApprovalType approvalStatus;
