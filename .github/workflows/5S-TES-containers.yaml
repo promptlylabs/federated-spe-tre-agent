@@ -117,6 +117,46 @@ jobs:
       notation-key: ${{ secrets.NOTATION_KEY }}
       registry-token: ${{ secrets.HARBOR_TOKEN }}
 
+  egress-api-container:
+    needs: containers
+    uses: SwanseaUniversityMedical/workflows/.github/workflows/bulk-pr-and-release-container.yaml@v4.0.0-bulk-containers
+    with:
+      job-name: egress-api-container
+      comment-pr: "true"
+      comment-release: "true"
+      registry: ${{ vars.HARBOR_FEDA_REGISTRY }}
+      registry-user: ${{ vars.HARBOR_USER }}
+      registry-repo: ${{ vars.HARBOR_PROJECT }}/${{ vars.HARBOR_REPO_EGRESS_API }}
+      release-info: ${{ needs.containers.outputs.release-info }}
+      notation-cert: ${{ vars.NOTATION_CERT }}
+      nuget-config: ${{ vars.NUGET_CONFIG }}
+      build-file: Egress/Data-Egress-API/Dockerfile
+      build-context: .
+      platforms: "linux/amd64,linux/arm64"
+    secrets:
+      notation-key: ${{ secrets.NOTATION_KEY }}
+      registry-token: ${{ secrets.HARBOR_TOKEN }}
+
+  egress-ui-container:
+    needs: containers
+    uses: SwanseaUniversityMedical/workflows/.github/workflows/bulk-pr-and-release-container.yaml@v4.0.0-bulk-containers
+    with:
+      job-name: egress-ui-container
+      comment-pr: "true"
+      comment-release: "true"
+      registry: ${{ vars.HARBOR_FEDA_REGISTRY }}
+      registry-user: ${{ vars.HARBOR_USER }}
+      registry-repo: ${{ vars.HARBOR_PROJECT }}/${{ vars.HARBOR_REPO_EGRESS_UI }}
+      release-info: ${{ needs.containers.outputs.release-info }}
+      notation-cert: ${{ vars.NOTATION_CERT }}
+      nuget-config: ${{ vars.NUGET_CONFIG }}
+      build-file: Egress/Data-Egress-UI/Dockerfile
+      build-context: .
+      platforms: "linux/amd64,linux/arm64"
+    secrets:
+      notation-key: ${{ secrets.NOTATION_KEY }}
+      registry-token: ${{ secrets.HARBOR_TOKEN }}
+
   agent-web-container:
     needs: containers
     uses: SwanseaUniversityMedical/workflows/.github/workflows/bulk-pr-and-release-container.yaml@v4.0.0-bulk-containers
