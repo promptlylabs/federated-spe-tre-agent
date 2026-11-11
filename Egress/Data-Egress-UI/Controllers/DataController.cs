@@ -2,6 +2,7 @@
 using Microsoft.AspNetCore.Mvc;
 using BL.Services;
 using BL.Models;
+using BL.Models.Enums;
 using Microsoft.AspNetCore.StaticFiles;
 
 
@@ -65,16 +66,36 @@ namespace Data_Egress_UI.Controllers
             {
                 try
                 {
+                    if (model.IsFederated)
+                    {
+                        // A completed-but-undelivered row is re-sent from the stored decision, so the form is not checked then.
+                        var reloaded = ReloadFederatedForm(model);
+                        if (reloaded.Status == EgressStatus.NotCompleted)
+                        {
+                            var files = model.Files ?? new List<EgressFile>();
+                            var errors = new List<string>();
+                            if (files.Any(f => f.Status == FileStatus.Rejected) && string.IsNullOrWhiteSpace(model.DecisionReason))
+                                errors.Add("A reason is required to reject this result.");
+                            if (files.Any(f => f.Status == FileStatus.Undecided))
+                                errors.Add("Decide every file before completing.");
+                            if (errors.Count > 0)
+                            {
+                                ModelState.Clear();
+                                foreach (var e in errors) ModelState.AddModelError(string.Empty, e);
+                                return View(reloaded);
+                            }
+                        }
+                    }
                     var egress = _dataClientHelper.CallAPI<EgressSubmission, EgressSubmission>("/api/DataEgress/CompleteEgress/", model).Result;
                 }
                 catch (AggregateException ex) when (model.IsFederated)
                 {
                     // Federated rows are refused with a message (reason missing, files mismatch): show it on the page.
                     _logger.LogWarning(ex, "CompleteEgress refused for federated egress {Id}", model.Id);
-                    var reloaded = ReloadFederatedForm(model);
+                    var refreshed = ReloadFederatedForm(model);
                     ModelState.Clear();
-                    ModelState.AddModelError(string.Empty, ex.GetBaseException().Message);
-                    return View(reloaded);
+                    ModelState.AddModelError(string.Empty, "The decision could not be completed. If it was saved, it has not reached the TRE yet; try Complete & Close again.");
+                    return View(refreshed);
                 }
 
             }
