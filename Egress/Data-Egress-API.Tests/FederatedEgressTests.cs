@@ -211,6 +211,19 @@ public class FederatedEgressTests
     }
 
     [Fact]
+    public async Task AddNewDataEgress_with_email_off_does_not_look_up_reviewers()
+    {
+        var keycloak = new CountingKeyCloak();
+        var controller = new DataEgressController(NewDb(), _tre, ThrowingProxy<IMinioHelper>.Create(),
+            ThrowingProxy<IDareEmailService>.Create(), new EmailSettings { Enabled = false }, keycloak);
+        var sha = FederatedResultDocumentJson.Sha256Hex(System.Text.Encoding.UTF8.GetBytes(ResultJson));
+
+        await controller.AddNewDataEgress(Registration(ResultJson, sha));
+
+        Assert.Equal(0, keycloak.Lookups);
+    }
+
+    [Fact]
     public async Task AddNewDataEgress_federated_result_not_matching_its_sha_is_refused_and_not_stored()
     {
         var result = await NewController(NewDb()).AddNewDataEgress(Registration(ResultJson, Sha));
@@ -332,6 +345,20 @@ public class FederatedEgressTests
         Assert.Equal(Encoding.UTF8.GetBytes(ResultJson), file.FileContents);
         Assert.Equal("application/json", file.ContentType);
         Assert.Equal("task-1.json", file.FileDownloadName);
+    }
+
+    private sealed class CountingKeyCloak : IKeyCloakService
+    {
+        public int Lookups { get; private set; }
+
+        public Task<List<string>> GetEmailsOfAccountWithRole(string role)
+        {
+            Lookups++;
+            return Task.FromResult(new List<string>());
+        }
+
+        public Task<KeyCloakService.TokenResponse> GenAccessTokenSimple(string adminName, string adminPassword, string max_age) =>
+            throw new NotSupportedException();
     }
 
     private sealed class FakeTreClient : ITreClientWithoutTokenHelper

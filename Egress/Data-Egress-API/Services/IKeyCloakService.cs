@@ -51,6 +51,12 @@ namespace Data_Egress_API.Services
         {
 
             var creds = _DbContext.KeycloakCredentials.FirstOrDefault(x => x.CredentialType == CredentialType.Egress);
+            if (creds == null)
+            {
+                Log.Warning("{Function} No Egress Keycloak admin login is stored (TreCredentials/EgressUpdateCredentials); nobody with role {Role} can be emailed",
+                    "GetEmailsOfAccountWithRole", role);
+                return new List<string>();
+            }
 
             var adminName = creds.UserName;
 

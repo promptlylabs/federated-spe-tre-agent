@@ -86,13 +86,12 @@ namespace Data_Egress_API.Controllers
                     await _DbContext.SaveChangesAsync();
                     try
                     {
-
-                        var Emails = await _IKeyCloakService.GetEmailsOfAccountWithRole("data-egress-admin");
-
-                        if (string.IsNullOrEmpty(_EmailSettings.EmailOverride) == false)
-                        {
-                            Emails = new List<string>() { _EmailSettings.EmailOverride };
-                        }
+                        // With email off there is nobody to look up; with an override, the lookup is not needed.
+                        var Emails = !_EmailSettings.Enabled
+                            ? new List<string>()
+                            : string.IsNullOrEmpty(_EmailSettings.EmailOverride) == false
+                                ? new List<string>() { _EmailSettings.EmailOverride }
+                                : await _IKeyCloakService.GetEmailsOfAccountWithRole("data-egress-admin");
 
                         foreach (var email in Emails)
                         {
