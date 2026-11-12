@@ -16,8 +16,6 @@ using FiveSafesTes.Core.Models.ViewModels;
 using Microsoft.AspNetCore.Http.Connections;
 using Data_Egress_API.Services;
 using DARE_Egress.Services;
-using NETCore.MailKit.Extensions;
-using NETCore.MailKit.Infrastructure.Internal;
 using FiveSafesTes.Core.Models;
 using Microsoft.AspNetCore.DataProtection;
 
@@ -116,23 +114,6 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
 
     options.KnownNetworks.Clear();
     options.KnownProxies.Clear();
-});
-
-builder.Services.AddMailKit(optionBuilder =>
-{
-    optionBuilder.UseMailKit(new MailKitOptions
-    {
-        Server = emailSettings.Host,
-        Port = emailSettings.Port,
-        SenderName = emailSettings.FromDisplayName,
-        SenderEmail = emailSettings.FromAddress,
-
-        // can be optional with no authentication 
-        //Account = Configuration["Account"],
-        //Password = Configuration["Password"],
-        // enable ssl or tls
-        Security = emailSettings.EnableSSL
-    });
 });
 
 builder.Services.AddTransient<IClaimsTransformation, ClaimsTransformerBL>();

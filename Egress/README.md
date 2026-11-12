@@ -27,6 +27,9 @@ Changes made when forking:
     from `BL`, because the shared one refreshes tokens with the Submission app's
     Keycloak settings.
 - The projects target `net10.0` (upstream: `net8.0`).
+- The API sends reviewer emails with MailKit directly (`Services/IEmail.cs`).
+  Upstream's `NETCore.MailKit` wrapper is not used: it pins MailKit and MimeKit
+  3.2.0, which have known vulnerabilities.
 - The Dockerfiles use `sdk:10.0` / `aspnet:10.0`, copy `Shared/FiveSafesTes.Core`
   and build from the repository root
   (`docker build -f Egress/Data-Egress-API/Dockerfile .`).
