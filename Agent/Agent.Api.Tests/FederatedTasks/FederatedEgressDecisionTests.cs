@@ -138,4 +138,54 @@ public class FederatedEgressDecisionTests
             Review(T1.ToUpperInvariant()), User("data-egress-admin"), Registered(), default);
         Assert.Equal(200, status);
     }
+
+    public static TheoryData<string> IncompleteReviews => new() { "no-reviewer", "no-time", "no-sha", "no-files", "two-files" };
+
+    [Theory]
+    [MemberData(nameof(IncompleteReviews))]
+    public async Task Incomplete_federated_review_is_400_and_not_recorded(string missing)
+    {
+        var review = Review();
+        switch (missing)
+        {
+            case "no-reviewer": review.Reviewer = " "; break;
+            case "no-time": review.DecidedAt = null; break;
+            case "no-sha": review.ResultSha256 = ""; break;
+            case "no-files": review.FileResults = new(); break;
+            case "two-files": review.FileResults.Add(new EgressResult { FileName = "other.json", Approved = true }); break;
+        }
+        var approval = Registered();
+
+        var status = await FederatedEgressDecision.TryHandleAsync(review, User("data-egress-admin"), approval, default);
+
+        Assert.Equal(400, status);
+        Assert.Empty(approval.Decisions);
+    }
+
+    [Fact]
+    public async Task Local_decision_time_is_converted_to_utc()
+    {
+        var local = new DateTime(2026, 11, 11, 10, 0, 0, DateTimeKind.Local);
+        var review = Review();
+        review.DecidedAt = local;
+        var approval = Registered();
+
+        await FederatedEgressDecision.TryHandleAsync(review, User("data-egress-admin"), approval, default);
+
+        var decidedAt = approval.Decisions[T1].DecidedAt;
+        Assert.Equal(TimeSpan.Zero, decidedAt.Offset);
+        Assert.Equal(local.ToUniversalTime(), decidedAt.UtcDateTime);
+    }
+
+    [Fact]
+    public async Task Unspecified_decision_time_is_taken_as_utc()
+    {
+        var review = Review();
+        review.DecidedAt = new DateTime(2026, 11, 11, 10, 0, 0, DateTimeKind.Unspecified);
+        var approval = Registered();
+
+        await FederatedEgressDecision.TryHandleAsync(review, User("data-egress-admin"), approval, default);
+
+        Assert.Equal(new DateTimeOffset(2026, 11, 11, 10, 0, 0, TimeSpan.Zero), approval.Decisions[T1].DecidedAt);
+    }
 }
