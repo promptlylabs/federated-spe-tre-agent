@@ -211,8 +211,8 @@ app.UseSwaggerUI(c =>
 {
     c.EnableValidator(null);
     c.SwaggerEndpoint("/swagger/v1/swagger.json", $"{environment.ApplicationName} v1");
+    // No client secret: Swagger UI serves its OAuth settings to anyone, logged in or not (as in Submission.Api).
     c.OAuthClientId(dataEgressKeyCloakSettings.ClientId);
-    c.OAuthClientSecret(dataEgressKeyCloakSettings.ClientSecret);
     c.OAuthAppName(dataEgressKeyCloakSettings.ClientId);
 });
 if (app.Environment.IsDevelopment())
