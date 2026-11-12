@@ -252,7 +252,6 @@ services:
       DataEgressKeyCloakSettings__TokenExpiredAddress: http://localhost:5280/Account/LoginAfterTokenExpired
       DataEgressKeyCloakSettings__Proxy: "false"
       DataEgressAPISettings__Address: http://egress-api:8080
-      S3Settings__Url: http://localhost:9001
     ports:
       - "5280:8080"
     depends_on:

@@ -34,13 +34,6 @@ namespace FiveSafesTes.Core.Models
         [NotMapped]
         public bool IsFederated => Kind == "federated";
         
-        public string GetS3BucketUrl(string minioBaseUrl = "http://localhost:9003", string bucketPath = "/rustfs/console/browser/?bucket=")
-        {
-            return string.IsNullOrEmpty(OutputBucket) 
-                ? "#" 
-                : $"{minioBaseUrl}{bucketPath}{OutputBucket}";
-        }
-        
         public string EgressStatusDisplay
         {
             get

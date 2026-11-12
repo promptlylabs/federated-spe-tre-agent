@@ -14,13 +14,11 @@ namespace Data_Egress_UI.Controllers
     {
         private readonly ILogger<HomeController> _logger;
         private readonly IDataEgressClientHelper _dataClientHelper;
-        private readonly IConfiguration _configuration;
 
-        public DataController(ILogger<HomeController> logger, IDataEgressClientHelper datahelper, IConfiguration configuration)
+        public DataController(ILogger<HomeController> logger, IDataEgressClientHelper datahelper)
         {
             _logger = logger;
             _dataClientHelper = datahelper;
-            _configuration = configuration;
         }
    
         [HttpGet]
@@ -42,11 +40,6 @@ namespace Data_Egress_UI.Controllers
             paramlist.Add("id", id.ToString());
 
             var files = _dataClientHelper.CallAPIWithoutModel<EgressSubmission>("/api/DataEgress/GetEgress/", paramlist).Result;
-            // Get S3 settings from configuration
-            var s3Url = _configuration["S3Settings:Url"] ?? "http://localhost:9003";
-            var s3BucketPath = _configuration["S3Settings:BucketPath"] ?? "/rustfs/console/browser/?bucket=";
-            ViewBag.S3Url = s3Url;
-            ViewBag.S3BucketPath = s3BucketPath;
             
             return View(files);
         }
@@ -119,8 +112,6 @@ namespace Data_Egress_UI.Controllers
         /// <summary>Reloads the stored row for re-display, keeping what the reviewer just entered. If the reload fails, the posted model is shown.</summary>
         private EgressSubmission ReloadFederatedForm(EgressSubmission posted)
         {
-            ViewBag.S3Url = _configuration["S3Settings:Url"] ?? "http://localhost:9003";
-            ViewBag.S3BucketPath = _configuration["S3Settings:BucketPath"] ?? "/rustfs/console/browser/?bucket=";
             try
             {
                 var stored = _dataClientHelper.CallAPIWithoutModel<EgressSubmission>(
