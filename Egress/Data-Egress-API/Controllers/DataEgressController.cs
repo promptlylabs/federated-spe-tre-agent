@@ -181,7 +181,7 @@ namespace Data_Egress_API.Controllers
 
         [Authorize(Roles = "data-egress-admin")]
         [HttpPost("CompleteEgress")]
-        public async Task<EgressSubmission> CompleteEgressAsync([FromBody] EgressSubmission egress)
+        public async Task<ActionResult<EgressSubmission>> CompleteEgressAsync([FromBody] EgressSubmission egress)
         {
             try
             {
@@ -240,6 +240,11 @@ namespace Data_Egress_API.Controllers
                     dbegress.SubmissionId);
                 return dbegress;
             }
+            catch (EgressRefusedException ex)
+            {
+                Log.Warning("{Function} Refused: {Reason}", "CompleteEgress", ex.Message);
+                return BadRequest(ex.Message);
+            }
             catch (Exception ex)
             {
                 Log.Error(ex, "{Function} Crashed", "CompleteEgress");
@@ -278,18 +283,18 @@ namespace Data_Egress_API.Controllers
             var rowFileIds = dbegress.Files.Select(x => x.Id).OrderBy(x => x).ToList();
             if (rowFileIds.Count == 0 || !formFileIds.SequenceEqual(rowFileIds))
             {
-                throw new Exception("The review must decide every file of the federated result");
+                throw new EgressRefusedException("The review must decide every file of the federated result");
             }
 
             if (egress.Files.Any(x => x.Status == FileStatus.Undecided))
             {
-                throw new Exception("Not all files reviewed");
+                throw new EgressRefusedException("Not all files reviewed");
             }
 
             if (egress.Files.Any(x => x.Status == FileStatus.Rejected) &&
                 string.IsNullOrWhiteSpace(egress.DecisionReason))
             {
-                throw new Exception("A reason is required to reject a federated result");
+                throw new EgressRefusedException("A reason is required to reject a federated result");
             }
 
             if (egress.Files.All(x => x.Status == FileStatus.Rejected))

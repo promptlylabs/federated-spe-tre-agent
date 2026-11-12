@@ -67,35 +67,16 @@ namespace Data_Egress_UI.Controllers
             {
                 try
                 {
-                    if (model.IsFederated)
-                    {
-                        // A completed-but-undelivered row is re-sent from the stored decision, so the form is not checked then.
-                        var reloaded = ReloadFederatedForm(model);
-                        if (reloaded.Status == EgressStatus.NotCompleted)
-                        {
-                            var files = model.Files ?? new List<EgressFile>();
-                            var errors = new List<string>();
-                            if (files.Any(f => f.Status == FileStatus.Rejected) && string.IsNullOrWhiteSpace(model.DecisionReason))
-                                errors.Add("A reason is required to reject this result.");
-                            if (files.Any(f => f.Status == FileStatus.Undecided))
-                                errors.Add("Decide every file before completing.");
-                            if (errors.Count > 0)
-                            {
-                                ModelState.Clear();
-                                foreach (var e in errors) ModelState.AddModelError(string.Empty, e);
-                                return View(reloaded);
-                            }
-                        }
-                    }
                     var egress = _dataClientHelper.CallAPI<EgressSubmission, EgressSubmission>("/api/DataEgress/CompleteEgress/", model).Result;
                 }
                 catch (AggregateException ex) when (model.IsFederated)
                 {
-                    // Federated rows are refused with a message (reason missing, files mismatch): show it on the page.
+                    // The Egress API refuses an incomplete federated decision with a 400 and a message: show it on the page.
                     _logger.LogWarning(ex, "CompleteEgress refused for federated egress {Id}", model.Id);
                     var refreshed = ReloadFederatedForm(model);
                     ModelState.Clear();
-                    ModelState.AddModelError(string.Empty, "The decision could not be completed. If it was saved, it has not reached the TRE yet; try Complete & Close again.");
+                    ModelState.AddModelError(string.Empty, RefusalMessage(ex) ??
+                        "The decision could not be completed. If it was saved, it has not reached the TRE yet; try Complete & Close again.");
                     return View(refreshed);
                 }
 
@@ -109,20 +90,54 @@ namespace Data_Egress_UI.Controllers
             return RedirectToAction("GetAllEgresses", "Data", new { unprocessedonly = true });
 
         }
-        /// <summary>Reloads the stored row for re-display, keeping what the reviewer just entered.</summary>
+        /// <summary>The Egress API's own refusal message (a 400 with a text body), or null for any other failure.</summary>
+        private static string? RefusalMessage(AggregateException ex)
+        {
+            if (ex.Flatten().GetBaseException() is not ApiCallException api ||
+                api.StatusCode != System.Net.HttpStatusCode.BadRequest ||
+                string.IsNullOrWhiteSpace(api.ResponseBody))
+            {
+                return null;
+            }
+
+            var body = api.ResponseBody.Trim();
+            if (body.StartsWith('"'))
+            {
+                try
+                {
+                    body = System.Text.Json.JsonSerializer.Deserialize<string>(body) ?? body;
+                }
+                catch (System.Text.Json.JsonException)
+                {
+                    // Not a JSON string: show the body as it is.
+                }
+            }
+
+            return string.IsNullOrWhiteSpace(body) ? null : body;
+        }
+
+        /// <summary>Reloads the stored row for re-display, keeping what the reviewer just entered. If the reload fails, the posted model is shown.</summary>
         private EgressSubmission ReloadFederatedForm(EgressSubmission posted)
         {
-            var stored = _dataClientHelper.CallAPIWithoutModel<EgressSubmission>(
-                "/api/DataEgress/GetEgress/", new Dictionary<string, string> { { "id", posted.Id.ToString() } }).Result!;
-            stored.DecisionReason = posted.DecisionReason;
-            foreach (var file in stored.Files)
-            {
-                var entered = posted.Files?.FirstOrDefault(f => f.Id == file.Id);
-                if (entered != null) file.Status = entered.Status;
-            }
             ViewBag.S3Url = _configuration["S3Settings:Url"] ?? "http://localhost:9003";
             ViewBag.S3BucketPath = _configuration["S3Settings:BucketPath"] ?? "/rustfs/console/browser/?bucket=";
-            return stored;
+            try
+            {
+                var stored = _dataClientHelper.CallAPIWithoutModel<EgressSubmission>(
+                    "/api/DataEgress/GetEgress/", new Dictionary<string, string> { { "id", posted.Id.ToString() } }).Result!;
+                stored.DecisionReason = posted.DecisionReason;
+                foreach (var file in stored.Files)
+                {
+                    var entered = posted.Files?.FirstOrDefault(f => f.Id == file.Id);
+                    if (entered != null) file.Status = entered.Status;
+                }
+                return stored;
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not reload federated egress {Id}; showing the posted form", posted.Id);
+                return posted;
+            }
         }
 
         public static string GetContentType(string fileName)

@@ -87,13 +87,32 @@ public class FederatedEgressTests
     {
         var (id, fileId) = Seed("federated");
 
-        await Assert.ThrowsAnyAsync<Exception>(() =>
-            NewController(NewDb()).CompleteEgressAsync(Form(id, fileId, FileStatus.Rejected, "  ")));
+        var result = await NewController(NewDb()).CompleteEgressAsync(Form(id, fileId, FileStatus.Rejected, "  "));
 
+        AssertRefused(result, "A reason is required to reject a federated result");
         Assert.Empty(_tre.Sent);
         var row = Load(id);
         Assert.Equal(EgressStatus.NotCompleted, row.Status);
         Assert.Equal(FileStatus.Undecided, row.Files[0].Status);
+    }
+
+    [Fact]
+    public async Task CompleteEgress_federated_undecided_file_is_refused_and_nothing_changes()
+    {
+        var (id, fileId) = Seed("federated");
+
+        var result = await NewController(NewDb()).CompleteEgressAsync(Form(id, fileId, FileStatus.Undecided, null));
+
+        AssertRefused(result, "Not all files reviewed");
+        Assert.Empty(_tre.Sent);
+        Assert.Equal(EgressStatus.NotCompleted, Load(id).Status);
+    }
+
+    private static void AssertRefused(ActionResult<EgressSubmission> result, string message)
+    {
+        var bad = Assert.IsType<BadRequestObjectResult>(result.Result);
+        Assert.Equal(400, bad.StatusCode);
+        Assert.Equal(message, bad.Value);
     }
 
     [Fact]
@@ -208,7 +227,9 @@ public class FederatedEgressTests
         var (id, _) = Seed("federated");
         var form = new EgressSubmission { Id = id, Files = new List<EgressFile>() };
 
-        await Assert.ThrowsAnyAsync<Exception>(() => NewController(NewDb()).CompleteEgressAsync(form));
+        var result = await NewController(NewDb()).CompleteEgressAsync(form);
+
+        AssertRefused(result, "The review must decide every file of the federated result");
 
         Assert.Empty(_tre.Sent);
         var row = Load(id);
@@ -223,9 +244,9 @@ public class FederatedEgressTests
         // The second file was already rejected outside the form (e.g. via UpdateFileData).
         await NewController(NewDb()).UpdateFileData(fileId + 1, FileStatus.Rejected);
 
-        await Assert.ThrowsAnyAsync<Exception>(() =>
-            NewController(NewDb()).CompleteEgressAsync(Form(id, fileId, FileStatus.Approved, null)));
+        var result = await NewController(NewDb()).CompleteEgressAsync(Form(id, fileId, FileStatus.Approved, null));
 
+        AssertRefused(result, "The review must decide every file of the federated result");
         Assert.Empty(_tre.Sent);
         var row = Load(id);
         Assert.Equal(EgressStatus.NotCompleted, row.Status);
