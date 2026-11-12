@@ -1,3 +1,4 @@
+using FiveSafesTes.Core.Models.FederatedTasks;
 using System.Reflection;
 using System.Security.Claims;
 using System.Text;
@@ -185,6 +186,38 @@ public class FederatedEgressTests
         var row = Load(id);
         Assert.False(row.DecisionDelivered);
         Assert.Equal("reviewer", row.Reviewer);
+    }
+
+    private static EgressSubmission Registration(string content, string sha) => new()
+    {
+        SubmissionId = "task-2",
+        Kind = "federated",
+        Name = "Federated task 2",
+        OutputBucket = "results",
+        ResultContent = content,
+        ResultSha256 = sha,
+        Files = new List<EgressFile> { new() { Name = "task-2.json" } }
+    };
+
+    [Fact]
+    public async Task AddNewDataEgress_federated_result_matching_its_sha_is_stored()
+    {
+        var sha = FederatedResultDocumentJson.Sha256Hex(System.Text.Encoding.UTF8.GetBytes(ResultJson));
+
+        var result = await NewController(NewDb()).AddNewDataEgress(Registration(ResultJson, sha));
+
+        Assert.True(result.Value!.Result);
+        Assert.Equal(sha, NewDb().EgressSubmissions.Single(x => x.SubmissionId == "task-2").ResultSha256);
+    }
+
+    [Fact]
+    public async Task AddNewDataEgress_federated_result_not_matching_its_sha_is_refused_and_not_stored()
+    {
+        var result = await NewController(NewDb()).AddNewDataEgress(Registration(ResultJson, Sha));
+
+        var bad = Assert.IsType<BadRequestObjectResult>(result.Result);
+        Assert.Equal("The result does not match its SHA-256", bad.Value);
+        Assert.False(NewDb().EgressSubmissions.Any(x => x.SubmissionId == "task-2"));
     }
 
     [Fact]

@@ -18,6 +18,7 @@ using System.Net;
 using System.Text;
 using System.Collections.Generic;
 using FiveSafesTes.Core.Services;
+using FiveSafesTes.Core.Models.FederatedTasks;
 using System.Net.Mime;
 using Data_Egress_API.Services;
 using Microsoft.AspNetCore.StaticFiles;
@@ -54,10 +55,22 @@ namespace Data_Egress_API.Controllers
 
         [Authorize(Roles = "data-egress-admin,dare-tre-admin")]
         [HttpPost("AddNewDataEgress")]
-        public async Task<BoolReturn> AddNewDataEgress(EgressSubmission submission)
+        public async Task<ActionResult<BoolReturn>> AddNewDataEgress(EgressSubmission submission)
         {
             try
             {
+                // The reviewer is shown this text and this SHA-256, and the decision carries the SHA-256
+                // back to the Agent, so they must describe the same bytes.
+                if (submission.IsFederated &&
+                    (submission.ResultContent == null || submission.ResultSha256 == null ||
+                     FederatedResultDocumentJson.Sha256Hex(Encoding.UTF8.GetBytes(submission.ResultContent)) !=
+                     submission.ResultSha256))
+                {
+                    Log.Warning("{Function} Refused: result does not match its SHA-256 for Submission {SubId}",
+                        "AddNewDataEgress", submission.SubmissionId);
+                    return BadRequest("The result does not match its SHA-256");
+                }
+
                 var existingDataFiles = _DbContext.EgressSubmissions
                     .FirstOrDefault(d => d.SubmissionId == submission.SubmissionId);
 
