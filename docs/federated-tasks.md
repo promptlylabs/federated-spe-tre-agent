@@ -220,7 +220,7 @@ The Agent keeps the review in the TRE bucket next to the result, as `federated-o
 
 After the Egress app accepts the registration, the Agent writes an empty object `federated-outputs/<taskId>.registered` next to the record. A pending record without this marker is registered again at the next poll. A decided record needs no marker, because the decision came from the Egress app.
 
-The bucket has no conditional write, so each object has one writer at a time. The poll writes the review record only once, as pending, before it calls the Egress app. After that, only the Egress decision writes the record, and the poll writes only the marker. A decision that arrives while the poll registers the task is never overwritten. A record from an older version can have a `registered` field; the Agent ignores it.
+The bucket has no conditional write, so the poll and the Egress decision never write the same object. The poll (which never runs twice at once) writes the review record only once, as pending, before it calls the Egress app. After that, only the Egress decision writes the record, and the poll writes only the marker. A decision that arrives while the poll registers the task is never overwritten. A record from an older version can have a `registered` field; the Agent ignores it.
 
 Once a result has a review record, it is never computed again. If the saved result is gone, a rejection is still reported as a rejection, and anything else as `result_changed_after_review`.
 
