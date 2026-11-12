@@ -126,20 +126,23 @@ namespace Data_Egress_API.Controllers
         {
             try
             {
-                if (unprocessedonly == false)
+                var query = _DbContext.EgressSubmissions.AsNoTracking().Include(x => x.Files).AsQueryable();
+                if (unprocessedonly)
                 {
-                    var results = _DbContext.EgressSubmissions.ToList();
-                    Log.Information("{Function} All Egresses retrieved successfully", "GetAllEgresses");
-                    return results;
+                    query = query.Where(x => x.Status == EgressStatus.NotCompleted);
                 }
-                else
-                {
-                    var allUnprocessedFiles = _DbContext.EgressSubmissions.Where(x => x.Status == EgressStatus.NotCompleted)
-                        .ToList();
 
-                    Log.Information("{Function} All Unprocessed Egresses retrieved successfully", "GetAllEgresses");
-                    return allUnprocessedFiles;
+                var results = query.ToList();
+                // The list pages show no federated result or code; GetEgress returns them for one request.
+                foreach (var egress in results)
+                {
+                    egress.ResultContent = null;
+                    egress.Code = null;
                 }
+
+                Log.Information("{Function} {Which} Egresses retrieved successfully", "GetAllEgresses",
+                    unprocessedonly ? "All Unprocessed" : "All");
+                return results;
                 
             }
             catch (Exception ex)

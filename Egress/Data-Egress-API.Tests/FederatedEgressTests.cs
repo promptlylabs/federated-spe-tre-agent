@@ -221,6 +221,22 @@ public class FederatedEgressTests
     }
 
     [Fact]
+    public void GetAllEgresses_leaves_out_the_federated_result_and_code_but_GetEgress_keeps_them()
+    {
+        var (id, _) = Seed("federated");
+
+        var listed = Assert.Single(NewController(NewDb()).GetAllEgresses(unprocessedonly: true));
+        Assert.Null(listed.ResultContent);
+        Assert.Null(listed.Code);
+        Assert.Single(listed.Files);
+        Assert.Equal(Sha, listed.ResultSha256);
+
+        var row = NewController(NewDb()).GetEgress(id);
+        Assert.Equal(ResultJson, row.ResultContent);
+        Assert.Equal("print('hello')", row.Code);
+    }
+
+    [Fact]
     public async Task CompleteEgress_native_is_unchanged()
     {
         var (id, fileId) = Seed(null);
