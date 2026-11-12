@@ -31,8 +31,10 @@ namespace FiveSafesTes.Core.Models
         public string? DecisionReason { get; set; }
         public bool DecisionDelivered { get; set; }
 
+        public const string FederatedKind = "federated";
+
         [NotMapped]
-        public bool IsFederated => Kind == "federated";
+        public bool IsFederated => Kind == FederatedKind;
         
         public string EgressStatusDisplay
         {

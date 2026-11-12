@@ -128,7 +128,9 @@ namespace Data_Egress_API.Controllers
                 var query = _DbContext.EgressSubmissions.AsNoTracking().Include(x => x.Files).AsQueryable();
                 if (unprocessedonly)
                 {
-                    query = query.Where(x => x.Status == EgressStatus.NotCompleted);
+                    // A federated decision stays listed until it has reached the Agent.
+                    query = query.Where(x => x.Status == EgressStatus.NotCompleted ||
+                                             (x.Kind == EgressSubmission.FederatedKind && !x.DecisionDelivered));
                 }
 
                 var results = query.ToList();
@@ -306,7 +308,7 @@ namespace Data_Egress_API.Controllers
 
                 Log.Information("{Function} Re-sending stored decision for Submission {SubId}", "CompleteEgress",
                     dbegress.SubmissionId);
-                return await DeliverFederatedDecisionAsync(dbegress);
+                return await FederatedDecisionDelivery.DeliverAsync(_DbContext, _treClientHelper, dbegress);
             }
 
             // The form must decide every file of the row, so the status and the reason rule
@@ -349,42 +351,7 @@ namespace Data_Egress_API.Controllers
             ReviewFilesGuts(egress, dbegress, approvedBy, DateTime.Now.ToUniversalTime());
             await _DbContext.SaveChangesAsync();
 
-            return await DeliverFederatedDecisionAsync(dbegress);
-        }
-
-        private async Task<EgressSubmission> DeliverFederatedDecisionAsync(EgressSubmission dbegress)
-        {
-            var review = new EgressReview()
-            {
-                SubId = dbegress.SubmissionId,
-                OutputBucket = dbegress.OutputBucket,
-                FileResults = dbegress.Files.Select(x => new EgressResult()
-                {
-                    FileName = x.Name,
-                    Approved = x.Status == FileStatus.Approved,
-                }).ToList(),
-                Reviewer = dbegress.Reviewer,
-                DecidedAt = dbegress.Completed,
-                Reason = dbegress.DecisionReason,
-                ResultSha256 = dbegress.ResultSha256,
-            };
-
-            await _treClientHelper.CallAPI<EgressReview, Submission>("/api/Submission/EgressResults", review);
-
-            dbegress.DecisionDelivered = true;
-            try
-            {
-                await _DbContext.SaveChangesAsync();
-            }
-            catch (DbUpdateConcurrencyException)
-            {
-                // A parallel retry of the same decision saved it first; the Agent has it either way.
-                await _DbContext.Entry(dbegress).ReloadAsync();
-            }
-
-            Log.Information("{Function} Federated decision delivered for Submission {SubId}", "CompleteEgress",
-                dbegress.SubmissionId);
-            return dbegress;
+            return await FederatedDecisionDelivery.DeliverAsync(_DbContext, _treClientHelper, dbegress);
         }
 
         private static EgressReview ReviewFilesGuts(EgressSubmission egress, EgressSubmission dbegress,

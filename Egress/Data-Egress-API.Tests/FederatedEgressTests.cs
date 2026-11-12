@@ -249,6 +249,77 @@ public class FederatedEgressTests
         Assert.Equal("print('hello')", row.Code);
     }
 
+    private async Task<int> DecidedButUndelivered()
+    {
+        var (id, fileId) = Seed("federated");
+        _tre.Throw = true;
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            NewController(NewDb()).CompleteEgressAsync(Form(id, fileId, FileStatus.Rejected, "small cells")));
+        _tre.Throw = false;
+        return id;
+    }
+
+    [Fact]
+    public async Task RedeliverPending_sends_an_undelivered_federated_decision_once()
+    {
+        var id = await DecidedButUndelivered();
+
+        var first = await FederatedDecisionDelivery.RedeliverPendingAsync(NewDb(), _tre, default);
+        var second = await FederatedDecisionDelivery.RedeliverPendingAsync(NewDb(), _tre, default);
+
+        Assert.Equal(1, first);
+        Assert.Equal(0, second);
+        var sent = Assert.Single(_tre.Sent);
+        Assert.Equal("small cells", sent.Reason);
+        Assert.False(Assert.Single(sent.FileResults).Approved);
+        Assert.True(Load(id).DecisionDelivered);
+    }
+
+    [Fact]
+    public async Task RedeliverPending_skips_undecided_delivered_and_native_rows()
+    {
+        Seed("federated");                                   // undecided
+        var (delivered, deliveredFile) = Seed("federated");
+        await NewController(NewDb()).CompleteEgressAsync(Form(delivered, deliveredFile, FileStatus.Approved, null));
+        using (var db = NewDb())
+        {
+            db.EgressSubmissions.Add(new EgressSubmission
+            {
+                SubmissionId = "42", Status = EgressStatus.FullyApproved, OutputBucket = "results",
+                Files = new List<EgressFile> { new() { Name = "out.csv", Status = FileStatus.Approved } }
+            });
+            db.SaveChanges();
+        }
+        _tre.Sent.Clear();
+
+        var sent = await FederatedDecisionDelivery.RedeliverPendingAsync(NewDb(), _tre, default);
+
+        Assert.Equal(0, sent);
+        Assert.Empty(_tre.Sent);
+    }
+
+    [Fact]
+    public async Task RedeliverPending_keeps_a_decision_the_agent_still_cannot_take()
+    {
+        var id = await DecidedButUndelivered();
+        _tre.Throw = true;
+
+        var sent = await FederatedDecisionDelivery.RedeliverPendingAsync(NewDb(), _tre, default);
+
+        Assert.Equal(0, sent);
+        Assert.False(Load(id).DecisionDelivered);
+    }
+
+    [Fact]
+    public async Task GetAllEgresses_unprocessed_keeps_a_federated_decision_until_delivered()
+    {
+        await DecidedButUndelivered();
+        Assert.Single(NewController(NewDb()).GetAllEgresses(unprocessedonly: true));
+
+        await FederatedDecisionDelivery.RedeliverPendingAsync(NewDb(), _tre, default);
+        Assert.Empty(NewController(NewDb()).GetAllEgresses(unprocessedonly: true));
+    }
+
     [Fact]
     public async Task CompleteEgress_native_is_unchanged()
     {

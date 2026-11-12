@@ -90,6 +90,7 @@ builder.Services.AddScoped<IMinioHelper, MinioHelper>();
 builder.Services.AddScoped<IDareEmailService, DareEmailService>();
 
 builder.Services.AddScoped<IKeyCloakService, KeyCloakService>();
+builder.Services.AddHostedService<UndeliveredDecisionRetry>();
 
 
 var encryptionSettings = new EncryptionSettings();
