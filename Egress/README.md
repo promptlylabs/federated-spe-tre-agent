@@ -18,5 +18,5 @@ Changes made when forking:
 - All three projects target `net10.0` (upstream: `net8.0`).
 - The Dockerfiles use `sdk:10.0` / `aspnet:10.0` and build from the repository
   root (`docker build -f Egress/Data-Egress-API/Dockerfile .`).
-- The projects are in `5S-TES.sln` under an `Egress` solution folder, and
-  `.github/workflows/5S-TES-containers.yaml` builds both images.
+- The projects are in `5S-TES.sln` under an `Egress` solution folder. CI does
+  not build the images yet; the federated dev stack builds them locally.
