@@ -139,7 +139,15 @@ namespace Agent.Api
             if (bytes == null && review != null)
             {
                 // The reviewed file is gone. A rejection stands; anything else cannot be released.
-                await ReportErrorAsync(review.IsRejected ? Rejection(taskId, review) : ResultChanged(taskId));
+                if (review.IsRejected)
+                {
+                    await ReportErrorAsync(Rejection(taskId, review));
+                    return Hold.None;
+                }
+
+                Log.Error("Federated tasks: the saved result of task {TaskId} (reviewed sha256 {Reviewed}) is missing; not releasing it",
+                    taskId, review.ResultSha256);
+                await ReportErrorAsync(ResultChanged(taskId));
                 return Hold.None;
             }
 
@@ -320,7 +328,7 @@ namespace Agent.Api
         /// <summary>The saved result is missing or differs from the one the reviewer saw; it is never released.</summary>
         private static FederatedTaskResultReport ResultChanged(string taskId)
         {
-            Log.Error("Federated tasks: the saved result of task {TaskId} no longer matches the reviewed result; reporting it as failed", taskId);
+            // The caller logs what changed, with the SHA-256 values.
             return new FederatedTaskResultReport
             {
                 TaskId = taskId,
