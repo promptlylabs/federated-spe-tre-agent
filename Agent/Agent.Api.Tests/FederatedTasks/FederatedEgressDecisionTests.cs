@@ -16,8 +16,13 @@ public class FederatedEgressDecisionTests
         public Dictionary<string, OutputReview> Records { get; } = new();
         public Dictionary<string, ReviewDecision> Decisions { get; } = new();
 
-        public Task<OutputReview?> GetAsync(string taskId, CancellationToken ct) =>
-            Task.FromResult(Records.TryGetValue(taskId, out var r) ? r : null);
+        public int GetCalls { get; private set; }
+
+        public Task<OutputReview?> GetAsync(string taskId, CancellationToken ct)
+        {
+            GetCalls++;
+            return Task.FromResult(Records.TryGetValue(taskId, out var r) ? r : null);
+        }
 
         public Task<OutputReview> RegisterAsync(EgressRegistration r, CancellationToken ct) =>
             throw new NotSupportedException();
@@ -92,6 +97,18 @@ public class FederatedEgressDecisionTests
     {
         var status = await FederatedEgressDecision.TryHandleAsync(Review(sha: OtherSha), User("data-egress-admin"), Registered(), default);
         Assert.Equal(409, status);
+    }
+
+    [Fact]
+    public async Task Tre_admin_cannot_tell_whether_a_task_has_a_review()
+    {
+        var approval = Registered();
+        var unknown = await FederatedEgressDecision.TryHandleAsync(
+            Review("22222222-2222-2222-2222-222222222222"), User("dare-tre-admin"), approval, default);
+        var known = await FederatedEgressDecision.TryHandleAsync(Review(), User("dare-tre-admin"), approval, default);
+        Assert.Equal(403, unknown);
+        Assert.Equal(403, known);
+        Assert.Equal(0, approval.GetCalls);
     }
 
     [Fact]

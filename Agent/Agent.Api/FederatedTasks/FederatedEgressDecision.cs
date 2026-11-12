@@ -18,13 +18,14 @@ namespace Agent.Api.FederatedTasks
             if (!Guid.TryParse(review.SubId, out var guid))
                 return null;
 
+            // The role comes first, so a caller who may not decide cannot learn whether a task has a review.
+            if (!user.IsInRole(EgressAdminRole))
+                return 403;
+
             // Records are keyed by the canonical form, as the poll does.
             var taskId = guid.ToString("D");
             if (await approval.GetAsync(taskId, ct) == null)
                 return 404;
-
-            if (!user.IsInRole(EgressAdminRole))
-                return 403;
 
             if (review.FileResults is not { Count: 1 }
                 || string.IsNullOrWhiteSpace(review.ResultSha256)
