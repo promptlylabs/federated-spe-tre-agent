@@ -13,6 +13,12 @@ namespace Agent.Api
         [AutomaticRetry(Attempts = 0)]
         [DisableConcurrentExecution(timeoutInSeconds: 300)]
         Task Execute();
+
+        /// <summary>
+        /// Releases or rejects one task as soon as its reviewer's decision is recorded, without waiting for the task
+        /// to come up in a poll. Retried by Hangfire on a transport failure; the poll acts on the decision too.
+        /// </summary>
+        Task ActOnDecision(string taskId);
     }
 
     /// <summary>
@@ -138,16 +144,15 @@ namespace Agent.Api
 
             if (bytes == null && review != null)
             {
-                // The reviewed file is gone. A rejection stands; anything else cannot be released.
-                if (review.IsRejected)
+                if (review.IsPending)
                 {
-                    await ReportErrorAsync(Rejection(taskId, review));
+                    Log.Error("Federated tasks: the saved result of task {TaskId} (reviewed sha256 {Reviewed}) is missing; not releasing it",
+                        taskId, review.ResultSha256);
+                    await ReportErrorAsync(ResultChanged(taskId));
                     return Hold.None;
                 }
 
-                Log.Error("Federated tasks: the saved result of task {TaskId} (reviewed sha256 {Reviewed}) is missing; not releasing it",
-                    taskId, review.ResultSha256);
-                await ReportErrorAsync(ResultChanged(taskId));
+                await ActOnDecidedAsync(taskId, storeKey, review, null);
                 return Hold.None;
             }
 
@@ -253,32 +258,69 @@ namespace Agent.Api
                 review = await _approval.RegisterAsync(Registration(task, storeKey, bytes, sha), CancellationToken.None);
             }
 
-            if (review.IsRejected)
+            if (review.IsPending)
             {
-                await ReportErrorAsync(Rejection(taskId, review));
-                return Hold.None;
-            }
-
-            if (!review.IsApproved)
-            {
-                // Pending. Submission shows the task as waiting (PAUSED) until the reviewer decides.
+                // Submission shows the task as waiting (PAUSED) until the reviewer decides.
                 if (task.State != TesState.PAUSEDEnum) await ReportWaitingAsync(taskId);
                 return Hold.None;
             }
 
-            // Approved: only the exact bytes the reviewer saw may leave.
+            await ActOnDecidedAsync(taskId, storeKey, review, bytes);
+            return Hold.None;
+        }
+
+        public async Task ActOnDecision(string taskId)
+        {
+            if (!_client.IsConfigured || !Guid.TryParse(taskId, out var guid))
+            {
+                Log.Warning("Federated tasks: cannot act on the decision for task {TaskId} now; the next poll does", taskId);
+                return;
+            }
+
+            var storeKey = guid.ToString("D");
+            var review = await _approval.GetAsync(storeKey, CancellationToken.None);
+            if (review == null || review.IsPending)
+            {
+                Log.Warning("Federated tasks: task {TaskId} has no recorded decision; nothing to act on", taskId);
+                return;
+            }
+
+            var bytes = await _outputs.TryGetAsync(storeKey, CancellationToken.None);
+            await ActOnDecidedAsync(storeKey, storeKey, review, bytes);
+        }
+
+        /// <summary>
+        /// Rejects or releases a decided task. Only the exact bytes the reviewer approved may leave; a rejection
+        /// stands even when the file is gone. Shared by the poll and <see cref="ActOnDecision"/>.
+        /// </summary>
+        private async Task ActOnDecidedAsync(string taskId, string storeKey, OutputReview review, byte[]? bytes)
+        {
+            if (review.IsRejected)
+            {
+                await ReportErrorAsync(Rejection(taskId, review));
+                return;
+            }
+
+            if (bytes == null)
+            {
+                Log.Error("Federated tasks: the saved result of task {TaskId} (reviewed sha256 {Reviewed}) is missing; not releasing it",
+                    taskId, review.ResultSha256);
+                await ReportErrorAsync(ResultChanged(taskId));
+                return;
+            }
+
+            var sha = FederatedResultDocumentJson.Sha256Hex(bytes);
             if (!string.Equals(sha, review.ResultSha256, StringComparison.Ordinal))
             {
                 Log.Error("Federated tasks: the saved result of task {TaskId} (sha256 {Saved}) does not match the reviewed result (sha256 {Reviewed}); not releasing it",
                     taskId, sha, review.ResultSha256);
                 await ReportErrorAsync(ResultChanged(taskId));
-                return Hold.None;
+                return;
             }
 
             var outcome = await _client.ReportAsync(
                 new FederatedTaskResultReport { TaskId = taskId, State = TesState.COMPLETEEnum }, bytes);
             await HandleOutcomeAsync(taskId, storeKey, sha, bytes, outcome);
-            return Hold.None;
         }
 
         /// <summary>What the reviewer sees in the Egress app: the study, the code that ran and the result itself.</summary>

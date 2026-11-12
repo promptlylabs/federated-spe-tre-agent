@@ -81,9 +81,9 @@ Every result waits for a reviewer. Review it in one of two ways:
 - **In the browser.** Open http://localhost:5280 and log in as `reviewer` / `Reviewer1!`. Open the request named `Federated task <task-id>`. The page shows the study ID, the code that ran and the result with its SHA-256. Set the file to Approved, or to Rejected and type a reason, then **Complete & Close Request**.
 - **With `task.sh`.** `./task.sh approve <task-id>` or `./task.sh reject <task-id> "<reason>"` do the same through the Egress API as `reviewer`.
 
-The Agent acts on the decision at its next poll. `approve` and `reject` wait for it and print the final state. The SHA-256 on the review page is the `result_sha256` of the released file.
+The Agent acts on the decision within seconds. `approve` and `reject` wait for it and print the final state. The SHA-256 on the review page is the `result_sha256` of the released file.
 
-To see a changed result refused, approve a task and overwrite its saved result before the next poll:
+To see a changed result refused, overwrite a waiting task's saved result, then approve it:
 
 ```bash
 echo '{"tampered":true}' | docker run --rm -i --network federated-dev_default -e AWS_ACCESS_KEY_ID=rustfsadmin -e AWS_SECRET_ACCESS_KEY=rustfsadmin123 \

@@ -996,6 +996,77 @@ public class DoFederatedTaskWorkTests
     }
 
     [Fact]
+    public async Task ActOnDecision_releases_an_approved_task_that_is_not_in_the_pending_list()
+    {
+        var client = OneMean();
+        client.Pending.Clear();
+        var outputs = Saved();
+        var sha = ShaOf(outputs.Files[T1]);
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Approved(sha));
+        client.Outcomes.Enqueue(new FederatedReportOutcome(200, null, null, $"1/{T1}/{sha}.json", sha));
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).ActOnDecision(T1.ToUpperInvariant());
+
+        var call = Assert.Single(client.Calls);
+        Assert.Equal(T1, call.Report.TaskId);
+        Assert.Equal(TesState.COMPLETEEnum, call.Report.State);
+        Assert.Equal(sha, ShaOf(call.Bytes!));
+        Assert.Equal(($"1/{T1}/{sha}.json", sha), outputs.Released[T1]);
+    }
+
+    [Fact]
+    public async Task ActOnDecision_reports_a_rejection_with_its_reason()
+    {
+        var client = OneMean();
+        client.Pending.Clear();
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Rejected(ShaOf(outputs.Files[T1]), "small cells"));
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).ActOnDecision(T1);
+
+        var call = Assert.Single(client.Calls);
+        Assert.Equal(TesState.CANCELEDEnum, call.Report.State);
+        Assert.Equal("rejected_by_reviewer", call.Report.ErrorCode);
+        Assert.Equal("small cells", call.Report.ErrorMessage);
+        Assert.Null(call.Bytes);
+    }
+
+    [Fact]
+    public async Task ActOnDecision_fails_an_approved_task_whose_file_changed()
+    {
+        var client = OneMean();
+        client.Pending.Clear();
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Approved(ShaOf(outputs.Files[T1])));
+        outputs.Files[T1] = Encoding.UTF8.GetBytes("{\"schemaVersion\":2}");
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).ActOnDecision(T1);
+
+        var call = Assert.Single(client.Calls);
+        Assert.Equal("result_changed_after_review", call.Report.ErrorCode);
+        Assert.Null(call.Bytes);
+        Assert.Empty(outputs.Released);
+    }
+
+    [Fact]
+    public async Task ActOnDecision_does_nothing_for_a_pending_or_unknown_review()
+    {
+        var client = OneMean();
+        client.Pending.Clear();
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), true);
+
+        var work = Work(client, new ThrowingReader(), outputs: outputs, approval: approval);
+        await work.ActOnDecision(T1);
+        await work.ActOnDecision("22222222-2222-2222-2222-222222222222");
+        await work.ActOnDecision("not-a-guid");
+
+        Assert.Empty(client.Calls);
+        Assert.Empty(client.ProgressCalls);
+        Assert.Empty(outputs.Released);
+    }
+
+    [Fact]
     public async Task Rejection_reason_is_cleaned_and_truncated()
     {
         var client = OneMean();

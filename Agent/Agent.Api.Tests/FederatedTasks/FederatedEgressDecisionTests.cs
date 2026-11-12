@@ -9,6 +9,8 @@ public class FederatedEgressDecisionTests
 {
     private const string T1 = "11111111-1111-1111-1111-111111111111";
     private const string Sha = "ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12";
+    private List<string> Acted { get; } = new();
+
     private const string OtherSha = "ff12cd34ef56ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12";
 
     private sealed class FakeApproval : IOutputApproval
@@ -65,7 +67,7 @@ public class FederatedEgressDecisionTests
     [Fact]
     public async Task Native_review_is_not_handled()
     {
-        var status = await FederatedEgressDecision.TryHandleAsync(Review("42"), User("data-egress-admin"), Registered(), default);
+        var status = await FederatedEgressDecision.TryHandleAsync(Review("42"), User("data-egress-admin"), Registered(), a => Acted.Add(a), default);
         Assert.Null(status);
     }
 
@@ -73,33 +75,36 @@ public class FederatedEgressDecisionTests
     public async Task Federated_review_from_tre_admin_is_forbidden()
     {
         var approval = Registered();
-        var status = await FederatedEgressDecision.TryHandleAsync(Review(), User("dare-tre-admin"), approval, default);
+        var status = await FederatedEgressDecision.TryHandleAsync(Review(), User("dare-tre-admin"), approval, a => Acted.Add(a), default);
         Assert.Equal(403, status);
         Assert.Empty(approval.Decisions);
+        Assert.Empty(Acted);
     }
 
     [Fact]
     public async Task Federated_approval_from_egress_admin_is_recorded()
     {
         var approval = Registered();
-        var status = await FederatedEgressDecision.TryHandleAsync(Review(), User("data-egress-admin"), approval, default);
+        var status = await FederatedEgressDecision.TryHandleAsync(Review(), User("data-egress-admin"), approval, a => Acted.Add(a), default);
         Assert.Equal(200, status);
         Assert.True(approval.Decisions[T1].Approved);
+        Assert.Equal(new[] { T1 }, Acted);
         Assert.Equal(TimeSpan.Zero, approval.Decisions[T1].DecidedAt.Offset);
     }
 
     [Fact]
     public async Task Federated_rejection_without_reason_is_400()
     {
-        var status = await FederatedEgressDecision.TryHandleAsync(Review(approved: false), User("data-egress-admin"), Registered(), default);
+        var status = await FederatedEgressDecision.TryHandleAsync(Review(approved: false), User("data-egress-admin"), Registered(), a => Acted.Add(a), default);
         Assert.Equal(400, status);
     }
 
     [Fact]
     public async Task Federated_review_with_other_sha_is_409()
     {
-        var status = await FederatedEgressDecision.TryHandleAsync(Review(sha: OtherSha), User("data-egress-admin"), Registered(), default);
+        var status = await FederatedEgressDecision.TryHandleAsync(Review(sha: OtherSha), User("data-egress-admin"), Registered(), a => Acted.Add(a), default);
         Assert.Equal(409, status);
+        Assert.Empty(Acted);
     }
 
     [Fact]
@@ -107,8 +112,8 @@ public class FederatedEgressDecisionTests
     {
         var approval = Registered();
         var unknown = await FederatedEgressDecision.TryHandleAsync(
-            Review("22222222-2222-2222-2222-222222222222"), User("dare-tre-admin"), approval, default);
-        var known = await FederatedEgressDecision.TryHandleAsync(Review(), User("dare-tre-admin"), approval, default);
+            Review("22222222-2222-2222-2222-222222222222"), User("dare-tre-admin"), approval, a => Acted.Add(a), default);
+        var known = await FederatedEgressDecision.TryHandleAsync(Review(), User("dare-tre-admin"), approval, a => Acted.Add(a), default);
         Assert.Equal(403, unknown);
         Assert.Equal(403, known);
         Assert.Equal(0, approval.GetCalls);
@@ -118,7 +123,7 @@ public class FederatedEgressDecisionTests
     public async Task Unknown_guid_is_404_not_native()
     {
         var status = await FederatedEgressDecision.TryHandleAsync(
-            Review("22222222-2222-2222-2222-222222222222"), User("data-egress-admin"), Registered(), default);
+            Review("22222222-2222-2222-2222-222222222222"), User("data-egress-admin"), Registered(), a => Acted.Add(a), default);
         Assert.Equal(404, status);
     }
 
@@ -126,17 +131,19 @@ public class FederatedEgressDecisionTests
     public async Task Repeated_decision_is_200()
     {
         var approval = Registered();
-        await FederatedEgressDecision.TryHandleAsync(Review(), User("data-egress-admin"), approval, default);
-        var status = await FederatedEgressDecision.TryHandleAsync(Review(), User("data-egress-admin"), approval, default);
+        await FederatedEgressDecision.TryHandleAsync(Review(), User("data-egress-admin"), approval, a => Acted.Add(a), default);
+        var status = await FederatedEgressDecision.TryHandleAsync(Review(), User("data-egress-admin"), approval, a => Acted.Add(a), default);
         Assert.Equal(200, status);
+        Assert.Equal(new[] { T1, T1 }, Acted);
     }
 
     [Fact]
     public async Task Uppercase_guid_is_normalised_before_lookup()
     {
         var status = await FederatedEgressDecision.TryHandleAsync(
-            Review(T1.ToUpperInvariant()), User("data-egress-admin"), Registered(), default);
+            Review(T1.ToUpperInvariant()), User("data-egress-admin"), Registered(), a => Acted.Add(a), default);
         Assert.Equal(200, status);
+        Assert.Equal(new[] { T1 }, Acted);
     }
 
     public static TheoryData<string> IncompleteReviews => new() { "no-reviewer", "no-time", "no-sha", "no-files", "two-files" };
@@ -156,7 +163,7 @@ public class FederatedEgressDecisionTests
         }
         var approval = Registered();
 
-        var status = await FederatedEgressDecision.TryHandleAsync(review, User("data-egress-admin"), approval, default);
+        var status = await FederatedEgressDecision.TryHandleAsync(review, User("data-egress-admin"), approval, a => Acted.Add(a), default);
 
         Assert.Equal(400, status);
         Assert.Empty(approval.Decisions);
@@ -170,7 +177,7 @@ public class FederatedEgressDecisionTests
         review.DecidedAt = local;
         var approval = Registered();
 
-        await FederatedEgressDecision.TryHandleAsync(review, User("data-egress-admin"), approval, default);
+        await FederatedEgressDecision.TryHandleAsync(review, User("data-egress-admin"), approval, a => Acted.Add(a), default);
 
         var decidedAt = approval.Decisions[T1].DecidedAt;
         Assert.Equal(TimeSpan.Zero, decidedAt.Offset);
@@ -184,7 +191,7 @@ public class FederatedEgressDecisionTests
         review.DecidedAt = new DateTime(2026, 11, 11, 10, 0, 0, DateTimeKind.Unspecified);
         var approval = Registered();
 
-        await FederatedEgressDecision.TryHandleAsync(review, User("data-egress-admin"), approval, default);
+        await FederatedEgressDecision.TryHandleAsync(review, User("data-egress-admin"), approval, a => Acted.Add(a), default);
 
         Assert.Equal(new DateTimeOffset(2026, 11, 11, 10, 0, 0, TimeSpan.Zero), approval.Decisions[T1].DecidedAt);
     }

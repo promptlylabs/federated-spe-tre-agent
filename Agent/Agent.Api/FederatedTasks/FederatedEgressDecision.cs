@@ -5,7 +5,8 @@ namespace Agent.Api.FederatedTasks
 {
     /// <summary>
     /// Records a reviewer's decision on a federated task result, sent by the Egress app to EgressResults.
-    /// It only records; the federated poll releases or rejects the result.
+    /// It records the decision and then asks for the task to be acted on at once (<paramref name="actOnDecision"/>);
+    /// the federated poll acts on a recorded decision too, in case that fails.
     /// </summary>
     public static class FederatedEgressDecision
     {
@@ -13,7 +14,8 @@ namespace Agent.Api.FederatedTasks
 
         /// <summary>Null when the review is not federated (the native path then runs); otherwise an HTTP status.</summary>
         public static async Task<int?> TryHandleAsync(
-            EgressReview review, ClaimsPrincipal user, IOutputApproval approval, CancellationToken ct)
+            EgressReview review, ClaimsPrincipal user, IOutputApproval approval, Action<string> actOnDecision,
+            CancellationToken ct)
         {
             if (!Guid.TryParse(review.SubId, out var guid))
                 return null;
@@ -44,7 +46,15 @@ namespace Agent.Api.FederatedTasks
                 review.Reason,
                 review.ResultSha256);
 
-            return await approval.RecordDecisionAsync(taskId, decision, ct) switch
+            var outcome = await approval.RecordDecisionAsync(taskId, decision, ct);
+            if (outcome is DecisionOutcome.Recorded or DecisionOutcome.AlreadyRecorded)
+            {
+                // Also on a repeat: the Egress app resends only when it did not hear back, so the first request may
+                // have been lost before the task was queued.
+                actOnDecision(taskId);
+            }
+
+            return outcome switch
             {
                 DecisionOutcome.Recorded or DecisionOutcome.AlreadyRecorded => 200,
                 DecisionOutcome.NotRegistered => 404,
