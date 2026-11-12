@@ -1,5 +1,7 @@
 using System.Net.Http.Headers;
 using System.Text;
+using FiveSafesTes.Core.Models;
+using FiveSafesTes.Core.Models.Enums;
 using FiveSafesTes.Core.Models.Settings;
 using FiveSafesTes.Core.Services;
 using Microsoft.Extensions.Options;
@@ -8,7 +10,7 @@ using Newtonsoft.Json;
 namespace Agent.Api.FederatedTasks
 {
     /// <summary>
-    /// Posts a federated result to the Egress app as a "federated" egress submission,
+    /// Posts a federated result to the Egress app as a "federated" EgressSubmission (the model both apps share),
     /// with a client-credentials token for the Agent's Egress service account.
     /// </summary>
     public class EgressReviewClient : IEgressReviewClient
@@ -43,18 +45,19 @@ namespace Agent.Api.FederatedTasks
 
         public async Task RegisterAsync(EgressRegistration r, CancellationToken ct)
         {
-            var submission = new
+            var submission = new EgressSubmission
             {
                 SubmissionId = r.TaskId,
-                r.Name,
+                Name = r.Name,
+                Status = EgressStatus.NotCompleted,
                 Kind = "federated",
-                Study = new { Id = r.StudyId },
-                r.Code,
-                r.ResultContent,
-                r.ResultSha256,
+                Study = new FederatedStudy { Id = r.StudyId },
+                Code = r.Code,
+                ResultContent = r.ResultContent,
+                ResultSha256 = r.ResultSha256,
                 // The Egress app sends it back with the decision, and the Agent's EgressResults requires it.
-                r.OutputBucket,
-                Files = new[] { new { Name = $"{r.TaskId}.json", Status = 0 } }
+                OutputBucket = r.OutputBucket,
+                Files = new List<EgressFile> { new() { Name = $"{r.TaskId}.json", Status = FileStatus.Undecided } }
             };
 
             using var request = new HttpRequestMessage(HttpMethod.Post, _endpoints.EgressApiUrl + Endpoint)

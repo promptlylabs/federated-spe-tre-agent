@@ -1,9 +1,12 @@
 using System.Net;
 using System.Text;
 using Agent.Api.FederatedTasks;
+using FiveSafesTes.Core.Models;
+using FiveSafesTes.Core.Models.Enums;
 using FiveSafesTes.Core.Models.Settings;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Options;
+using Newtonsoft.Json;
 using Newtonsoft.Json.Linq;
 using Xunit;
 
@@ -103,6 +106,24 @@ public class EgressReviewClientTests
         var file = Assert.Single((JArray)json["Files"]!);
         Assert.Equal($"{TaskId}.json", (string?)file["Name"]);
         Assert.Equal(0, (int?)file["Status"]);
+    }
+
+    [Fact]
+    public async Task Client_body_binds_to_the_shared_EgressSubmission_the_Egress_API_takes()
+    {
+        var handler = new StubHandler(HttpStatusCode.OK, "{\"Result\":true}");
+
+        await Client(handler).RegisterAsync(Registration(), CancellationToken.None);
+
+        var bound = JsonConvert.DeserializeObject<EgressSubmission>(handler.Body!)!;
+        Assert.True(bound.IsFederated);
+        Assert.Equal(EgressStatus.NotCompleted, bound.Status);
+        Assert.Equal("study-1", bound.Study!.Id);
+        Assert.Equal("federated-outputs", bound.OutputBucket);
+        Assert.False(bound.DecisionDelivered);
+        Assert.Null(bound.DecisionReason);
+        var file = Assert.Single(bound.Files);
+        Assert.Equal(FileStatus.Undecided, file.Status);
     }
 
     [Fact]
