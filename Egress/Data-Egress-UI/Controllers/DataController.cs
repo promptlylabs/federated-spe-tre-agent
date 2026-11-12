@@ -116,6 +116,8 @@ namespace Data_Egress_UI.Controllers
             {
                 var stored = _dataClientHelper.CallAPIWithoutModel<EgressSubmission>(
                     "/api/DataEgress/GetEgress/", new Dictionary<string, string> { { "id", posted.Id.ToString() } }).Result!;
+                // A decided request shows its stored decision, which cannot change.
+                if (stored.Status != EgressStatus.NotCompleted) return stored;
                 stored.DecisionReason = posted.DecisionReason;
                 foreach (var file in stored.Files)
                 {

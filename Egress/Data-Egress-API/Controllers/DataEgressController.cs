@@ -306,6 +306,14 @@ namespace Data_Egress_API.Controllers
                     throw new EgressRefusedException(DecidedByOtherReviewer);
                 }
 
+                // A saved decision is final. Sending the same form again resends it; a different one is refused,
+                // so the reviewer is never told a decision went through that was not the one sent.
+                if (!SameDecision(egress, dbegress))
+                {
+                    throw new EgressRefusedException(
+                        $"This request was already decided ({StoredDecision(dbegress)}). The decision is saved and is sent to the TRE automatically; it cannot be changed.");
+                }
+
                 Log.Information("{Function} Re-sending stored decision for Submission {SubId}", "CompleteEgress",
                     dbegress.SubmissionId);
                 return await FederatedDecisionDelivery.DeliverAsync(_DbContext, _treClientHelper, dbegress);
@@ -353,6 +361,22 @@ namespace Data_Egress_API.Controllers
 
             return await FederatedDecisionDelivery.DeliverAsync(_DbContext, _treClientHelper, dbegress);
         }
+
+        private static bool SameDecision(EgressSubmission form, EgressSubmission stored)
+        {
+            var reason = string.IsNullOrWhiteSpace(form.DecisionReason) ? null : form.DecisionReason.Trim();
+            var formFiles = form.Files ?? new List<EgressFile>();
+            return reason == stored.DecisionReason &&
+                   formFiles.Count == stored.Files.Count &&
+                   stored.Files.All(f => formFiles.Any(x => x.Id == f.Id && x.Status == f.Status));
+        }
+
+        private static string StoredDecision(EgressSubmission stored) => stored.Status switch
+        {
+            EgressStatus.FullyApproved => "Approved",
+            EgressStatus.FullyRejected => $"Rejected: {stored.DecisionReason}",
+            _ => $"{stored.EgressStatusDisplay}: {stored.DecisionReason}"
+        };
 
         private static EgressReview ReviewFilesGuts(EgressSubmission egress, EgressSubmission dbegress,
             string approvedBy,

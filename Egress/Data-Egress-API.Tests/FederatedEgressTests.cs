@@ -149,7 +149,7 @@ public class FederatedEgressTests
     }
 
     [Fact]
-    public async Task CompleteEgress_federated_retry_resends_the_stored_decision_not_the_new_form()
+    public async Task CompleteEgress_federated_retry_with_the_same_form_resends_the_stored_decision()
     {
         var (id, fileId) = Seed("federated");
         _tre.Throw = true;
@@ -158,14 +158,33 @@ public class FederatedEgressTests
         var decidedAt = Load(id).Completed;
 
         _tre.Throw = false;
-        await NewController(NewDb()).CompleteEgressAsync(Form(id, fileId, FileStatus.Approved, null));
+        await NewController(NewDb()).CompleteEgressAsync(Form(id, fileId, FileStatus.Rejected, " small cells "));
 
         var sent = Assert.Single(_tre.Sent);
         Assert.False(Assert.Single(sent.FileResults).Approved);
         Assert.Equal("small cells", sent.Reason);
         Assert.Equal(decidedAt, sent.DecidedAt);
+        Assert.True(Load(id).DecisionDelivered);
+    }
+
+    [Theory]
+    [InlineData(FileStatus.Approved, null)]
+    [InlineData(FileStatus.Rejected, "other reason")]
+    public async Task CompleteEgress_federated_retry_with_a_different_form_is_refused_and_names_the_stored_decision(
+        FileStatus status, string? reason)
+    {
+        var (id, fileId) = Seed("federated");
+        _tre.Throw = true;
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            NewController(NewDb()).CompleteEgressAsync(Form(id, fileId, FileStatus.Rejected, "small cells")));
+
+        _tre.Throw = false;
+        var result = await NewController(NewDb()).CompleteEgressAsync(Form(id, fileId, status, reason));
+
+        AssertRefused(result, "This request was already decided (Rejected: small cells). The decision is saved and is sent to the TRE automatically; it cannot be changed.");
+        Assert.Empty(_tre.Sent);
         var row = Load(id);
-        Assert.True(row.DecisionDelivered);
+        Assert.False(row.DecisionDelivered);
         Assert.Equal(EgressStatus.FullyRejected, row.Status);
     }
 
@@ -367,7 +386,7 @@ public class FederatedEgressTests
             NewController(NewDb()).UpdateFileData(fileId, FileStatus.Approved));
         Assert.Equal(FileStatus.Rejected, Load(id).Files[0].Status);
 
-        await NewController(NewDb()).CompleteEgressAsync(Form(id, fileId, FileStatus.Approved, null));
+        await NewController(NewDb()).CompleteEgressAsync(Form(id, fileId, FileStatus.Rejected, "small cells"));
         var sent = Assert.Single(_tre.Sent);
         Assert.False(Assert.Single(sent.FileResults).Approved);
         Assert.Equal("small cells", sent.Reason);
