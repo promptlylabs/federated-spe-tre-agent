@@ -21,6 +21,13 @@ On start, three one-shot steps prepare the test data:
 - `seed-dataset` uploads `data/cohort.csv` as `dataset/cohort_2024/cohort.csv`;
 - `seed-egress-creds` stores the `egress-app` login (realm `tre-test`) in the Egress app, so the app can send decisions back to the Agent.
 
+If `seed-egress-creds` ends with `UpdateCredentials failed`, the stored login cannot be used: for example it was stored before the Egress app moved to `Shared/FiveSafesTes.Core`, whose encryption format is different. The step cannot replace a stored login, so delete it and run the step again (or use `down -v`):
+
+```bash
+docker compose -f dev/federated/docker-compose.yml exec postgres psql -U postgres -d DataEgress -c 'DELETE FROM "KeycloakCredentials"'
+docker compose -f dev/federated/docker-compose.yml up seed-egress-creds
+```
+
 Keycloak keeps no data: recreating its container (for example after a realm file changes) gives it new signing keys. Restart `agent-api`, `submission-api`, `egress-api` and `egress-ui` after that, or they reject the new tokens.
 
 ## What runs
