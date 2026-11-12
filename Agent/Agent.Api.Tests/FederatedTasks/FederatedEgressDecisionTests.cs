@@ -24,6 +24,9 @@ public class FederatedEgressDecisionTests
             return Task.FromResult(Records.TryGetValue(taskId, out var r) ? r : null);
         }
 
+        public Task<bool> IsRegisteredAsync(string taskId, CancellationToken ct) =>
+            throw new NotSupportedException();
+
         public Task<OutputReview> RegisterAsync(EgressRegistration r, CancellationToken ct) =>
             throw new NotSupportedException();
 

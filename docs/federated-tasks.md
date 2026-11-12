@@ -59,6 +59,7 @@ sequenceDiagram
         Agent->>TS: save federated-outputs/taskId.json (once, reused on retry)
         Agent->>TS: save taskId.review.json (pending, result sha256)
         Agent->>Egress: POST AddNewDataEgress (study, code, result bytes, sha256)
+        Agent->>TS: save taskId.registered (empty marker)
         Agent->>Sub: POST ReportProgress (step waiting_for_output_approval)
         Reviewer->>Egress: approve, or reject with a reason
         Egress->>Agent: POST EgressResults (decision, reviewer, time, reason, sha256)
@@ -185,7 +186,7 @@ TODO: re-tag released TRE copies that have no `released-key` (follow-up ticket).
 
 Every computed result is reviewed at the hospital before it leaves the TRE. The review happens in the Data Egress app (`Egress/`, forked from Swansea's DARE-Control). Native 5S-TES outputs are reviewed in the same app.
 
-Registering. After the Agent saves the result, it writes the review record (below) as pending, then calls the Egress API's `POST /api/DataEgress/AddNewDataEgress` with the task ID as `SubmissionId`, the kind `federated`, the study ID, the image and command, the result bytes and their SHA-256. The Egress app keeps its own copy of the bytes, so the reviewer reads exactly what was registered, and the Egress app needs no access to `federated-outputs`. A second registration of the same task is accepted as already done. Then the Agent marks the record as registered and reports `waiting_for_output_approval`. If a step fails, the task keeps its step and the next poll goes on from where it stopped.
+Registering. After the Agent saves the result, it writes the review record (below) as pending, then calls the Egress API's `POST /api/DataEgress/AddNewDataEgress` with the task ID as `SubmissionId`, the kind `federated`, the study ID, the image and command, the result bytes and their SHA-256. The Egress app keeps its own copy of the bytes, so the reviewer reads exactly what was registered, and the Egress app needs no access to `federated-outputs`. A second registration of the same task is accepted as already done. Then the Agent writes the registration marker (below) and reports `waiting_for_output_approval`. If a step fails, the task keeps its step and the next poll goes on from where it stopped.
 
 The Agent calls the Egress API with a client-credentials token of its own Keycloak client in the Egress realm (`DataEgressKeyCloakSettings:ClientId` and `ClientSecret`; the service account has the role `dare-tre-admin`), at `ApiEndpoints:EgressApiUrl`. If the client ID or secret is not set, the Agent does not register the result. It logs an error once per poll and the task keeps its step.
 
@@ -205,7 +206,6 @@ The Agent keeps the review in the TRE bucket next to the result, as `federated-o
   "additionalType": "https://w3id.org/shp#DisclosureCheck",
   "actionStatus": "http://schema.org/CompletedActionStatus",
   "object": { "sha256": "ae28cc6d7117376e2245e59e139d2a58cea8b65d5bf69de921210decfa84054b" },
-  "registered": true,
   "startTime": "2026-11-11T22:54:09.8825703+00:00",
   "endTime": "2026-11-11T22:54:35.9042277+00:00",
   "agent": "reviewer",
@@ -215,9 +215,12 @@ The Agent keeps the review in the TRE bucket next to the result, as `federated-o
 
 - `actionStatus` is `PotentialActionStatus` while waiting, `CompletedActionStatus` on approval and `FailedActionStatus` on rejection.
 - `object.sha256` is the SHA-256 of the registered result. Only a file with this hash is released.
-- `registered` is `false` until the Egress app has accepted the registration.
 - `startTime` is the registration time, `endTime` the decision time, and `agent` the reviewer.
 - `description` holds the reason. schema.org defines it; the 5S-Crate profile does not, so it is our extension.
+
+After the Egress app accepts the registration, the Agent writes an empty object `federated-outputs/<taskId>.registered` next to the record. A pending record without this marker is registered again at the next poll. A decided record needs no marker, because the decision came from the Egress app.
+
+The bucket has no conditional write, so each object has one writer at a time. The poll writes the review record only once, as pending, before it calls the Egress app. After that, only the Egress decision writes the record, and the poll writes only the marker. A decision that arrives while the poll registers the task is never overwritten. A record from an older version can have a `registered` field; the Agent ignores it.
 
 Once a result has a review record, it is never computed again. If the saved result is gone, a rejection is still reported as a rejection, and anything else as `result_changed_after_review`.
 
@@ -505,7 +508,6 @@ Known risks:
 
 - There is no automatic disclosure control. A reviewer approves each result, but nothing flags a narrow filter that gives a `count` of 1 or the exact value of one person in a `mean`. The reviewer must catch it.
 - Error reports are not reviewed. Error reports (`EXECUTOR_ERROR`, `SYSTEM_ERROR`, input-check rejections) leave without review. Today that is safe: the Agent runs fixed operations and writes every error message itself, echoing only what the researcher sent (for example a column name). It stops being safe with arbitrary Python, where a script can put data in an exception or in its output. The rule for the arbitrary-Python slice: never forward text the script produced. The orchestrator gets a fixed code and message, and the details stay in the TRE logs.
-- Registration re-reads the review record and then saves it as registered. The store has no compare-and-swap, so a decision recorded in the milliseconds between that re-read and save is overwritten and the task stays waiting (nothing is released). A fix needs a conditional write.
 - Orchestrator admins are trusted not to change stored results or hashes, until signed results are added.
 - Any `dare-control-admin` user can read the results of every study.
 - Orphan files. Submission writes the file before it saves the `released` step. If the row save fails, or a concurrent report wins, the file stays in the orchestrator bucket with no row that points to it. The key holds the SHA-256, so it never overwrites another result. No API call can reach an orphan. An orchestrator admin can find and delete orphans in the bucket.

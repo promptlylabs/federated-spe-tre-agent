@@ -14,6 +14,7 @@ public class EgressOutputApprovalTests
     private sealed class FakeStore : IOutputReviewStore
     {
         public readonly Dictionary<string, OutputReview> Records = new();
+        public readonly HashSet<string> Markers = new();
         public int Saves;
 
         public Task<OutputReview?> GetAsync(string taskId, CancellationToken ct) =>
@@ -23,6 +24,15 @@ public class EgressOutputApprovalTests
         {
             Saves++;
             Records[taskId] = review;
+            return Task.CompletedTask;
+        }
+
+        public Task<bool> IsRegisteredAsync(string taskId, CancellationToken ct) =>
+            Task.FromResult(Markers.Contains(taskId));
+
+        public Task MarkRegisteredAsync(string taskId, CancellationToken ct)
+        {
+            Markers.Add(taskId);
             return Task.CompletedTask;
         }
     }
@@ -65,7 +75,8 @@ public class EgressOutputApprovalTests
     private static (EgressOutputApproval approval, FakeStore store) Registered()
     {
         var (approval, store, _) = Make();
-        store.Records[TaskId] = OutputReview.Pending(Sha, Now) with { Registered = true };
+        store.Records[TaskId] = OutputReview.Pending(Sha, Now);
+        store.Markers.Add(TaskId);
         return (approval, store);
     }
 
@@ -86,37 +97,59 @@ public class EgressOutputApprovalTests
     }
 
     [Fact]
-    public async Task Register_marks_registered_after_egress_accepts()
+    public async Task Register_writes_the_marker_after_egress_accepts_and_leaves_the_record_pending()
     {
         var (approval, store, egress) = Make();
+        var markedBeforeEgress = true;
+        egress.OnRegister = _ =>
+        {
+            markedBeforeEgress = store.Markers.Contains(TaskId);
+            return Task.CompletedTask;
+        };
 
         var returned = await approval.RegisterAsync(Registration(), CancellationToken.None);
 
-        var stored = store.Records[TaskId];
-        Assert.True(stored.Registered);
-        Assert.True(stored.IsPending);
-        Assert.Equal(stored, returned);
+        Assert.False(markedBeforeEgress);
+        Assert.Contains(TaskId, store.Markers);
+        Assert.Equal(OutputReview.Pending(Sha, Now), store.Records[TaskId]);
+        Assert.Equal(store.Records[TaskId], returned);
+        Assert.Equal(1, store.Saves);
         Assert.Equal(1, egress.Calls);
+        Assert.True(await approval.IsRegisteredAsync(TaskId, CancellationToken.None));
     }
 
     [Fact]
-    public async Task Register_failure_leaves_an_unregistered_pending_record()
+    public async Task Register_failure_leaves_a_pending_record_and_no_marker()
     {
         var (approval, store, egress) = Make();
         egress.OnRegister = _ => throw new HttpRequestException("egress down");
 
         await Assert.ThrowsAsync<HttpRequestException>(() => approval.RegisterAsync(Registration(), CancellationToken.None));
 
-        var stored = store.Records[TaskId];
-        Assert.False(stored.Registered);
-        Assert.True(stored.IsPending);
+        Assert.True(store.Records[TaskId].IsPending);
+        Assert.Empty(store.Markers);
+        Assert.False(await approval.IsRegisteredAsync(TaskId, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Register_again_after_a_failure_keeps_the_record_and_writes_the_marker()
+    {
+        var (approval, store, egress) = Make();
+        store.Records[TaskId] = OutputReview.Pending(Sha, Now.AddMinutes(-5));
+
+        var returned = await approval.RegisterAsync(Registration(), CancellationToken.None);
+
+        Assert.Equal(1, egress.Calls);
+        Assert.Equal(0, store.Saves);
+        Assert.Equal(OutputReview.Pending(Sha, Now.AddMinutes(-5)), returned);
+        Assert.Contains(TaskId, store.Markers);
     }
 
     [Fact]
     public async Task Register_does_not_call_egress_for_a_decided_review()
     {
         var (approval, store, egress) = Make();
-        var decided = new OutputReview(Sha, Now, true, DisclosureCheckStatus.Completed, "reviewer", DecidedAt);
+        var decided = new OutputReview(Sha, Now, DisclosureCheckStatus.Completed, "reviewer", DecidedAt);
         store.Records[TaskId] = decided;
 
         var returned = await approval.RegisterAsync(Registration(), CancellationToken.None);
@@ -127,20 +160,38 @@ public class EgressOutputApprovalTests
     }
 
     [Fact]
-    public async Task Decision_arriving_during_registration_is_not_overwritten()
+    public async Task Decision_recorded_while_egress_registers_is_not_overwritten_by_the_registration()
     {
         var (approval, store, egress) = Make();
         DecisionOutcome? outcome = null;
+        var savesAfterDecision = -1;
         egress.OnRegister = async _ =>
+        {
             outcome = await approval.RecordDecisionAsync(TaskId, Approve(), CancellationToken.None);
+            savesAfterDecision = store.Saves;
+        };
 
         var returned = await approval.RegisterAsync(Registration(), CancellationToken.None);
 
         Assert.Equal(DecisionOutcome.Recorded, outcome);
+        Assert.Equal(savesAfterDecision, store.Saves);
         var stored = store.Records[TaskId];
         Assert.True(stored.IsApproved);
-        Assert.True(stored.Registered);
+        Assert.Equal("reviewer@hospital.example", stored.Agent);
+        Assert.Contains(TaskId, store.Markers);
         Assert.Equal(stored, returned);
+    }
+
+    [Fact]
+    public async Task Decision_does_not_write_the_marker()
+    {
+        var (approval, store, _) = Make();
+        store.Records[TaskId] = OutputReview.Pending(Sha, Now);
+
+        await approval.RecordDecisionAsync(TaskId, Approve(), CancellationToken.None);
+
+        Assert.True(store.Records[TaskId].IsApproved);
+        Assert.Empty(store.Markers);
     }
 
     [Fact]
@@ -193,7 +244,6 @@ public class EgressOutputApprovalTests
         Assert.Equal("reviewer@hospital.example", stored.Agent);
         Assert.Equal(DecidedAt, stored.EndTime);
         Assert.Null(stored.Description);
-        Assert.True(stored.Registered);
         Assert.Equal(Now, stored.StartTime);
     }
 

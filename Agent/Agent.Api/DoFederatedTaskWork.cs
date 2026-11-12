@@ -237,8 +237,9 @@ namespace Agent.Api
             }
 
             // The hospital approves each result before it leaves. A result not yet sent for review is registered with
-            // the Egress app; a registration that failed part-way is sent again.
-            if (review == null || (review.IsPending && !review.Registered))
+            // the Egress app; a registration that failed part-way (pending record, no registration marker) is sent
+            // again. A decided review came from the Egress app, so it needs no marker.
+            if (review == null || (review.IsPending && !await _approval.IsRegisteredAsync(storeKey, CancellationToken.None)))
             {
                 if (!_egress.IsConfigured) return Hold.Egress;
                 review = await _approval.RegisterAsync(Registration(task, storeKey, bytes, sha), CancellationToken.None);

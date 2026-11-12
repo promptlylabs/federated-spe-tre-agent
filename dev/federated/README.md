@@ -96,7 +96,7 @@ To test your own data, upload a CSV in the RustFS console to `federated-datasets
 
 Where the result files are:
 - **Orchestrator:** bucket `federated-results` on the second RustFS (console http://localhost:9101/rustfs/console/, `orchadmin` / `orchadmin123`), key `<treId>/<taskId>/<sha256>.json`. `task.sh result` reads it through Submission.
-- **TRE:** bucket `federated-outputs` on the TRE RustFS (console http://localhost:9001/rustfs/console/, `rustfsadmin` / `rustfsadmin123`), key `<taskId>.json`. The review record is next to it, as `<taskId>.review.json`.
+- **TRE:** bucket `federated-outputs` on the TRE RustFS (console http://localhost:9001/rustfs/console/, `rustfsadmin` / `rustfsadmin123`), key `<taskId>.json`. The review record is next to it, as `<taskId>.review.json`, with the registration marker `<taskId>.registered` (empty) once the Egress app has the task.
 
 Logs: `docker compose -f dev/federated/docker-compose.yml logs -f agent-api` (and `egress-api`, `egress-ui`)
 

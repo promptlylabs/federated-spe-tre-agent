@@ -96,16 +96,22 @@ public class DoFederatedTaskWorkTests
         public bool ThrowOnRegister { get; set; }
         public Dictionary<string, OutputReview> Records { get; } = new();
         public Dictionary<string, EgressRegistration> Registered { get; } = new();
+        /// <summary>Task ids with a registration marker (the Egress app has accepted the registration).</summary>
+        public HashSet<string> Marked { get; } = new();
         public int RegisterCalls { get; private set; }
 
-        public FakeOutputApproval Preset(string taskId, OutputReview review)
+        public FakeOutputApproval Preset(string taskId, OutputReview review, bool registered = false)
         {
             Records[taskId] = review;
+            if (registered) Marked.Add(taskId);
             return this;
         }
 
         public Task<OutputReview?> GetAsync(string taskId, CancellationToken ct) =>
             Task.FromResult(Records.TryGetValue(taskId, out var r) ? r : null);
+
+        public Task<bool> IsRegisteredAsync(string taskId, CancellationToken ct) =>
+            Task.FromResult(Marked.Contains(taskId));
 
         public Task<OutputReview> RegisterAsync(EgressRegistration r, CancellationToken ct)
         {
@@ -116,8 +122,9 @@ public class DoFederatedTaskWorkTests
 
             var record = AutoApprove
                 ? Approved(r.ResultSha256)
-                : (existing ?? OutputReview.Pending(r.ResultSha256, Now)) with { Registered = true };
+                : existing ?? OutputReview.Pending(r.ResultSha256, Now);
             Records[r.TaskId] = record;
+            Marked.Add(r.TaskId);
             return Task.FromResult(record);
         }
 
@@ -132,14 +139,13 @@ public class DoFederatedTaskWorkTests
         public Task RegisterAsync(EgressRegistration r, CancellationToken ct) => throw new NotSupportedException();
     }
 
-    private static OutputReview PendingReview(string sha, bool registered = true) =>
-        OutputReview.Pending(sha, Now) with { Registered = registered };
+    private static OutputReview PendingReview(string sha) => OutputReview.Pending(sha, Now);
 
     private static OutputReview Approved(string sha) =>
-        new(sha, Now, true, DisclosureCheckStatus.Completed, "reviewer", Now);
+        new(sha, Now, DisclosureCheckStatus.Completed, "reviewer", Now);
 
     private static OutputReview Rejected(string sha, string reason) =>
-        new(sha, Now, true, DisclosureCheckStatus.Failed, "reviewer", Now, reason);
+        new(sha, Now, DisclosureCheckStatus.Failed, "reviewer", Now, reason);
 
     private static readonly DateTimeOffset Now = new(2026, 11, 5, 10, 0, 0, TimeSpan.Zero);
 
@@ -849,7 +855,7 @@ public class DoFederatedTaskWorkTests
         var client = OneMean();
         client.Pending[0].State = TesState.PAUSEDEnum;
         var outputs = Saved();
-        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])));
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), registered: true);
 
         await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
 
@@ -891,6 +897,8 @@ public class DoFederatedTaskWorkTests
         Assert.Equal(sha, ShaOf(call.Bytes!));
         Assert.Equal(($"1/{T1}/{sha}.json", sha), outputs.Released[T1]);
         Assert.Empty(client.ProgressCalls);
+        // A decided record means the Egress app has the row, even without a registration marker.
+        Assert.Equal(0, approval.RegisterCalls);
     }
 
     [Fact]
@@ -921,7 +929,7 @@ public class DoFederatedTaskWorkTests
         var client = OneMean();
         client.Pending[0].State = TesState.RUNNINGEnum;
         var outputs = Saved();
-        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(new string('d', 64), registered));
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(new string('d', 64)), registered);
 
         await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
 
@@ -1011,12 +1019,12 @@ public class DoFederatedTaskWorkTests
         client.Pending[0].State = TesState.RUNNINGEnum;
         var outputs = Saved();
         var sha = ShaOf(outputs.Files[T1]);
-        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(sha, registered: false));
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(sha), registered: false);
 
         await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
 
         Assert.Equal(sha, approval.Registered[T1].ResultSha256);
-        Assert.True(approval.Records[T1].Registered);
+        Assert.Contains(T1, approval.Marked);
         Assert.Equal((T1, FederatedTaskStep.WaitingForOutputApproval), Assert.Single(client.ProgressCalls));
         Assert.Empty(client.Calls);
     }
@@ -1027,7 +1035,7 @@ public class DoFederatedTaskWorkTests
         var client = OneMean();
         client.Pending[0].State = TesState.RUNNINGEnum;
         var outputs = Saved();
-        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])));
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), registered: true);
 
         await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
 

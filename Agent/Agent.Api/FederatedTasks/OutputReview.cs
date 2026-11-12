@@ -17,7 +17,6 @@ namespace Agent.Api.FederatedTasks
     public sealed record OutputReview(
         string ResultSha256,
         DateTimeOffset StartTime,
-        bool Registered,
         string ActionStatus,
         string? Agent = null,
         DateTimeOffset? EndTime = null,
@@ -28,7 +27,7 @@ namespace Agent.Api.FederatedTasks
         public bool IsRejected => ActionStatus == DisclosureCheckStatus.Failed;
 
         public static OutputReview Pending(string sha, DateTimeOffset now) =>
-            new(sha, now, false, DisclosureCheckStatus.Potential);
+            new(sha, now, DisclosureCheckStatus.Potential);
     }
 
     public static class OutputReviewJson
@@ -44,7 +43,6 @@ namespace Agent.Api.FederatedTasks
                 ["additionalType"] = DisclosureCheckType,
                 ["actionStatus"] = r.ActionStatus,
                 ["object"] = new JsonObject { ["sha256"] = r.ResultSha256 },
-                ["registered"] = r.Registered,
                 ["startTime"] = r.StartTime.ToString("O"),
                 ["endTime"] = r.EndTime?.ToString("O"),
                 ["agent"] = r.Agent,
@@ -53,6 +51,7 @@ namespace Agent.Api.FederatedTasks
             return JsonSerializer.SerializeToUtf8Bytes(obj);
         }
 
+        /// <summary>Reads a review record. A "registered" field written by older versions is ignored.</summary>
         public static OutputReview Deserialize(byte[] json)
         {
             var root = JsonNode.Parse(json)?.AsObject() ?? throw new JsonException("Review is not a JSON object.");
@@ -75,7 +74,6 @@ namespace Agent.Api.FederatedTasks
             return new OutputReview(
                 sha,
                 DateTimeOffset.Parse(start, null, System.Globalization.DateTimeStyles.RoundtripKind),
-                root["registered"]?.GetValue<bool>() ?? false,
                 status,
                 root["agent"]?.GetValue<string>(),
                 end is null ? null : DateTimeOffset.Parse(end, null, System.Globalization.DateTimeStyles.RoundtripKind),

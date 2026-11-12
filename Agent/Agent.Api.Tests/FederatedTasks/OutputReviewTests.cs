@@ -12,7 +12,6 @@ public class OutputReviewTests
     private static OutputReview Rejected() => new(
         Sha,
         new DateTimeOffset(2026, 11, 11, 9, 0, 0, TimeSpan.Zero),
-        true,
         DisclosureCheckStatus.Failed,
         "reviewer@hospital.example",
         new DateTimeOffset(2026, 11, 11, 10, 0, 0, TimeSpan.Zero),
@@ -40,6 +39,17 @@ public class OutputReviewTests
         Assert.Equal("http://schema.org/FailedActionStatus", root.GetProperty("actionStatus").GetString());
         Assert.Equal("Small cell counts", root.GetProperty("description").GetString());
         Assert.Equal(Sha, root.GetProperty("object").GetProperty("sha256").GetString());
+        Assert.False(root.TryGetProperty("registered", out _));
+    }
+
+    [Fact]
+    public void Deserialize_ignores_the_registered_field_of_an_older_record()
+    {
+        var json = """{"@type":"AssessAction","actionStatus":"http://schema.org/PotentialActionStatus","object":{"sha256":"ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12cd34ef56ab12"},"registered":true,"startTime":"2026-11-11T09:00:00.0000000+00:00","endTime":null,"agent":null,"description":null}""";
+
+        var review = OutputReviewJson.Deserialize(Encoding.UTF8.GetBytes(json));
+
+        Assert.Equal(OutputReview.Pending(Sha, new DateTimeOffset(2026, 11, 11, 9, 0, 0, TimeSpan.Zero)), review);
     }
 
     [Fact]
@@ -50,7 +60,6 @@ public class OutputReviewTests
         Assert.True(review.IsPending);
         Assert.False(review.IsApproved);
         Assert.False(review.IsRejected);
-        Assert.False(review.Registered);
     }
 
     [Fact]
