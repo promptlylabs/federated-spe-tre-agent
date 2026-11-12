@@ -1,3 +1,4 @@
+using Microsoft.EntityFrameworkCore;
 using FiveSafesTes.Core.Models;
 using FiveSafesTes.Core.Models.APISimpleTypeReturns;
 using Microsoft.AspNetCore.Mvc;
@@ -245,6 +246,12 @@ namespace Data_Egress_API.Controllers
                 Log.Warning("{Function} Refused: {Reason}", "CompleteEgress", ex.Message);
                 return BadRequest(ex.Message);
             }
+            catch (DbUpdateConcurrencyException)
+            {
+                // Someone else saved this request after it was read here; nothing of this call was saved.
+                Log.Warning("{Function} Refused: request {Id} changed while being decided", "CompleteEgress", egress.Id);
+                return BadRequest(DecidedByOtherReviewer);
+            }
             catch (Exception ex)
             {
                 Log.Error(ex, "{Function} Crashed", "CompleteEgress");
@@ -255,9 +262,19 @@ namespace Data_Egress_API.Controllers
 
         // A federated decision is saved before the TRE Agent is called back, so a failed callback
         // never loses it. A retry re-sends the stored decision and ignores what the form now says.
+        private const string DecidedByOtherReviewer =
+            "This request was just decided by someone else. Reload it to see the decision.";
+
         private async Task<EgressSubmission> CompleteFederatedEgressAsync(EgressSubmission egress,
             EgressSubmission dbegress)
         {
+            var approvedBy = (from x in User.Claims where x.Type == "preferred_username" select x.Value)
+                .FirstOrDefault();
+            if (string.IsNullOrWhiteSpace(approvedBy))
+            {
+                approvedBy = "[Unknown]";
+            }
+
             if (dbegress.Status != EgressStatus.NotCompleted)
             {
                 if (dbegress.DecisionDelivered)
@@ -265,16 +282,16 @@ namespace Data_Egress_API.Controllers
                     throw new Exception("Egress has already been completed");
                 }
 
+                // Only the reviewer who made the stored decision retries it; anyone else would
+                // otherwise be told their own (possibly different) decision went through.
+                if (dbegress.Reviewer != approvedBy)
+                {
+                    throw new EgressRefusedException(DecidedByOtherReviewer);
+                }
+
                 Log.Information("{Function} Re-sending stored decision for Submission {SubId}", "CompleteEgress",
                     dbegress.SubmissionId);
                 return await DeliverFederatedDecisionAsync(dbegress);
-            }
-
-            var approvedBy = (from x in User.Claims where x.Type == "preferred_username" select x.Value)
-                .FirstOrDefault();
-            if (string.IsNullOrWhiteSpace(approvedBy))
-            {
-                approvedBy = "[Unknown]";
             }
 
             // The form must decide every file of the row, so the status and the reason rule
@@ -340,7 +357,15 @@ namespace Data_Egress_API.Controllers
             await _treClientHelper.CallAPI<EgressReview, Submission>("/api/Submission/EgressResults", review);
 
             dbegress.DecisionDelivered = true;
-            await _DbContext.SaveChangesAsync();
+            try
+            {
+                await _DbContext.SaveChangesAsync();
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                // A parallel retry of the same decision saved it first; the Agent has it either way.
+                await _DbContext.Entry(dbegress).ReloadAsync();
+            }
 
             Log.Information("{Function} Federated decision delivered for Submission {SubId}", "CompleteEgress",
                 dbegress.SubmissionId);

@@ -30,7 +30,7 @@ public class FederatedEgressTests
             .UseLazyLoadingProxies()
             .Options);
 
-    private DataEgressController NewController(ApplicationDbContext db)
+    private DataEgressController NewController(ApplicationDbContext db, string reviewer = "reviewer")
     {
         var controller = new DataEgressController(db, _tre, ThrowingProxy<IMinioHelper>.Create(),
             ThrowingProxy<IDareEmailService>.Create(), new EmailSettings(), ThrowingProxy<IKeyCloakService>.Create());
@@ -39,7 +39,7 @@ public class FederatedEgressTests
             HttpContext = new DefaultHttpContext
             {
                 User = new ClaimsPrincipal(new ClaimsIdentity(
-                    new[] { new Claim("preferred_username", "reviewer") }, "test"))
+                    new[] { new Claim("preferred_username", reviewer) }, "test"))
             }
         };
         return controller;
@@ -166,6 +166,25 @@ public class FederatedEgressTests
         var row = Load(id);
         Assert.True(row.DecisionDelivered);
         Assert.Equal(EgressStatus.FullyRejected, row.Status);
+    }
+
+    [Fact]
+    public async Task CompleteEgress_federated_other_reviewer_cannot_retry_a_stored_decision()
+    {
+        var (id, fileId) = Seed("federated");
+        _tre.Throw = true;
+        await Assert.ThrowsAnyAsync<Exception>(() =>
+            NewController(NewDb()).CompleteEgressAsync(Form(id, fileId, FileStatus.Rejected, "small cells")));
+
+        _tre.Throw = false;
+        var result = await NewController(NewDb(), "second-reviewer")
+            .CompleteEgressAsync(Form(id, fileId, FileStatus.Approved, null));
+
+        AssertRefused(result, "This request was just decided by someone else. Reload it to see the decision.");
+        Assert.Empty(_tre.Sent);
+        var row = Load(id);
+        Assert.False(row.DecisionDelivered);
+        Assert.Equal("reviewer", row.Reviewer);
     }
 
     [Fact]

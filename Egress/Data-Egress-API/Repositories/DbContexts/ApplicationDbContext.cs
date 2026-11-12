@@ -29,6 +29,11 @@ namespace Data_Egress_API.Repositories.DbContexts
                 study.ToJson();
                 study.OwnsOne(x => x.DataPermit);
             });
+
+            // Postgres's xmin row version, so two reviewers who opened the same request cannot both
+            // save a decision: the later save fails instead of overwriting the earlier one.
+            modelBuilder.Entity<EgressSubmission>().Property<uint>("Version").IsRowVersion();
+            modelBuilder.Entity<EgressFile>().Property<uint>("Version").IsRowVersion();
         }
 
 
