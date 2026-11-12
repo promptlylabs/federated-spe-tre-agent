@@ -94,6 +94,10 @@ builder.Services.AddScoped<IKeyCloakService, KeyCloakService>();
 
 var encryptionSettings = new EncryptionSettings();
 configuration.Bind(nameof(encryptionSettings), encryptionSettings);
+// The key encrypts the stored TRE login that can approve releases, so there is no default (as in Agent.Api).
+if (string.IsNullOrWhiteSpace(encryptionSettings.Key))
+    throw new InvalidOperationException(
+        "EncryptionSettings:Key must be provided via appsettings or environment variables (EncryptionSettings__Key). It must be a valid 16, 24, or 32-byte Base64-encoded string for AES-128/192/256.");
 builder.Services.AddSingleton(encryptionSettings);
 
 builder.Services.AddScoped<IEncDecHelper, EncDecHelper>();
