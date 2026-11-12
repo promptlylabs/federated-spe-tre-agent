@@ -1,8 +1,9 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using BL.Services;
-using BL.Models;
-using BL.Models.Enums;
+using FiveSafesTes.Core.Services;
+using FiveSafesTes.Core.Models;
+using FiveSafesTes.Core.Models.Enums;
+using FiveSafesTes.Core.Models.ViewModels;
 using Microsoft.AspNetCore.StaticFiles;
 
 

@@ -25,7 +25,7 @@ namespace Data_Egress_API.Migrations
 
             NpgsqlModelBuilderExtensions.UseIdentityByDefaultColumns(modelBuilder);
 
-            modelBuilder.Entity("BL.Models.EgressFile", b =>
+            modelBuilder.Entity("FiveSafesTes.Core.Models.EgressFile", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
@@ -55,7 +55,7 @@ namespace Data_Egress_API.Migrations
                     b.ToTable("EgressFiles");
                 });
 
-            modelBuilder.Entity("BL.Models.EgressSubmission", b =>
+            modelBuilder.Entity("FiveSafesTes.Core.Models.EgressSubmission", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
@@ -107,7 +107,7 @@ namespace Data_Egress_API.Migrations
                     b.ToTable("EgressSubmissions");
                 });
 
-            modelBuilder.Entity("BL.Models.KeycloakCredentials", b =>
+            modelBuilder.Entity("FiveSafesTes.Core.Models.KeycloakCredentials", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
@@ -131,18 +131,18 @@ namespace Data_Egress_API.Migrations
                     b.ToTable("KeycloakCredentials");
                 });
 
-            modelBuilder.Entity("BL.Models.EgressFile", b =>
+            modelBuilder.Entity("FiveSafesTes.Core.Models.EgressFile", b =>
                 {
-                    b.HasOne("BL.Models.EgressSubmission", "EgressSubmission")
+                    b.HasOne("FiveSafesTes.Core.Models.EgressSubmission", "EgressSubmission")
                         .WithMany("Files")
                         .HasForeignKey("EgressSubmissionId");
 
                     b.Navigation("EgressSubmission");
                 });
 
-            modelBuilder.Entity("BL.Models.EgressSubmission", b =>
+            modelBuilder.Entity("FiveSafesTes.Core.Models.EgressSubmission", b =>
                 {
-                    b.OwnsOne("BL.Models.FederatedStudy", "Study", b1 =>
+                    b.OwnsOne("FiveSafesTes.Core.Models.FederatedStudy", "Study", b1 =>
                         {
                             b1.Property<int>("EgressSubmissionId")
                                 .HasColumnType("integer");
@@ -165,7 +165,7 @@ namespace Data_Egress_API.Migrations
                             b1.WithOwner()
                                 .HasForeignKey("EgressSubmissionId");
 
-                            b1.OwnsOne("BL.Models.DataPermit", "DataPermit", b2 =>
+                            b1.OwnsOne("FiveSafesTes.Core.Models.DataPermit", "DataPermit", b2 =>
                                 {
                                     b2.Property<int>("FederatedStudyEgressSubmissionId")
                                         .HasColumnType("integer");
@@ -211,7 +211,7 @@ namespace Data_Egress_API.Migrations
                     b.Navigation("Study");
                 });
 
-            modelBuilder.Entity("BL.Models.EgressSubmission", b =>
+            modelBuilder.Entity("FiveSafesTes.Core.Models.EgressSubmission", b =>
                 {
                     b.Navigation("Files");
                 });

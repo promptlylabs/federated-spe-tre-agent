@@ -1,4 +1,4 @@
-using BL.Models.Settings;
+using FiveSafesTes.Core.Models.Settings;
 using Data_Egress_API.Repositories.DbContexts;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.EntityFrameworkCore;
@@ -8,17 +8,17 @@ using Microsoft.OpenApi.Models;
 using Serilog;
 using System.Net;
 using Newtonsoft.Json;
-using BL.Services;
+using FiveSafesTes.Core.Services;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.HttpOverrides;
-using BL.Models.ViewModels;
+using FiveSafesTes.Core.Models.ViewModels;
 
 using Microsoft.AspNetCore.Http.Connections;
 using Data_Egress_API.Services;
 using DARE_Egress.Services;
 using NETCore.MailKit.Extensions;
 using NETCore.MailKit.Infrastructure.Internal;
-using BL.Models;
+using FiveSafesTes.Core.Models;
 using Microsoft.AspNetCore.DataProtection;
 
 var builder = WebApplication.CreateBuilder(args);

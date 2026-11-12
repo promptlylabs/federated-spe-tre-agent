@@ -1,9 +1,9 @@
 FROM --platform=${BUILDPLATFORM} mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 COPY ["Egress/Data-Egress-UI/Data-Egress-UI.csproj", "Egress/Data-Egress-UI/"]
-COPY ["Egress/BL/BL.csproj", "Egress/BL/"]
+COPY ["Shared/FiveSafesTes.Core/FiveSafesTes.Core.csproj", "Shared/FiveSafesTes.Core/"]
 RUN dotnet restore "Egress/Data-Egress-UI/Data-Egress-UI.csproj"
-COPY Egress/BL/ Egress/BL/
+COPY Shared/FiveSafesTes.Core/ Shared/FiveSafesTes.Core/
 COPY Egress/Data-Egress-UI/ Egress/Data-Egress-UI/
 RUN dotnet publish "Egress/Data-Egress-UI/Data-Egress-UI.csproj" \
     -c Release \

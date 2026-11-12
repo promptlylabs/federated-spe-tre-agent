@@ -3,7 +3,7 @@
 
 # Allow specific directories
 !rootca.pem
-!Egress/BL/
+!Shared/FiveSafesTes.Core/
 !Egress/Data-Egress-UI/
 
 # Ignore specific things that were allowed above

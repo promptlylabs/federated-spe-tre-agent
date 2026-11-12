@@ -1,4 +1,4 @@
-﻿using BL.Models;
+﻿using FiveSafesTes.Core.Models;
 using Microsoft.EntityFrameworkCore;
 
 namespace Data_Egress_API.Repositories.DbContexts

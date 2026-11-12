@@ -1,7 +1,7 @@
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
-using BL.Models;
+using FiveSafesTes.Core.Models;
 
 namespace Data_Egress_UI.Helpers
 {

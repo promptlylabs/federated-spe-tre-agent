@@ -1,11 +1,12 @@
-Egress (Data Egress API, Data Egress UI and BL)
+Egress (Data Egress API and Data Egress UI)
 
 This directory contains source code forked from DARE-Control
 (https://github.com/SwanseaUniversityMedical/DARE-Control), copyright
 Swansea University Medical School and contributors, licensed under the
 Apache License, Version 2.0 (see ../LICENSE).
 
-Upstream paths: src/BL, src/Data-Egress-API, src/Data-Egress-UI.
+Upstream paths: src/Data-Egress-API, src/Data-Egress-UI (src/BL was
+replaced by this repository's Shared/FiveSafesTes.Core).
 Upstream commit: 573be5fc6295bd91417e69b8ddaaeb594a259be2
 
 Changes from upstream are described in README.md and in this repository's

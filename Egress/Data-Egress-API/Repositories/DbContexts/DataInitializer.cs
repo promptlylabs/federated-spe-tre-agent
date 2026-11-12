@@ -1,9 +1,9 @@
 ﻿
 
 
-using BL.Models;
-using BL.Models.Enums;
-using BL.Services;
+using FiveSafesTes.Core.Models;
+using FiveSafesTes.Core.Models.Enums;
+using FiveSafesTes.Core.Services;
 using Serilog;
 
 namespace Data_Egress_API.Repositories.DbContexts

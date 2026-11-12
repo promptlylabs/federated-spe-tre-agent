@@ -1,12 +1,17 @@
-﻿using BL.Models.Settings;
+using FiveSafesTes.Core.Models.Settings;
 using IdentityModel.Client;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using System.IdentityModel.Tokens.Jwt;
 
 
-namespace BL.Models.Services
+namespace Data_Egress_UI.Helpers
 {
+    /// <summary>
+    /// Refreshes the Keycloak access token in the auth cookie, using the Egress app's own Keycloak client
+    /// (BaseKeyCloakSettings, registered as DataEgressKeyCloakSettings). Kept here because the shared
+    /// FiveSafesTes.Core version reads the Submission app's DareKeyCloakSettings instead.
+    /// </summary>
     public class CustomCookieEvent : CookieAuthenticationEvents
     {
         private readonly BaseKeyCloakSettings _keyCloakSettings;

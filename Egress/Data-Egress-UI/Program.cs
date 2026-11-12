@@ -1,7 +1,7 @@
 using Microsoft.IdentityModel.Logging;
-using BL.Services;
-using BL.Models.Services;
-using BL.Models.Settings;
+using FiveSafesTes.Core.Services;
+using FiveSafesTes.Core.Models.Services;
+using FiveSafesTes.Core.Models.Settings;
 using Serilog;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
@@ -13,7 +13,7 @@ using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.IdentityModel.Tokens;
 using Newtonsoft.Json;
-using BL.Models;
+using FiveSafesTes.Core.Models;
 using Microsoft.AspNetCore.DataProtection;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -64,7 +64,7 @@ try
 
 
 //add services here
-    builder.Services.AddScoped<CustomCookieEvent>();
+    builder.Services.AddScoped<Data_Egress_UI.Helpers.CustomCookieEvent>();
 
     builder.Services.AddScoped<IDataEgressClientHelper, DataEgressClientHelper>();
 
@@ -124,7 +124,7 @@ try
         .AddCookie(o =>
         {
             o.SessionStore = new MemoryCacheTicketStore();
-            o.EventsType = typeof(CustomCookieEvent);
+            o.EventsType = typeof(Data_Egress_UI.Helpers.CustomCookieEvent);
         })
         .AddOpenIdConnect(options =>
         {

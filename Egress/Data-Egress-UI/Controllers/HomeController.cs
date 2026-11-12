@@ -5,8 +5,8 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using System.Diagnostics;
 using Microsoft.AspNetCore.Authentication.OpenIdConnect;
-using BL.Services;
-using BL.Models.APISimpleTypeReturns;
+using FiveSafesTes.Core.Services;
+using FiveSafesTes.Core.Models.APISimpleTypeReturns;
 
 namespace Data_Egress_UI.Controllers
 {

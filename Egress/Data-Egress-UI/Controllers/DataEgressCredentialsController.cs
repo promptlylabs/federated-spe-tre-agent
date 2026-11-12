@@ -1,8 +1,8 @@
-﻿using BL.Models;
-using BL.Services;
+﻿using FiveSafesTes.Core.Models;
+using FiveSafesTes.Core.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
-using BL.Models.APISimpleTypeReturns;
+using FiveSafesTes.Core.Models.APISimpleTypeReturns;
 
 namespace Data_Egress_UI.Controllers
 {

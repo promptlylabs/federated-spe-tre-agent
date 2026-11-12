@@ -101,7 +101,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\BL\BL.csproj" />
+    <ProjectReference Include="..\..\Shared\FiveSafesTes.Core\FiveSafesTes.Core.csproj" />
   </ItemGroup>
 
 </Project>

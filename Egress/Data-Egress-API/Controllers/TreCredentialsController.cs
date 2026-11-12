@@ -1,8 +1,8 @@
 ﻿
-using BL.Models;
-using BL.Models.APISimpleTypeReturns;
-using BL.Models.Settings;
-using BL.Services;
+using FiveSafesTes.Core.Models;
+using FiveSafesTes.Core.Models.APISimpleTypeReturns;
+using FiveSafesTes.Core.Models.Settings;
+using FiveSafesTes.Core.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Serilog;

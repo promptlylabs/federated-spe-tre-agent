@@ -1,10 +1,10 @@
 using System.Reflection;
 using System.Security.Claims;
 using System.Text;
-using BL.Models;
-using BL.Models.Enums;
-using BL.Models.ViewModels;
-using BL.Services;
+using FiveSafesTes.Core.Models;
+using FiveSafesTes.Core.Models.Enums;
+using FiveSafesTes.Core.Models.ViewModels;
+using FiveSafesTes.Core.Services;
 using DARE_Egress.Services;
 using Data_Egress_API.Controllers;
 using Data_Egress_API.Repositories.DbContexts;

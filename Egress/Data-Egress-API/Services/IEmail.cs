@@ -1,4 +1,4 @@
-﻿using BL.Models;
+﻿using FiveSafesTes.Core.Models;
 using NETCore.MailKit.Core;
 using Org.BouncyCastle.Asn1.Crmf;
 

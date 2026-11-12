@@ -1,7 +1,7 @@
 ﻿using Amazon.Runtime.Internal.Transform;
-using BL.Models;
-using BL.Models.Settings;
-using BL.Services;
+using FiveSafesTes.Core.Models;
+using FiveSafesTes.Core.Models.Settings;
+using FiveSafesTes.Core.Services;
 using IdentityModel.Client;
 using Microsoft.AspNetCore.Authentication.Cookies;
 using Microsoft.AspNetCore.Mvc;

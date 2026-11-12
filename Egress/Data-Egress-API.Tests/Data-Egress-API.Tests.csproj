@@ -19,6 +19,7 @@
 
   <ItemGroup>
     <ProjectReference Include="../Data-Egress-API/Data-Egress-API.csproj" />
+    <ProjectReference Include="../../Shared/FiveSafesTes.Core/FiveSafesTes.Core.csproj" />
   </ItemGroup>
 
 </Project>
