@@ -99,6 +99,32 @@ Where the result files are:
 
 Logs: `docker compose -f dev/federated/docker-compose.yml logs -f agent-api` (and `egress-api`, `egress-ui`)
 
+## Demo
+
+`demo.sh` runs three requests through both hospital gates, in plain language, for a recorded or live demo:
+
+1. the hospital checks pass, a reviewer approves the result, and it is released (the answer is shown);
+2. the request asks for a dataset the hospital does not hold, and its checks stop it;
+3. the hospital checks pass, but the reviewer rejects the result, and nothing leaves.
+
+It opens with the three promises the cases prove, and ends with a summary of what left the hospital.
+
+```bash
+cd dev/federated
+./demo.sh                # live: pauses before each case, opens the review page, waits for the reviewer
+./demo.sh --unattended   # no pauses: approves case 1 and rejects case 3 through the Egress API; exit 1 if a case ends unexpectedly
+```
+
+In the live run, approve case 1 and reject case 3 (with a reason) in the Egress app; the script notices the decision on its own and carries on. If the reviewer decides differently, the demo shows what really happened. The demo shows real timing: the Agent picks up new requests once a minute, so a case can wait up to a minute, with a ticking timer, before the hospital checks it.
+
+### Before the demo
+
+1. Start from a clean stack: `docker compose -f dev/federated/docker-compose.yml down -v`, then `up -d --build`, and wait until the seed steps have finished.
+2. Run `./demo.sh --unattended` once to check everything works, then clean the stack again (step 1), so the Egress list shows only the demo's requests.
+3. Log in to the Egress app (http://localhost:5280) as `reviewer` / `Reviewer1!` in the browser you will record, so the first review page does not stop at a login screen.
+4. Arrange the screen: terminal on one side, that browser on the other; large terminal font.
+5. Start recording, then run `./demo.sh`.
+
 ## Checking custodian access (known dev limitation)
 
 Members of the Keycloak group `federated-outputs-read` can read result files through the S3 API with STS. In this stack the tokens say `iss = http://localhost:8180/realms/tre-test`, but RustFS discovers `http://keycloak:8080/realms/tre-test`. STS then fails with "no OIDC provider configured for issuer". To check it anyway, set the issuer by hand. These changes live only in the running Keycloak and are lost when its container is recreated.

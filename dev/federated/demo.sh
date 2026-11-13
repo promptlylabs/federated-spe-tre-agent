@@ -92,19 +92,28 @@ plain_reason() {
 }
 
 # --- the review step --------------------------------------------------------------------------------------------------
-# Unattended: decides through the Egress API as reviewer. $2: 1 approve, 2 reject; $3: reason.
+# Waits for the task's review request. Live: opens it in the browser for the reviewer. Unattended: decides through
+# the Egress API as reviewer ($2: 1 approve, 2 reject; $3: reason). Prints the review page URL.
 review() {
   local id=$1 status=$2 reason=${3:-} row="" start=$SECONDS
   while [ -z "$row" ]; do
     row=$(egress_row_id "$id" 2>/dev/null || true)
     [ -n "$row" ] && break
-    [ $((SECONDS - start)) -ge 60 ] && { stop "The review request did not appear in the Egress app" "task $id"; return 1; }
-    waiting "Waiting for the hospital reviewer…" "registering the result for review"
+    [ $((SECONDS - start)) -ge 60 ] && { stop "The review request did not appear in the Egress app" "task $id" >&2; return 1; }
+    waiting "Waiting for the hospital reviewer…" "registering the result for review" >&2
     sleep 2
   done
-  waiting "Waiting for the hospital reviewer…" "$EGRESS_UI/Data/GetEgress?id=$row"
+  local page="$EGRESS_UI/Data/GetEgress?id=$row"
+  if [ "$MODE" = live ]; then
+    open "$page" >/dev/null 2>&1 || true
+    printf '\r\033[K%s→%s The review page is open in the browser %s%s%s\n' "$C" "$X" "$DIM" "$page" "$X" >&2
+    echo "$page"
+    return 0
+  fi
+  waiting "Waiting for the hospital reviewer…" "$page" >&2
   sleep 2
-  decide "$id" "$status" "$reason" || { stop "The decision could not be sent" "task $id"; return 1; }
+  decide "$id" "$status" "$reason" >&2 || { stop "The decision could not be sent" "task $id" >&2; return 1; }
+  echo "$page"
 }
 
 # --- one case ---------------------------------------------------------------------------------------------------------
@@ -140,8 +149,11 @@ run_case() {
     IFS='|' read -r state step code message <<<"$view"
     if [ "$step" = waiting_for_output_approval ]; then
       ok "Analysis ran inside the hospital" "the researcher sees nothing yet"
-      if [ "$expected" = released ]; then review "$id" 1; else review "$id" 2 "small cells"; fi
-      view=$(wait_while_state "$id" "$ACT_TIMEOUT" "Waiting for the hospital reviewer…" "" PAUSED) || true
+      local page limit=$ACT_TIMEOUT
+      if [ "$expected" = released ]; then page=$(review "$id" 1); else page=$(review "$id" 2 "small cells"); fi
+      # A person decides in live mode: no time limit while waiting for them.
+      [ "$MODE" = live ] && limit=0
+      view=$(wait_while_state "$id" "$limit" "Waiting for the hospital reviewer…" "$page" PAUSED) || true
       IFS='|' read -r state step code message <<<"$view"
     fi
     case "$step" in
@@ -161,9 +173,13 @@ run_case() {
   fi
 
   if has_result "$id"; then left="yes (1 file)"; else left="no"; fi
-  if [ "$outcome" != "$expected" ] || { [ "$expected" = released ] && [ "$left" = no ]; } || \
-     { [ "$expected" != released ] && [ "$left" != no ]; }; then
-    say "   ${R}✗ expected ${expected}, got ${outcome}, result stored: ${left}${X}"
+  # A result is stored only when it was released.
+  if { [ "$outcome" = released ] && [ "$left" = no ]; } || { [ "$outcome" != released ] && [ "$left" != no ]; }; then
+    say "   ${R}✗ result stored: ${left}, but the task ended ${outcome}${X}"
+    FAILURES=$((FAILURES + 1))
+  elif [ "$outcome" != "$expected" ] && [ "$MODE" = unattended ]; then
+    # Live: the reviewer may decide differently; the demo reports what really happened.
+    say "   ${R}✗ expected ${expected}, got ${outcome}${X}"
     FAILURES=$((FAILURES + 1))
   fi
   SUMMARY+=("$n|$title|$decision|$left")
