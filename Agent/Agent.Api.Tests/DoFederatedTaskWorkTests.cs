@@ -133,6 +133,8 @@ public class DoFederatedTaskWorkTests
 
         public HashSet<string> Withdrawn { get; } = new();
 
+        public Task<bool> IsWithdrawnAsync(string taskId, CancellationToken ct) => Task.FromResult(Withdrawn.Contains(taskId));
+
         public Task WithdrawAsync(string taskId, string reason, CancellationToken ct)
         {
             Withdrawn.Add(taskId);
@@ -1199,6 +1201,26 @@ public class DoFederatedTaskWorkTests
         }
         Assert.Empty(client.ProgressCalls);
         Assert.Empty(outputs.Released);
+    }
+
+    [Fact]
+    public async Task Withdrawn_pending_review_is_reported_failed_and_not_registered_again()
+    {
+        // Registration gave up and withdrew the review, but the failure report did not get through.
+        var client = OneMean();
+        client.Pending[0].State = TesState.RUNNINGEnum;
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false }
+            .Preset(T1, OutputReview.Pending(ShaOf(outputs.Files[T1]), Now.AddDays(-2)));
+        approval.Withdrawn.Add(T1);
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+
+        var call = Assert.Single(client.Calls);
+        Assert.Equal(TesState.SYSTEMERROREnum, call.Report.State);
+        Assert.Equal("internal_error", call.Report.ErrorCode);
+        Assert.Equal(0, approval.RegisterCalls);
+        Assert.Empty(client.ProgressCalls);
     }
 
     [Fact]

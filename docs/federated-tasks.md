@@ -224,7 +224,7 @@ The bucket has no conditional write, so the poll and the Egress decision never w
 
 Once a result has a review record, it is never computed again. If the saved result is gone, a rejection is still reported as a rejection, and anything else as `result_changed_after_review`.
 
-Withdrawing. If the saved result changes or disappears while its review is still pending, or its registration gives up, the Agent first writes an empty object `federated-outputs/<taskId>.withdrawn`, then asks the Egress app to close the request (`POST /api/DataEgress/WithdrawEgress` with the task ID and a reason), then reports `result_changed_after_review`. A closed request leaves the reviewers' queue and cannot be decided; its page shows the reason. If the Egress app cannot be reached, the task still fails: the marker makes `EgressResults` refuse any later decision with 409, and the review record stays pending.
+Withdrawing. If the saved result changes or disappears while its review is still pending, or its registration gives up, the Agent first writes an empty object `federated-outputs/<taskId>.withdrawn`, then asks the Egress app to close the request (`POST /api/DataEgress/WithdrawEgress` with the task ID and a reason), then reports the failure: `result_changed_after_review` when the result changed, `internal_error` when registration gave up. If that report does not get through, the next poll reports it again; a withdrawn review is never registered again. A closed request leaves the reviewers' queue and cannot be decided; its page shows the reason. If the Egress app cannot be reached, the task still fails: the marker makes `EgressResults` refuse any later decision with 409, and the review record stays pending.
 
 ## The federated TES profile
 

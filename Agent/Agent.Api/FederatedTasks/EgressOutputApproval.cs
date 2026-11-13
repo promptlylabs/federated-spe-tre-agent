@@ -23,6 +23,8 @@ namespace Agent.Api.FederatedTasks
 
         public Task<bool> IsRegisteredAsync(string taskId, CancellationToken ct) => _store.IsRegisteredAsync(taskId, ct);
 
+        public Task<bool> IsWithdrawnAsync(string taskId, CancellationToken ct) => _store.IsWithdrawnAsync(taskId, ct);
+
         public async Task<OutputReview> RegisterAsync(EgressRegistration r, CancellationToken ct)
         {
             var existing = await _store.GetAsync(r.TaskId, ct);

@@ -30,6 +30,9 @@ namespace Agent.Api.FederatedTasks
         /// </summary>
         Task<bool> IsRegisteredAsync(string taskId, CancellationToken ct);
 
+        /// <summary>True when the task failed while its review was pending, so no decision is accepted.</summary>
+        Task<bool> IsWithdrawnAsync(string taskId, CancellationToken ct);
+
         Task<OutputReview> RegisterAsync(EgressRegistration r, CancellationToken ct);
         Task<DecisionOutcome> RecordDecisionAsync(string taskId, ReviewDecision d, CancellationToken ct);
 

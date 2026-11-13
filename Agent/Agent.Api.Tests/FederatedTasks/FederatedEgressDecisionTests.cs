@@ -29,6 +29,9 @@ public class FederatedEgressDecisionTests
         public Task<bool> IsRegisteredAsync(string taskId, CancellationToken ct) =>
             throw new NotSupportedException();
 
+        public Task<bool> IsWithdrawnAsync(string taskId, CancellationToken ct) =>
+            throw new NotSupportedException();
+
         public Task<OutputReview> RegisterAsync(EgressRegistration r, CancellationToken ct) =>
             throw new NotSupportedException();
 

@@ -256,6 +256,15 @@ namespace Agent.Api
             // again. A decided review came from the Egress app, so it needs no marker.
             if (review == null || (review.IsPending && !await _approval.IsRegisteredAsync(storeKey, CancellationToken.None)))
             {
+                // A review withdrawn earlier (registration gave up, but reporting the failure did not get through) is
+                // never registered again: no decision would be accepted, so the task would wait for good.
+                if (review is { IsPending: true } && await _approval.IsWithdrawnAsync(storeKey, CancellationToken.None))
+                {
+                    Log.Error("Federated tasks: the review of task {TaskId} was withdrawn; reporting the task as failed", taskId);
+                    await ReportErrorAsync(InternalError(taskId, null));
+                    return Hold.None;
+                }
+
                 if (!_egress.IsConfigured) return Hold.Egress;
                 // The pending record is written before the first attempt, so its time is when the result was first
                 // sent for review.
@@ -566,9 +575,9 @@ namespace Agent.Api
         /// The dataset reader lets store failures propagate; they are reported rather than failing the whole poll.
         /// The exception can name buckets, endpoints or hosts, so it stays in the TRE's own log.
         /// </summary>
-        private static FederatedTaskResultReport InternalError(string taskId, Exception ex)
+        private static FederatedTaskResultReport InternalError(string taskId, Exception? ex)
         {
-            Log.Error(ex, "Federated tasks: task {TaskId} failed unexpectedly", taskId);
+            if (ex != null) Log.Error(ex, "Federated tasks: task {TaskId} failed unexpectedly", taskId);
             return new FederatedTaskResultReport
             {
                 TaskId = taskId,
