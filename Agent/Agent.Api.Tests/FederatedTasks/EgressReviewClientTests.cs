@@ -45,27 +45,28 @@ public class EgressReviewClientTests
         public HttpClient CreateClient(string name) => new(_handler, disposeHandler: false);
     }
 
-    private sealed class FixedMonitor : IOptionsMonitor<DataEgressKeyCloakSettings>
+    private sealed class FixedMonitor : IOptionsMonitor<FederatedEgressSettings>
     {
-        public FixedMonitor(DataEgressKeyCloakSettings value) => CurrentValue = value;
-        public DataEgressKeyCloakSettings CurrentValue { get; }
-        public DataEgressKeyCloakSettings Get(string? name) => CurrentValue;
-        public IDisposable? OnChange(Action<DataEgressKeyCloakSettings, string?> listener) => null;
+        public FixedMonitor(FederatedEgressSettings value) => CurrentValue = value;
+        public FederatedEgressSettings CurrentValue { get; }
+        public FederatedEgressSettings Get(string? name) => CurrentValue;
+        public IDisposable? OnChange(Action<FederatedEgressSettings, string?> listener) => null;
     }
 
     /// <summary>Skips Keycloak: the token call is the only part not under test here.</summary>
     private sealed class TestClient : EgressReviewClient
     {
-        public TestClient(IHttpClientFactory f, IOptionsMonitor<DataEgressKeyCloakSettings> k, IOptions<ApiEndpointSettings> e)
+        public TestClient(IHttpClientFactory f, IOptionsMonitor<FederatedEgressSettings> k, IOptions<ApiEndpointSettings> e)
             : base(f, k, e, new ConfigurationBuilder().Build()) { }
 
         protected override Task<string> GetTokenAsync() => Task.FromResult("fake-token");
     }
 
-    private static EgressReviewClient Client(StubHandler handler, string clientId = "agent", string clientSecret = "secret") =>
+    private static EgressReviewClient Client(StubHandler handler, string clientId = "agent", string clientSecret = "secret",
+        string baseUrl = "http://keycloak/realms/Data-Egress") =>
         new TestClient(
             new Factory(handler),
-            new FixedMonitor(new DataEgressKeyCloakSettings { ClientId = clientId, ClientSecret = clientSecret }),
+            new FixedMonitor(new FederatedEgressSettings { BaseUrl = baseUrl, ClientId = clientId, ClientSecret = clientSecret }),
             Options.Create(new ApiEndpointSettings { EgressApiUrl = "http://egress" }));
 
     private static EgressRegistration Registration() =>
@@ -135,11 +136,28 @@ public class EgressReviewClientTests
     }
 
     [Theory]
-    [InlineData("agent", "secret", true)]
-    [InlineData("", "secret", false)]
-    [InlineData("agent", "", false)]
-    public void Client_is_configured_only_with_id_and_secret(string id, string secret, bool expected)
+    [InlineData("agent", "secret", "http://keycloak/realms/Data-Egress", true)]
+    [InlineData("", "secret", "http://keycloak/realms/Data-Egress", false)]
+    [InlineData("agent", "", "http://keycloak/realms/Data-Egress", false)]
+    [InlineData("agent", "secret", "", false)]
+    public void Client_is_configured_only_with_base_url_id_and_secret(string id, string secret, string baseUrl, bool expected)
     {
-        Assert.Equal(expected, Client(new StubHandler(HttpStatusCode.OK, ""), id, secret).IsConfigured);
+        Assert.Equal(expected, Client(new StubHandler(HttpStatusCode.OK, ""), id, secret, baseUrl).IsConfigured);
+    }
+
+    [Fact]
+    public void Native_egress_settings_do_not_configure_the_federated_client()
+    {
+        // The shipped appsettings fill DataEgressKeyCloakSettings for native egress; that section is not read here.
+        var config = new ConfigurationBuilder().AddInMemoryCollection(new Dictionary<string, string?>
+        {
+            ["DataEgressKeyCloakSettings:BaseUrl"] = "https://auth2.ukserp.ac.uk/realms/Data-Egress",
+            ["DataEgressKeyCloakSettings:ClientId"] = "Data-Egress-API",
+            ["DataEgressKeyCloakSettings:ClientSecret"] = "shipped",
+        }).Build();
+        var settings = new FederatedEgressSettings();
+        config.GetSection(FederatedEgressSettings.SectionName).Bind(settings);
+
+        Assert.False(settings.IsComplete);
     }
 }

@@ -158,13 +158,14 @@ services:
       TreKeyCloakSettings__MetadataAddress: http://keycloak:8080/realms/tre-test/.well-known/openid-configuration
       TreKeyCloakSettings__ValidAudiences: Dare-TRE-API,Dare-TRE-UI
       # Output approval: the Agent registers each result with the Egress app as the service account of client
-      # tre-agent (realm Data-Egress, role dare-tre-admin), then acts on the reviewer's decision at the next poll.
+      # tre-agent (realm Data-Egress, role dare-tre-admin), then acts on the reviewer's decision as soon as it arrives.
       ApiEndpoints__EgressApiUrl: http://egress-api:8080
       DataEgressKeyCloakSettings__Authority: http://localhost:8180/realms/Data-Egress
       DataEgressKeyCloakSettings__MetadataAddress: http://keycloak:8080/realms/Data-Egress/.well-known/openid-configuration
-      DataEgressKeyCloakSettings__BaseUrl: http://keycloak:8080/realms/Data-Egress
-      DataEgressKeyCloakSettings__ClientId: tre-agent
-      DataEgressKeyCloakSettings__ClientSecret: dev-tre-agent-egress-secret
+      # The Agent's service account in the Egress realm, used to register results for review.
+      FederatedEgressSettings__BaseUrl: http://keycloak:8080/realms/Data-Egress
+      FederatedEgressSettings__ClientId: tre-agent
+      FederatedEgressSettings__ClientSecret: dev-tre-agent-egress-secret
       # Admin key: the Agent creates the dataset bucket and the dataset-upload policy at startup.
       MinioTRESettings__Url: http://rustfs:9000
       MinioTRESettings__AccessKey: rustfsadmin

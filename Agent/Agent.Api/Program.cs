@@ -106,6 +106,8 @@ treKeyCloakSettings.KeycloakDemoMode =
   configuration.GetValue<bool>("KeycloakDemoMode");
 builder.Services.AddKeycloakSettings<DataEgressKeyCloakSettings>(
   configuration, "DataEgressKeyCloakSettings");
+builder.Services.AddKeycloakSettings<FederatedEgressSettings>(
+  configuration, FederatedEgressSettings.SectionName);
 
 builder.Services.AddKeycloakSettings<SubmissionKeyCloakSettings>(
   configuration, "SubmissionKeyCloakSettings");

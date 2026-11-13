@@ -107,7 +107,7 @@ namespace Agent.Api
                 Log.Error("Federated tasks: FederatedTaskSettings:ApprovedImages is not configured; {Count} task(s) were not checked or run and keep their step",
                     held);
             if (heldForEgress > 0)
-                Log.Error("Federated tasks: DataEgressKeyCloakSettings ClientId/ClientSecret are not configured; {Count} result(s) are held for output approval and not released",
+                Log.Error("Federated tasks: FederatedEgressSettings BaseUrl/ClientId/ClientSecret are not configured; {Count} result(s) are held for output approval and not released",
                     heldForEgress);
         }
 

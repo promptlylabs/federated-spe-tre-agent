@@ -1567,7 +1567,7 @@ public class DoFederatedTaskWorkTests
             client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
             client.Pending.Add(PendingTask(T2, "cohort_2024", "count", null));
 
-            var events = await Logged("DataEgressKeyCloakSettings", () =>
+            var events = await Logged("FederatedEgressSettings", () =>
                 Work(client, Reader(), approval: new FakeOutputApproval { AutoApprove = false },
                     egress: new FakeEgressClient { IsConfigured = false }).Execute());
 

@@ -18,13 +18,13 @@ namespace Agent.Api.FederatedTasks
         private const string Endpoint = "/api/DataEgress/AddNewDataEgress/";
 
         private readonly IHttpClientFactory _httpClientFactory;
-        private readonly IOptionsMonitor<DataEgressKeyCloakSettings> _keycloak;
+        private readonly IOptionsMonitor<FederatedEgressSettings> _keycloak;
         private readonly ApiEndpointSettings _endpoints;
         private readonly IConfiguration _config;
 
         public EgressReviewClient(
             IHttpClientFactory httpClientFactory,
-            IOptionsMonitor<DataEgressKeyCloakSettings> keycloak,
+            IOptionsMonitor<FederatedEgressSettings> keycloak,
             IOptions<ApiEndpointSettings> endpoints,
             IConfiguration config)
         {
@@ -36,11 +36,7 @@ namespace Agent.Api.FederatedTasks
 
         public bool IsConfigured
         {
-            get
-            {
-                var s = _keycloak.CurrentValue;
-                return !string.IsNullOrEmpty(s.ClientId) && !string.IsNullOrEmpty(s.ClientSecret);
-            }
+            get { return _keycloak.CurrentValue.IsComplete; }
         }
 
         public async Task RegisterAsync(EgressRegistration r, CancellationToken ct)
