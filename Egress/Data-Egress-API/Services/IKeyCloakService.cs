@@ -77,9 +77,10 @@ namespace Data_Egress_API.Services
            
             var response = await client.GetAsync(url);
             var content = await response.Content.ReadAsStringAsync();
-            Log.Information(" GetUserIdAsync content >" + content);
-  
+            // The body lists every reviewer's id and email: log only the status and the count.
             var uers = JsonConvert.DeserializeObject<List<User>>(content).Where(x => _EmailSettings.EmailsToIgnor.Contains( x.email) == false ).Select(x => x.email).ToList();
+            Log.Information("{Function} Role {Role} users: HTTP {Status}, {Count} to email", "GetEmailsOfAccountWithRole",
+                role, (int)response.StatusCode, uers.Count);
 
             return uers;
         }
@@ -123,7 +124,8 @@ namespace Data_Egress_API.Services
 
 
             var content = await response.Content.ReadAsStringAsync();
-            Log.Information(" GetAccessTokenAsync content >" + content);
+            // The body holds the admin access and refresh tokens: never log it.
+            Log.Information("{Function} Token endpoint answered HTTP {Status}", "GetAccessTokenAsync", (int)response.StatusCode);
             var token = JsonConvert.DeserializeObject<TokenResponse>(content);
             return token;
         }
@@ -145,7 +147,7 @@ namespace Data_Egress_API.Services
             client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", accessToken);
             var response = await client.GetAsync(url);
             var content = await response.Content.ReadAsStringAsync();
-            Log.Information(" GetUserIdAsync content >" + content);
+            Log.Information("{Function} Users lookup answered HTTP {Status}", "GetUserIdAsync", (int)response.StatusCode);
             var users = JsonConvert.DeserializeObject<List<User>>(content);
             return users.Count > 0 ? users[0].Id : null;
         }
