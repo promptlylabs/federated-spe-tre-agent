@@ -1,7 +1,7 @@
 
 # Contributions
 - Use the **Issues** page for any Bug reports and feature requests.
-- All code contributions must pass the SonarQube Quality Gate and scan.
+- All code contributions must pass the pull request checks: the PR title lint (conventional commits, `.github/commitlint.config.mjs`) and the code scans.
 - Contributions are reviewed by the University of Nottingham Centre for 
 Health Informatics and Swansea University Medical School developer team
 before they are approved and merged into the codebase.

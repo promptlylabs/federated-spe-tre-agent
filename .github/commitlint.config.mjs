@@ -9,7 +9,9 @@ export default {
         'deps',
         'helm',
         'ui',
-        'api'
+        'api',
+        'federated',
+        'egress'
     ]],
     'subject-case': [RuleConfigSeverity.Error, 'never', []],
   }
