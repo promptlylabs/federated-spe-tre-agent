@@ -255,7 +255,25 @@ namespace Agent.Api
             if (review == null || (review.IsPending && !await _approval.IsRegisteredAsync(storeKey, CancellationToken.None)))
             {
                 if (!_egress.IsConfigured) return Hold.Egress;
-                review = await _approval.RegisterAsync(Registration(task, storeKey, bytes, sha), CancellationToken.None);
+                // The pending record is written before the first attempt, so its time is when the result was first
+                // sent for review.
+                var firstSentAt = review?.StartTime ?? _clock.GetUtcNow();
+                try
+                {
+                    review = await _approval.RegisterAsync(Registration(task, storeKey, bytes, sha), CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    if (!HasWaitedTooLong(firstSentAt, _settings.EgressUnreachableGiveUpMinutes))
+                    {
+                        Log.Warning(ex, "Federated tasks: the result of task {TaskId} could not be registered with the Egress app; it keeps its step and is tried again at the next poll",
+                            taskId);
+                        return Hold.None;
+                    }
+
+                    await ReportErrorAsync(InternalError(taskId, ex));
+                    return Hold.None;
+                }
             }
 
             if (review.IsPending)
@@ -554,8 +572,14 @@ namespace Agent.Api
 
             // Count from the later of enqueue and Agent start. A task held while ApprovedImages was missing (setting it
             // means a restart), or queued while the Agent was down, gets the full window once this Agent can try it.
-            var since = created > _startedAt.Value ? created : _startedAt.Value;
-            return _clock.GetUtcNow() - since >= TimeSpan.FromMinutes(_settings.DatasetUnreachableGiveUpMinutes);
+            return HasWaitedTooLong(created, _settings.DatasetUnreachableGiveUpMinutes);
+        }
+
+        /// <summary>True when the given minutes have passed since the later of <paramref name="start"/> and Agent start.</summary>
+        private bool HasWaitedTooLong(DateTimeOffset start, int giveUpMinutes)
+        {
+            var since = start > _startedAt.Value ? start : _startedAt.Value;
+            return _clock.GetUtcNow() - since >= TimeSpan.FromMinutes(giveUpMinutes);
         }
 
         /// <summary>A 409 that says the task is already final on Submission; task_busy means "send it again".</summary>

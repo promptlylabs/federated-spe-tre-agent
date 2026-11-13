@@ -1144,6 +1144,63 @@ public class DoFederatedTaskWorkTests
         Assert.True(outputs.Files.ContainsKey(T1));
     }
 
+    [Theory]
+    [InlineData(23 * 60, false)]   // first sent for review 23 hours ago: still an outage
+    [InlineData(25 * 60, true)]    // 25 hours ago: past the one-day default
+    public async Task Registration_failing_since_the_result_was_first_sent_gives_up_after_the_limit(int minutesAgo, bool givesUp)
+    {
+        var client = OneMean();
+        client.Pending[0].State = TesState.RUNNINGEnum;
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false, ThrowOnRegister = true }
+            .Preset(T1, OutputReview.Pending(ShaOf(outputs.Files[T1]), Now.AddMinutes(-minutesAgo)));
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval, startedAt: Now.AddDays(-3)).Execute();
+
+        if (givesUp)
+        {
+            var call = Assert.Single(client.Calls);
+            Assert.Equal(TesState.SYSTEMERROREnum, call.Report.State);
+            Assert.Equal("internal_error", call.Report.ErrorCode);
+            Assert.Null(call.Bytes);
+        }
+        else
+        {
+            Assert.Empty(client.Calls);
+        }
+        Assert.Empty(client.ProgressCalls);
+        Assert.Empty(outputs.Released);
+    }
+
+    [Fact]
+    public async Task Registration_failure_limit_counts_from_agent_start_when_that_is_later()
+    {
+        var client = OneMean();
+        client.Pending[0].State = TesState.RUNNINGEnum;
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false, ThrowOnRegister = true }
+            .Preset(T1, OutputReview.Pending(ShaOf(outputs.Files[T1]), Now.AddDays(-3)));
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval, startedAt: Now.AddHours(-1)).Execute();
+
+        Assert.Empty(client.Calls);
+    }
+
+    [Fact]
+    public async Task Registration_failure_with_a_zero_limit_gives_up_at_once()
+    {
+        var client = OneMean();
+        var outputs = new FakeResultOutputStore();
+        var approval = new FakeOutputApproval { AutoApprove = false, ThrowOnRegister = true };
+        var settings = Approving(FederatedTesProfile.ExecutorImage);
+        settings.EgressUnreachableGiveUpMinutes = 0;
+
+        await Work(client, Reader(), outputs: outputs, approval: approval, settings: settings, startedAt: Now.AddDays(-1)).Execute();
+
+        var call = Assert.Single(client.Calls);
+        Assert.Equal("internal_error", call.Report.ErrorCode);
+    }
+
     [Fact]
     public async Task Execute_running_report_network_failure_leaves_task_for_next_poll()
     {

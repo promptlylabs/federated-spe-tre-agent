@@ -59,7 +59,13 @@ public class EgressReviewClientTests
         public TestClient(IHttpClientFactory f, IOptionsMonitor<FederatedEgressSettings> k, IOptions<ApiEndpointSettings> e)
             : base(f, k, e, new ConfigurationBuilder().Build()) { }
 
-        protected override Task<string> GetTokenAsync() => Task.FromResult("fake-token");
+        public int TokenCalls { get; private set; }
+
+        protected override Task<string> GetTokenAsync()
+        {
+            TokenCalls++;
+            return Task.FromResult("fake-token");
+        }
     }
 
     private static EgressReviewClient Client(StubHandler handler, string clientId = "agent", string clientSecret = "secret",
@@ -143,6 +149,18 @@ public class EgressReviewClientTests
     public void Client_is_configured_only_with_base_url_id_and_secret(string id, string secret, string baseUrl, bool expected)
     {
         Assert.Equal(expected, Client(new StubHandler(HttpStatusCode.OK, ""), id, secret, baseUrl).IsConfigured);
+    }
+
+    [Fact]
+    public async Task Client_fetches_one_token_for_several_registrations()
+    {
+        var client = (TestClient)Client(new StubHandler(HttpStatusCode.OK, "{\"Result\":true}"));
+
+        await client.RegisterAsync(Registration(), CancellationToken.None);
+        await client.RegisterAsync(Registration(), CancellationToken.None);
+        await client.RegisterAsync(Registration(), CancellationToken.None);
+
+        Assert.Equal(1, client.TokenCalls);
     }
 
     [Fact]

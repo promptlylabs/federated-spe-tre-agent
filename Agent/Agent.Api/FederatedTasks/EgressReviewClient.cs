@@ -22,6 +22,12 @@ namespace Agent.Api.FederatedTasks
         private readonly ApiEndpointSettings _endpoints;
         private readonly IConfiguration _config;
 
+        // One instance serves one poll (it is scoped), so the token is fetched once and reused for every registration
+        // in that poll, but never for longer than a minute: well inside a Keycloak access token's lifetime.
+        private static readonly TimeSpan TokenReuse = TimeSpan.FromMinutes(1);
+        private string? _token;
+        private DateTime _tokenFetchedAt;
+
         public EgressReviewClient(
             IHttpClientFactory httpClientFactory,
             IOptionsMonitor<FederatedEgressSettings> keycloak,
@@ -60,11 +66,22 @@ namespace Agent.Api.FederatedTasks
             {
                 Content = new StringContent(JsonConvert.SerializeObject(submission), Encoding.UTF8, "application/json")
             };
-            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await GetTokenAsync());
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await GetCachedTokenAsync());
 
             using var response = await _httpClientFactory.CreateClient().SendAsync(request, ct);
             // The body is BoolReturn; Result = false means the row already exists, which is also success.
             response.EnsureSuccessStatusCode();
+        }
+
+        private async Task<string> GetCachedTokenAsync()
+        {
+            if (_token == null || DateTime.UtcNow - _tokenFetchedAt >= TokenReuse)
+            {
+                _token = await GetTokenAsync();
+                _tokenFetchedAt = DateTime.UtcNow;
+            }
+
+            return _token;
         }
 
         protected virtual async Task<string> GetTokenAsync()

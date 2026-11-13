@@ -186,7 +186,7 @@ TODO: re-tag released TRE copies that have no `released-key` (follow-up ticket).
 
 Every computed result is reviewed at the hospital before it leaves the TRE. The review happens in the Data Egress app (`Egress/`, forked from Swansea's DARE-Control). Native 5S-TES outputs are reviewed in the same app.
 
-Registering. After the Agent saves the result, it writes the review record (below) as pending, then calls the Egress API's `POST /api/DataEgress/AddNewDataEgress` with the task ID as `SubmissionId`, the kind `federated`, the study ID, the image and command, the result bytes and their SHA-256. The Egress app keeps its own copy of the bytes, so the reviewer reads exactly what was registered, and the Egress app needs no access to `federated-outputs`. It refuses the registration (400) if the SHA-256 is not the hash of that UTF-8 text. A second registration of the same task is accepted as already done. Then the Agent writes the registration marker (below) and reports `waiting_for_output_approval`. If a step fails, the task keeps its step and the next poll goes on from where it stopped.
+Registering. After the Agent saves the result, it writes the review record (below) as pending, then calls the Egress API's `POST /api/DataEgress/AddNewDataEgress` with the task ID as `SubmissionId`, the kind `federated`, the study ID, the image and command, the result bytes and their SHA-256. The Egress app keeps its own copy of the bytes, so the reviewer reads exactly what was registered, and the Egress app needs no access to `federated-outputs`. It refuses the registration (400) if the SHA-256 is not the hash of that UTF-8 text. A second registration of the same task is accepted as already done. Then the Agent writes the registration marker (below) and reports `waiting_for_output_approval`. If a step fails, the task keeps its step and the next poll goes on from where it stopped. If the registration keeps failing (the Egress app is down, unreachable or refuses it) for `EgressUnreachableGiveUpMinutes` (default 1440, one day) since the result was first sent for review, or since the Agent started if that is later, the task fails with `SYSTEM_ERROR` and `internal_error`. Each poll fetches one token for all its registrations.
 
 The Agent calls the Egress API with a client-credentials token of its own Keycloak client in the Egress realm (`FederatedEgressSettings:BaseUrl`, `ClientId` and `ClientSecret`; the service account has the role `dare-tre-admin`), at `ApiEndpoints:EgressApiUrl`. This section is separate from `DataEgressKeyCloakSettings`, which native egress uses, and has no defaults. If any of the three is not set, the Agent does not register the result. It logs an error once per poll and the task keeps its step.
 
@@ -403,6 +403,7 @@ Agent.Api creates the buckets and policies at startup. Settings are in the `Fede
 | `OutputBucket` | `federated-outputs` |
 | `OutputReadPolicyName` | `federated-outputs-read` |
 | `DatasetUnreachableGiveUpMinutes` | `60` |
+| `EgressUnreachableGiveUpMinutes` | `1440` |
 
 `AllowedExtensions` sets only which files the upload policy accepts. A list you configure replaces the default. The Agent reads only `.csv` files, whatever this setting holds.
 
