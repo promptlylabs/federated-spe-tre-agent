@@ -17,26 +17,40 @@ public class FederatedTaskTests
         {
             Executors = [new TesExecutor { Image = "tre", Command = ["mean", "age"] }]
         };
-        return new FederatedTask
+        return In(new FederatedTask
         {
             TaskId = TaskId,
             StudyId = "study",
             Operation = "mean",
             Dataset = "cohort",
             TesTaskJson = JsonConvert.SerializeObject(tes),
-            State = state,
             SubmittedAt = Submitted
+        }, state);
+    }
+
+    private static FederatedTask In(FederatedTask task, TesState state)
+    {
+        task.State = state;
+        task.Step = state switch
+        {
+            TesState.COMPLETEEnum => FederatedTaskStep.Released,
+            TesState.EXECUTORERROREnum or TesState.SYSTEMERROREnum => FederatedTaskStep.Failed,
+            _ => FederatedTaskStep.Queued
         };
+        return task;
     }
 
     [Fact]
-    public void ToTesTask_Queued_HasNoLogs()
+    public void ToTesTask_Queued_HasOnlyStepMetadata()
     {
         var task = Make(TesState.QUEUEDEnum).ToTesTask();
 
         Assert.Equal(TaskId.ToString(), task.Id);
         Assert.Equal(TesState.QUEUEDEnum, task.State);
-        Assert.Null(task.Logs);
+        var log = Assert.Single(task.Logs!);
+        Assert.Equal(["step"], log.Metadata!.Keys.ToArray());
+        Assert.Equal("queued", log.Metadata["step"]);
+        Assert.Null(log.EndTime);
         Assert.Equal(new DateTimeOffset(Submitted, TimeSpan.Zero), task.CreationTime);
         Assert.Equal(["mean", "age"], task.Executors![0].Command);
     }
@@ -56,7 +70,7 @@ public class FederatedTaskTests
         Assert.Equal("1/key.json", log.Metadata["result_key"]);
         Assert.Equal(new string('a', 64), log.Metadata["result_sha256"]);
         Assert.False(log.Metadata.ContainsKey("value"));
-        Assert.Equal(new DateTimeOffset(Completed, TimeSpan.Zero), log.EndTime);
+        Assert.Equal("released", log.Metadata["step"]);
     }
 
     [Fact]

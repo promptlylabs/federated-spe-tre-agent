@@ -32,6 +32,11 @@ namespace Submission.Api.Tests
         private static ApplicationDbContext OpenDb(string name) =>
             new(new DbContextOptionsBuilder<ApplicationDbContext>().UseInMemoryDatabase(name).Options);
 
+        // A context with a materialization interceptor gets its own EF service provider, and so its own in-memory
+        // store, unless every context names the same root.
+        private static ApplicationDbContext OpenDb(string name, Microsoft.EntityFrameworkCore.Storage.InMemoryDatabaseRoot root) =>
+            new(new DbContextOptionsBuilder<ApplicationDbContext>().UseInMemoryDatabase(name, root).Options);
+
         private static Tre NewTre(int id, string name, string admin, string clientId) => new()
         {
             Id = id,
@@ -95,6 +100,12 @@ namespace Submission.Api.Tests
                 Dataset = "cohort_2024",
                 TesTaskJson = JsonConvert.SerializeObject(task ?? MeanTask()),
                 State = state,
+                Step = state switch
+                {
+                    TesState.COMPLETEEnum => FederatedTaskStep.Released,
+                    TesState.EXECUTORERROREnum or TesState.SYSTEMERROREnum => FederatedTaskStep.Failed,
+                    _ => FederatedTaskStep.Queued
+                },
                 SubmittedAt = DateTime.UtcNow
             };
             db.FederatedTasks.Add(entity);
@@ -117,6 +128,54 @@ namespace Submission.Api.Tests
             Assert.Equal(1, row.TreId);
             Assert.Equal("tre-a", row.TreName);
             Assert.Equal("cohort_2024", row.Dataset);
+        }
+
+        [Fact]
+        public async Task Enqueue_records_queued_step()
+        {
+            using var db = NewDb();
+            await ControllerFor(db, "dare-admin").Enqueue(MeanTask());
+
+            var row = db.FederatedTasks.Include(x => x.StepChanges).Single();
+            Assert.Equal(FederatedTaskStep.Queued, row.Step);
+            var change = Assert.Single(row.StepChanges);
+            Assert.Equal(FederatedTaskStep.Queued, change.Step);
+            Assert.Equal(row.SubmittedAt, change.At);
+        }
+
+        [Fact]
+        public async Task GetTask_queued_task_shows_step_and_queued_at()
+        {
+            using var db = NewDb();
+            await ControllerFor(db, "dare-admin").Enqueue(MeanTask());
+            var id = db.FederatedTasks.Single().TaskId;
+
+            var task = await GetTask(db, id);
+
+            Assert.Equal(TesState.QUEUEDEnum, task.State);
+            var metadata = Assert.Single(task.Logs).Metadata;
+            Assert.Equal("queued", metadata["step"]);
+            Assert.True(metadata.ContainsKey("queued_at"));
+        }
+
+        [Fact]
+        public async Task GetTask_backfilled_task_has_no_running_time()
+        {
+            using var db = NewDb();
+            var seeded = SeedTask(db, 1, TesState.COMPLETEEnum);
+            var queuedAt = new DateTime(2026, 11, 1, 10, 0, 0, DateTimeKind.Utc);
+            var releasedAt = queuedAt.AddMinutes(5);
+            seeded.Step = FederatedTaskStep.Released;
+            seeded.StepChanges.Add(new FederatedTaskStepChange { Step = FederatedTaskStep.Queued, At = queuedAt });
+            seeded.StepChanges.Add(new FederatedTaskStepChange { Step = FederatedTaskStep.Released, At = releasedAt });
+            db.SaveChanges();
+
+            var task = await GetTask(db, seeded.TaskId);
+
+            var log = Assert.Single(task.Logs);
+            Assert.False(log.Metadata.ContainsKey("running_at"));
+            Assert.Null(log.StartTime);
+            Assert.Equal(new DateTimeOffset(releasedAt, TimeSpan.Zero), log.EndTime);
         }
 
         [Fact]
@@ -198,7 +257,9 @@ namespace Submission.Api.Tests
             var pending = Assert.IsType<OkObjectResult>(
                 await AgentControllerFor(db, "tre-a-client").GetPendingTasksForTre());
             var returned = Assert.Single(Assert.IsType<List<TesTask>>(pending.Value));
-            Assert.Null(returned.Logs);
+            var metadata = Assert.Single(returned.Logs!).Metadata;
+            Assert.DoesNotContain("value", metadata.Keys);
+            Assert.Equal("queued", metadata["step"]);
             Assert.Equal(TesState.QUEUEDEnum, returned.State);
             Assert.NotEqual("spoofed", returned.Id);
         }
@@ -325,7 +386,8 @@ namespace Submission.Api.Tests
                 State = fields.GetValueOrDefault(FederatedReportFields.State),
                 ErrorCode = fields.GetValueOrDefault(FederatedReportFields.ErrorCode),
                 ErrorMessage = fields.GetValueOrDefault(FederatedReportFields.ErrorMessage),
-                DatasetSha256 = fields.GetValueOrDefault(FederatedReportFields.DatasetSha256)
+                DatasetSha256 = fields.GetValueOrDefault(FederatedReportFields.DatasetSha256),
+                RejectedAt = fields.GetValueOrDefault(FederatedReportFields.RejectedAt)
             };
             return controller.ReportResult(form);
         }
@@ -933,6 +995,492 @@ namespace Submission.Api.Tests
                 new FederatedApiError { ErrorCode = "task_not_found", ErrorMessage = "task not found" }, settings);
 
             Assert.Equal("{\"error_code\":\"task_not_found\",\"error_message\":\"task not found\"}", json);
+        }
+
+        private static FederatedTask SeedAtStep(ApplicationDbContext db, FederatedTaskStep step, int treId = 1, DateTime? submittedAt = null)
+        {
+            var task = SeedTask(db, treId, TesState.QUEUEDEnum);
+            task.SubmittedAt = submittedAt ?? task.SubmittedAt;
+            task.MoveTo(FederatedTaskStep.Queued, task.SubmittedAt);
+            if (step != FederatedTaskStep.Queued)
+            {
+                task.MoveTo(step, task.SubmittedAt.AddSeconds(1));
+            }
+            db.SaveChanges();
+            return task;
+        }
+
+        private static FederatedTask Reload(ApplicationDbContext db, Guid id) =>
+            db.FederatedTasks.AsNoTracking().Include(x => x.StepChanges).Single(x => x.TaskId == id);
+
+        private static void AssertUnchanged(ApplicationDbContext db, FederatedTask seeded)
+        {
+            var row = Reload(db, seeded.TaskId);
+            Assert.Equal(seeded.Step, row.Step);
+            Assert.Equal(seeded.State, row.State);
+            Assert.Equal(seeded.StepChanges.Count, row.StepChanges.Count);
+        }
+
+        [Theory]
+        [InlineData(FederatedTaskStep.Running)]
+        [InlineData(FederatedTaskStep.WaitingForOutputApproval)]
+        public async Task ReportResult_complete_from_unfinished_step_is_released(FederatedTaskStep from)
+        {
+            using var db = NewDb();
+            var seeded = SeedAtStep(db, from);
+
+            var result = await ReportComplete(AgentControllerFor(db, "tre-a-client", new FakeResultStore()), seeded);
+
+            Assert.IsType<OkObjectResult>(result);
+            var row = Reload(db, seeded.TaskId);
+            Assert.Equal(FederatedTaskStep.Released, row.Step);
+            Assert.Equal(TesState.COMPLETEEnum, row.State);
+        }
+
+        [Theory]
+        [InlineData("input_checks", FederatedTaskStep.RejectedByInputChecks, "invalid_filter")]
+        [InlineData("output_approval", FederatedTaskStep.RejectedAtOutputApproval, "output_rejected")]
+        public async Task ReportResult_canceled_is_rejected_with_reason(string rejectedAt, FederatedTaskStep expected, string code)
+        {
+            using var db = NewDb();
+            var seeded = SeedAtStep(db, FederatedTaskStep.Running);
+            var fields = Fields(seeded.TaskId, "CANCELED", code, "not allowed");
+            fields[FederatedReportFields.RejectedAt] = rejectedAt;
+
+            var result = await ReportAs(AgentControllerFor(db, "tre-a-client"), fields);
+
+            Assert.IsType<OkObjectResult>(result);
+            var row = Reload(db, seeded.TaskId);
+            Assert.Equal(expected, row.Step);
+            Assert.Equal(TesState.CANCELEDEnum, row.State);
+            Assert.Equal(code, row.ErrorCode);
+            Assert.Equal("not allowed", row.ResultErrorMessage);
+            var last = row.StepChanges.OrderBy(c => c.Id).Last();
+            Assert.Equal(expected, last.Step);
+            Assert.Equal(code, last.ErrorCode);
+            Assert.Equal("not allowed", last.ErrorMessage);
+        }
+
+        [Fact]
+        public async Task ReportResult_rejected_at_with_complete_is_400()
+        {
+            using var db = NewDb();
+            var seeded = SeedAtStep(db, FederatedTaskStep.Running);
+            var fields = Fields(seeded.TaskId, "COMPLETE");
+            fields[FederatedReportFields.RejectedAt] = "input_checks";
+
+            var result = await ReportAs(AgentControllerFor(db, "tre-a-client", new FakeResultStore()), fields,
+                (FederatedReportFields.ResultFile, "result.json", ValidResult(seeded)));
+
+            AssertError(result, 400, FederatedTaskErrorCodes.InvalidTask);
+            AssertUnchanged(db, seeded);
+        }
+
+        [Fact]
+        public async Task ReportResult_rejected_at_with_error_state_is_400()
+        {
+            using var db = NewDb();
+            var seeded = SeedAtStep(db, FederatedTaskStep.Running);
+            var fields = Fields(seeded.TaskId, "SYSTEM_ERROR", "boom", "x");
+            fields[FederatedReportFields.RejectedAt] = "input_checks";
+
+            var result = await ReportAs(AgentControllerFor(db, "tre-a-client"), fields);
+
+            AssertError(result, 400, FederatedTaskErrorCodes.InvalidTask);
+            AssertUnchanged(db, seeded);
+        }
+
+        [Theory]
+        [InlineData(null, "invalid_filter", "msg")]
+        [InlineData("elsewhere", "invalid_filter", "msg")]
+        [InlineData("input_checks", "invalid_filter", null)]
+        [InlineData("input_checks", "invalid_filter", "  ")]
+        public async Task ReportResult_canceled_with_bad_fields_is_400(string? rejectedAt, string code, string? message)
+        {
+            using var db = NewDb();
+            var seeded = SeedAtStep(db, FederatedTaskStep.Running);
+            var fields = Fields(seeded.TaskId, "CANCELED", code, message);
+            if (rejectedAt != null) fields[FederatedReportFields.RejectedAt] = rejectedAt;
+
+            var result = await ReportAs(AgentControllerFor(db, "tre-a-client"), fields);
+
+            AssertError(result, 400, FederatedTaskErrorCodes.InvalidTask);
+            AssertUnchanged(db, seeded);
+        }
+
+        [Fact]
+        public async Task ReportResult_canceled_with_file_is_400()
+        {
+            using var db = NewDb();
+            var seeded = SeedAtStep(db, FederatedTaskStep.Running);
+            var fields = Fields(seeded.TaskId, "CANCELED", "invalid_filter", "msg");
+            fields[FederatedReportFields.RejectedAt] = "input_checks";
+
+            var result = await ReportAs(AgentControllerFor(db, "tre-a-client"), fields,
+                (FederatedReportFields.ResultFile, "result.json", new byte[] { 1 }));
+
+            AssertError(result, 400, FederatedTaskErrorCodes.InvalidTask);
+            AssertUnchanged(db, seeded);
+        }
+
+        [Fact]
+        public async Task GetPending_returns_running_and_waiting_tasks()
+        {
+            using var db = NewDb();
+            SeedAtStep(db, FederatedTaskStep.Running);
+            SeedAtStep(db, FederatedTaskStep.WaitingForOutputApproval);
+            SeedAtStep(db, FederatedTaskStep.Released);
+
+            var result = await AgentControllerFor(db, "tre-a-client").GetPendingTasksForTre();
+
+            var tasks = Assert.IsType<List<TesTask>>(Assert.IsType<OkObjectResult>(result).Value);
+            Assert.Equal(new[] { TesState.RUNNINGEnum, TesState.PAUSEDEnum }, tasks.Select(t => t.State).ToArray());
+        }
+
+        [Fact]
+        public async Task GetPending_loads_each_tasks_history_with_the_tasks()
+        {
+            // The test provider has no lazy loading, so the step times are there only if the query includes them.
+            var name = Guid.NewGuid().ToString();
+            using (var setup = OpenDb(name))
+            {
+                setup.Tres.Add(NewTre(1, "tre-a", "tre-a-admin", "tre-a-client"));
+                setup.SaveChanges();
+                SeedAtStep(setup, FederatedTaskStep.Running);
+            }
+
+            using var db = OpenDb(name);
+            var result = await AgentControllerFor(db, "tre-a-client").GetPendingTasksForTre();
+
+            var task = Assert.Single(Assert.IsType<List<TesTask>>(Assert.IsType<OkObjectResult>(result).Value));
+            var metadata = Assert.Single(task.Logs!).Metadata;
+            Assert.True(metadata.ContainsKey("queued_at"));
+            Assert.True(metadata.ContainsKey("running_at"));
+        }
+
+        [Fact]
+        public async Task GetPending_waiting_tasks_do_not_crowd_out_queued()
+        {
+            using var db = NewDb();
+            var start = DateTime.UtcNow.AddHours(-2);
+            for (var i = 0; i < 50; i++)
+            {
+                SeedAtStep(db, FederatedTaskStep.WaitingForOutputApproval, submittedAt: start.AddSeconds(i));
+            }
+            var queued = SeedAtStep(db, FederatedTaskStep.Queued, submittedAt: start.AddMinutes(10));
+            var running = SeedAtStep(db, FederatedTaskStep.Running, submittedAt: start.AddMinutes(20));
+
+            var result = await AgentControllerFor(db, "tre-a-client").GetPendingTasksForTre();
+
+            var tasks = Assert.IsType<List<TesTask>>(Assert.IsType<OkObjectResult>(result).Value);
+            Assert.Equal(50, tasks.Count);
+            Assert.Equal(running.TaskId.ToString(), tasks[0].Id);
+            Assert.Equal(queued.TaskId.ToString(), tasks[1].Id);
+        }
+
+        /// <summary>Runs a competing write once, just before the first save of the context it is attached to.</summary>
+        private sealed class BeforeFirstSave(Action competingWrite) : Microsoft.EntityFrameworkCore.Diagnostics.SaveChangesInterceptor
+        {
+            private bool _done;
+
+            public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int>> SavingChangesAsync(
+                Microsoft.EntityFrameworkCore.Diagnostics.DbContextEventData eventData,
+                Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> result, CancellationToken cancellationToken = default)
+            {
+                if (!_done)
+                {
+                    _done = true;
+                    competingWrite();
+                }
+
+                return ValueTask.FromResult(result);
+            }
+        }
+
+        [Fact]
+        public async Task ReportResult_complete_retries_on_top_of_a_concurrent_progress_report()
+        {
+            var name = Guid.NewGuid().ToString();
+            using var setup = OpenDb(name);
+            setup.Tres.Add(NewTre(1, "tre-a", "tre-a-admin", "tre-a-client"));
+            setup.SaveChanges();
+            var seeded = SeedAtStep(setup, FederatedTaskStep.Queued);
+
+            // The competing progress report is saved after ReportResult has loaded the task and before its first save,
+            // so that save hits the Step concurrency token and the retry has to apply on top of 'running'.
+            var interceptor = new BeforeFirstSave(() =>
+            {
+                using var other = OpenDb(name);
+                var t = other.FederatedTasks.Include(x => x.StepChanges).Single();
+                t.MoveTo(FederatedTaskStep.Running, DateTime.UtcNow);
+                other.SaveChanges();
+            });
+            using var dbA = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
+                .UseInMemoryDatabase(name).AddInterceptors(interceptor).Options);
+
+            var result = await ReportComplete(AgentControllerFor(dbA, "tre-a-client", new FakeResultStore()), seeded);
+
+            Assert.IsType<OkObjectResult>(result);
+            using var check = OpenDb(name);
+            var row = Reload(check, seeded.TaskId);
+            Assert.Equal(FederatedTaskStep.Released, row.Step);
+            Assert.Equal(TesState.COMPLETEEnum, row.State);
+            // The in-memory provider has no transactions, so the history row added by the conflicted first save can
+            // survive as a duplicate 'released' row; a relational provider rolls the whole save back. Distinct order is
+            // asserted, which still proves the retry applied on top of 'running'.
+            Assert.Equal(
+                new[] { FederatedTaskStep.Queued, FederatedTaskStep.Running, FederatedTaskStep.Released },
+                row.StepChanges.OrderBy(c => c.Id).Select(c => c.Step).Distinct().ToArray());
+        }
+
+        private static Task<IActionResult> Progress(FederatedTaskController controller, Guid taskId, string? step) =>
+            controller.ReportProgress(new FederatedTaskProgressReport { TaskId = taskId.ToString(), Step = step });
+
+        [Fact]
+        public async Task ReportProgress_queued_to_running_records_history()
+        {
+            using var db = NewDb();
+            var seeded = SeededTask(db);
+
+            var result = await Progress(AgentControllerFor(db, "tre-a-client"), seeded.TaskId, "running");
+
+            var ok = Assert.IsType<OkObjectResult>(result);
+            Assert.Equal("running", Assert.IsType<FederatedProgressResponse>(ok.Value).Step);
+            var row = db.FederatedTasks.AsNoTracking().Include(x => x.StepChanges).Single();
+            Assert.Equal(FederatedTaskStep.Running, row.Step);
+            Assert.Equal(TesState.RUNNINGEnum, row.State);
+            Assert.Contains(row.StepChanges, c => c.Step == FederatedTaskStep.Running);
+        }
+
+        [Fact]
+        public async Task ReportProgress_repeat_running_is_ok_and_adds_no_history()
+        {
+            using var db = NewDb();
+            var seeded = SeededTask(db);
+            var controller = AgentControllerFor(db, "tre-a-client");
+            await Progress(controller, seeded.TaskId, "running");
+
+            var result = await Progress(controller, seeded.TaskId, "running");
+
+            var ok = Assert.IsType<OkObjectResult>(result);
+            Assert.Equal("running", Assert.IsType<FederatedProgressResponse>(ok.Value).Step);
+            var row = db.FederatedTasks.AsNoTracking().Include(x => x.StepChanges).Single();
+            Assert.Single(row.StepChanges, c => c.Step == FederatedTaskStep.Running);
+        }
+
+        [Fact]
+        public async Task ReportProgress_waiting_then_running_is_409_invalid_transition()
+        {
+            using var db = NewDb();
+            var seeded = SeededTask(db);
+            var controller = AgentControllerFor(db, "tre-a-client");
+            await Progress(controller, seeded.TaskId, "waiting_for_output_approval");
+
+            var result = await Progress(controller, seeded.TaskId, "running");
+
+            AssertError(result, 409, FederatedTaskErrorCodes.InvalidTransition);
+            Assert.Equal(FederatedTaskStep.WaitingForOutputApproval, db.FederatedTasks.AsNoTracking().Single().Step);
+        }
+
+        [Fact]
+        public async Task ReportProgress_on_released_is_409_already_reported_with_sha()
+        {
+            using var db = NewDb();
+            var seeded = SeededTask(db);
+            var bytes = ValidResult(seeded);
+            await ReportComplete(AgentControllerFor(db, "tre-a-client"), seeded, bytes);
+
+            var result = await Progress(AgentControllerFor(db, "tre-a-client"), seeded.TaskId, "running");
+
+            var error = AssertError(result, 409, FederatedTaskErrorCodes.TaskAlreadyReported);
+            Assert.Equal(FederatedResultDocumentJson.Sha256Hex(bytes), error.ResultSha256);
+            Assert.NotNull(error.ResultKey);
+        }
+
+        [Theory]
+        [InlineData("released")]
+        [InlineData("failed")]
+        [InlineData("queued")]
+        [InlineData("bogus")]
+        [InlineData(null)]
+        public async Task ReportProgress_final_step_name_is_400(string? step)
+        {
+            using var db = NewDb();
+            var seeded = SeededTask(db);
+
+            var result = await Progress(AgentControllerFor(db, "tre-a-client"), seeded.TaskId, step);
+
+            AssertError(result, 400, FederatedTaskErrorCodes.InvalidTask);
+            Assert.Equal(FederatedTaskStep.Queued, db.FederatedTasks.AsNoTracking().Single().Step);
+        }
+
+        [Fact]
+        public async Task ReportProgress_bad_guid_is_400()
+        {
+            using var db = NewDb();
+
+            var result = await AgentControllerFor(db, "tre-a-client")
+                .ReportProgress(new FederatedTaskProgressReport { TaskId = "nope", Step = "running" });
+
+            AssertError(result, 400, FederatedTaskErrorCodes.InvalidTask);
+        }
+
+        [Fact]
+        public async Task ReportProgress_other_tre_is_404()
+        {
+            using var db = NewDb();
+            var seeded = SeededTask(db);
+
+            var result = await Progress(AgentControllerFor(db, "tre-b-client"), seeded.TaskId, "running");
+
+            AssertError(result, 404, FederatedTaskErrorCodes.TaskNotFound);
+            Assert.Equal(FederatedTaskStep.Queued, db.FederatedTasks.AsNoTracking().Single().Step);
+        }
+
+        [Fact]
+        public async Task ReportProgress_non_agent_is_403()
+        {
+            using var db = NewDb();
+            var seeded = SeededTask(db);
+
+            var result = await Progress(ControllerFor(db, "dare-admin"), seeded.TaskId, "running");
+
+            Assert.IsType<ForbidResult>(result);
+        }
+
+        [Fact]
+        public async Task ReportProgress_racing_final_report_is_409_not_500()
+        {
+            var name = Guid.NewGuid().ToString();
+            using var setup = OpenDb(name);
+            setup.Tres.Add(NewTre(1, "tre-a", "tre-a-admin", "tre-a-client"));
+            setup.SaveChanges();
+            var seeded = SeedTask(setup, 1, TesState.QUEUEDEnum);
+
+            // Context A has read the task as queued before the final report is saved through context B.
+            using var dbA = OpenDb(name);
+            using var dbB = OpenDb(name);
+            dbA.FederatedTasks.Include(x => x.StepChanges).Single();
+            var bytes = ValidResult(seeded);
+            Assert.IsType<OkObjectResult>(await ReportComplete(AgentControllerFor(dbB, "tre-a-client"), seeded, bytes));
+
+            var result = await Progress(AgentControllerFor(dbA, "tre-a-client"), seeded.TaskId, "running");
+
+            var error = AssertError(result, 409, FederatedTaskErrorCodes.TaskAlreadyReported);
+            Assert.Equal(FederatedResultDocumentJson.Sha256Hex(bytes), error.ResultSha256);
+            using var check = OpenDb(name);
+            var row = check.FederatedTasks.Include(x => x.StepChanges).Single();
+            Assert.Equal(FederatedTaskStep.Released, row.Step);
+            Assert.Equal(TesState.COMPLETEEnum, row.State);
+            // The in-memory provider has no transactions, so a running history row added in the failed save can
+            // survive here; a relational provider rolls the whole save back. Step and State are the guarantee tested.
+        }
+
+        /// <summary>Before every save, flips the task between queued and running so the save always loses the race.</summary>
+        private sealed class BeforeEverySave(string dbName) : Microsoft.EntityFrameworkCore.Diagnostics.SaveChangesInterceptor
+        {
+            public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int>> SavingChangesAsync(
+                Microsoft.EntityFrameworkCore.Diagnostics.DbContextEventData eventData,
+                Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> result, CancellationToken cancellationToken = default)
+            {
+                using var other = OpenDb(dbName);
+                var t = other.FederatedTasks.Single();
+                t.Step = t.Step == FederatedTaskStep.Queued ? FederatedTaskStep.Running : FederatedTaskStep.Queued;
+                other.SaveChanges();
+                return ValueTask.FromResult(result);
+            }
+        }
+
+        private static (string Name, FederatedTask Seeded, ApplicationDbContext Racing) AlwaysRacing()
+        {
+            var name = Guid.NewGuid().ToString();
+            using (var setup = OpenDb(name))
+            {
+                setup.Tres.Add(NewTre(1, "tre-a", "tre-a-admin", "tre-a-client"));
+                setup.SaveChanges();
+                var seeded = SeedAtStep(setup, FederatedTaskStep.Queued);
+                var racing = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
+                    .UseInMemoryDatabase(name).AddInterceptors(new BeforeEverySave(name)).Options);
+                return (name, seeded, racing);
+            }
+        }
+
+        [Fact]
+        public async Task ReportProgress_that_keeps_losing_the_race_is_409_task_busy()
+        {
+            var (name, seeded, racing) = AlwaysRacing();
+            using var _ = racing;
+
+            var result = await Progress(AgentControllerFor(racing, "tre-a-client"), seeded.TaskId, "waiting_for_output_approval");
+
+            AssertError(result, 409, FederatedTaskErrorCodes.TaskBusy);
+            using var check = OpenDb(name);
+            Assert.NotEqual(FederatedTaskStep.WaitingForOutputApproval, Reload(check, seeded.TaskId).Step);
+        }
+
+        [Fact]
+        public async Task ReportResult_that_keeps_losing_the_race_is_409_task_busy()
+        {
+            var (name, seeded, racing) = AlwaysRacing();
+            using var _ = racing;
+
+            var result = await ReportComplete(AgentControllerFor(racing, "tre-a-client", new FakeResultStore()), seeded);
+
+            AssertError(result, 409, FederatedTaskErrorCodes.TaskBusy);
+            using var check = OpenDb(name);
+            var row = Reload(check, seeded.TaskId);
+            Assert.False(FederatedTaskSteps.IsFinal(row.Step));
+            Assert.Equal(TesState.QUEUEDEnum, row.State);
+        }
+
+        /// <summary>
+        /// Before the first save, moves the task to running through another context so the save loses the race, then
+        /// makes the next read of a task fail, as if the database went away.
+        /// </summary>
+        private sealed class LoseRaceThenFailReread(string dbName, Microsoft.EntityFrameworkCore.Storage.InMemoryDatabaseRoot root)
+            : Microsoft.EntityFrameworkCore.Diagnostics.SaveChangesInterceptor, Microsoft.EntityFrameworkCore.Diagnostics.IMaterializationInterceptor
+        {
+            private bool _raced;
+
+            public override ValueTask<Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int>> SavingChangesAsync(
+                Microsoft.EntityFrameworkCore.Diagnostics.DbContextEventData eventData,
+                Microsoft.EntityFrameworkCore.Diagnostics.InterceptionResult<int> result, CancellationToken cancellationToken = default)
+            {
+                if (!_raced)
+                {
+                    _raced = true;
+                    using var other = OpenDb(dbName, root);
+                    var t = other.FederatedTasks.Include(x => x.StepChanges).Single();
+                    t.MoveTo(FederatedTaskStep.Running, DateTime.UtcNow);
+                    other.SaveChanges();
+                }
+
+                return ValueTask.FromResult(result);
+            }
+
+            public object InitializedInstance(Microsoft.EntityFrameworkCore.Diagnostics.MaterializationInterceptionData materializationData, object entity) =>
+                _raced && entity is FederatedTask ? throw new InvalidOperationException("database unavailable") : entity;
+        }
+
+        [Fact]
+        public async Task ReportResult_reread_failure_after_a_race_is_503_and_records_nothing()
+        {
+            var name = Guid.NewGuid().ToString();
+            var root = new Microsoft.EntityFrameworkCore.Storage.InMemoryDatabaseRoot();
+            using var setup = OpenDb(name, root);
+            setup.Tres.Add(NewTre(1, "tre-a", "tre-a-admin", "tre-a-client"));
+            setup.SaveChanges();
+            var seeded = SeedAtStep(setup, FederatedTaskStep.Queued);
+            using var racing = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
+                .UseInMemoryDatabase(name, root).AddInterceptors(new LoseRaceThenFailReread(name, root)).Options);
+
+            var result = await ReportComplete(AgentControllerFor(racing, "tre-a-client", new FakeResultStore()), seeded);
+
+            AssertError(result, 503, FederatedTaskErrorCodes.StorageUnavailable);
+            using var check = OpenDb(name, root);
+            var row = Reload(check, seeded.TaskId);
+            Assert.Equal(FederatedTaskStep.Running, row.Step);
+            Assert.Equal(TesState.RUNNINGEnum, row.State);
         }
     }
 }

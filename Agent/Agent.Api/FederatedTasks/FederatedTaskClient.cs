@@ -56,6 +56,8 @@ namespace Agent.Api.FederatedTasks
             form.Add(new StringContent(report.TaskId), FederatedReportFields.TaskId);
             form.Add(new StringContent(WireState(report.State)), FederatedReportFields.State);
 
+            if (report.RejectedAt != null)
+                form.Add(new StringContent(report.RejectedAt), FederatedReportFields.RejectedAt);
             if (report.ErrorCode != null)
                 form.Add(new StringContent(report.ErrorCode), FederatedReportFields.ErrorCode);
             if (report.ErrorMessage != null)
@@ -85,6 +87,29 @@ namespace Agent.Api.FederatedTasks
                 return new FederatedReportOutcome(status, null, null, ok?.ResultKey, ok?.ResultSha256);
             }
 
+            return ErrorOutcome(status, body);
+        }
+
+        public async Task<FederatedReportOutcome> ReportProgressAsync(string taskId, FederatedTaskStep step)
+        {
+            var payload = new FederatedTaskProgressReport { TaskId = taskId, Step = FederatedTaskSteps.ToWire(step) };
+            using var request = new HttpRequestMessage(HttpMethod.Post, Url("/api/FederatedTask/ReportProgress"))
+            {
+                Content = new StringContent(JsonConvert.SerializeObject(payload), System.Text.Encoding.UTF8, "application/json")
+            };
+            await Authorize(request);
+
+            using var response = await _httpClientFactory.CreateClient().SendAsync(request);
+            var status = (int)response.StatusCode;
+            var body = await response.Content.ReadAsStringAsync();
+
+            return status == 200
+                ? new FederatedReportOutcome(status, null, null, null, null)
+                : ErrorOutcome(status, body);
+        }
+
+        private static FederatedReportOutcome ErrorOutcome(int status, string body)
+        {
             var error = TryParse<FederatedApiError>(body);
             // A body that parses but has no error_code is not ours (e.g. "{}" from a proxy).
             if (error == null || string.IsNullOrEmpty(error.ErrorCode))
@@ -117,6 +142,7 @@ namespace Agent.Api.FederatedTasks
         private static string WireState(TesState state) => state switch
         {
             TesState.COMPLETEEnum => "COMPLETE",
+            TesState.CANCELEDEnum => "CANCELED",
             TesState.EXECUTORERROREnum => "EXECUTOR_ERROR",
             TesState.SYSTEMERROREnum => "SYSTEM_ERROR",
             _ => throw new ArgumentOutOfRangeException(nameof(state), state, "not a federated report state")

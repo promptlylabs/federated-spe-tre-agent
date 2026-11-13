@@ -5,7 +5,7 @@ using FiveSafesTes.Core.Models.FederatedTasks;
 namespace Agent.Api.FederatedTasks
 {
     /// <summary>
-    /// Resolves a dataset name to its single data file under {DatasetPrefix}{name}/ and parses it.
+    /// Resolves a dataset name to its single data file under {DatasetPrefix}{name}/, then reads and parses that file.
     /// </summary>
     public class DatasetReader : IDatasetReader
     {
@@ -21,12 +21,12 @@ namespace Agent.Api.FederatedTasks
             _settings = settings;
         }
 
-        public async Task<DatasetReadResult> ReadAsync(string datasetName, CancellationToken ct)
+        public async Task<DatasetResolveResult> ResolveAsync(string datasetName, CancellationToken ct)
         {
             // Validate before touching the store so the name can never escape the dataset prefix.
             if (!FederatedTaskNames.IsValidDatasetName(datasetName))
             {
-                return DatasetReadResult.Fail(FederatedTaskErrorCodes.InvalidDatasetName,
+                return DatasetResolveResult.Fail(FederatedTaskErrorCodes.InvalidDatasetName,
                     "dataset name must match ^[a-z0-9][a-z0-9_-]{0,62}$");
             }
 
@@ -39,23 +39,53 @@ namespace Agent.Api.FederatedTasks
 
             if (keys.Count == 0)
             {
-                return DatasetReadResult.Fail(FederatedTaskErrorCodes.DatasetNotFound,
+                return DatasetResolveResult.Fail(FederatedTaskErrorCodes.DatasetNotFound,
                     $"no dataset file found for '{datasetName}'");
             }
 
             if (keys.Count > 1)
             {
-                return DatasetReadResult.Fail(FederatedTaskErrorCodes.AmbiguousDataset,
+                return DatasetResolveResult.Fail(FederatedTaskErrorCodes.AmbiguousDataset,
                     $"more than one dataset file found for '{datasetName}'");
             }
 
-            await using var stream = await _store.OpenReadAsync(keys[0], ct);
-
-            var sha256 = Convert.ToHexString(await SHA256.HashDataAsync(stream, ct)).ToLowerInvariant();
-            stream.Position = 0;
-
-            // The hash is kept on failures too: the file was read, so the report must say which file it was.
-            return CsvDatasetParser.Parse(stream) with { Sha256 = sha256 };
+            return DatasetResolveResult.Ok(keys[0]);
         }
+
+        public async Task<DatasetReadResult> ReadAsync(string fileKey, CancellationToken ct)
+        {
+            // Only the store calls are wrapped, so the Agent can retry a bucket failure and still report a parser
+            // fault at once. If the file was removed after ResolveAsync, this is a store failure: the task is retried
+            // and then fails with internal_error, not dataset_not_found. Datasets are not removed while tasks run.
+            Stream stream;
+            try
+            {
+                stream = await _store.OpenReadAsync(fileKey, ct);
+            }
+            catch (Exception ex)
+            {
+                throw StoreFailed(fileKey, ex);
+            }
+
+            await using (stream)
+            {
+                string sha256;
+                try
+                {
+                    sha256 = Convert.ToHexString(await SHA256.HashDataAsync(stream, ct)).ToLowerInvariant();
+                }
+                catch (Exception ex)
+                {
+                    throw StoreFailed(fileKey, ex);
+                }
+                stream.Position = 0;
+
+                // The hash is kept on failures too: the file was read, so the report must say which file it was.
+                return CsvDatasetParser.Parse(stream) with { Sha256 = sha256 };
+            }
+        }
+
+        private static DatasetStoreException StoreFailed(string fileKey, Exception ex) =>
+            new($"Reading dataset file '{fileKey}' failed", ex);
     }
 }

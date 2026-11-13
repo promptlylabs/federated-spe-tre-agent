@@ -31,6 +31,7 @@ public class FederatedTaskClientTests
         private readonly string _body;
         public HttpRequestMessage? Request;
         public List<CapturedPart> Parts { get; } = new();
+        public string? Body;
 
         public StubHandler(HttpStatusCode status, string body)
         {
@@ -41,6 +42,8 @@ public class FederatedTaskClientTests
         protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
         {
             Request = request;
+            if (request.Content is not MultipartFormDataContent && request.Content != null)
+                Body = await request.Content.ReadAsStringAsync(ct);
             if (request.Content is MultipartFormDataContent multipart)
             {
                 foreach (var part in multipart)
@@ -244,5 +247,52 @@ public class FederatedTaskClientTests
     {
         var client = Client(new StubHandler(HttpStatusCode.OK, "{}"), method, id, secret);
         Assert.Equal(expected, client.IsConfigured);
+    }
+
+    [Fact]
+    public async Task ReportProgressAsync_posts_json_and_parses_409()
+    {
+        var handler = new StubHandler(HttpStatusCode.Conflict, "{\"error_code\":\"invalid_transition\",\"error_message\":\"m\"}");
+
+        var outcome = await Client(handler).ReportProgressAsync("11111111-1111-1111-1111-111111111111", FederatedTaskStep.Running);
+
+        Assert.Equal(HttpMethod.Post, handler.Request!.Method);
+        Assert.Equal("http://submission/api/FederatedTask/ReportProgress", handler.Request.RequestUri!.ToString());
+        Assert.Equal("fake-token", handler.Request.Headers.Authorization!.Parameter);
+        Assert.Equal("application/json", handler.Request.Content!.Headers.ContentType!.MediaType);
+        Assert.Equal("{\"task_id\":\"11111111-1111-1111-1111-111111111111\",\"step\":\"running\"}", handler.Body);
+        Assert.Equal(409, outcome.StatusCode);
+        Assert.Equal("invalid_transition", outcome.ErrorCode);
+        Assert.False(outcome.Accepted);
+    }
+
+    [Fact]
+    public async Task ReportProgressAsync_200_is_accepted()
+    {
+        var handler = new StubHandler(HttpStatusCode.OK, "{\"step\":\"running\"}");
+
+        var outcome = await Client(handler).ReportProgressAsync("t", FederatedTaskStep.Running);
+
+        Assert.True(outcome.Accepted);
+    }
+
+    [Fact]
+    public async Task ReportAsync_sends_canceled_and_rejected_at()
+    {
+        var handler = new StubHandler(HttpStatusCode.OK, "{\"result\":true}");
+        var report = new FederatedTaskResultReport
+        {
+            TaskId = "11111111-1111-1111-1111-111111111111",
+            State = TesState.CANCELEDEnum,
+            RejectedAt = "input_checks",
+            ErrorCode = "dataset_not_found",
+            ErrorMessage = "no dataset"
+        };
+
+        await Client(handler).ReportAsync(report, null);
+
+        Assert.Equal("CANCELED", Field(handler, "State"));
+        Assert.Equal("input_checks", Field(handler, "RejectedAt"));
+        Assert.Equal("dataset_not_found", Field(handler, "ErrorCode"));
     }
 }

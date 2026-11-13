@@ -25,6 +25,9 @@ namespace Submission.Api.Controllers
     [ApiController]
     public class FederatedTaskController : Controller
     {
+        /// <summary>Attempts at one report when other reports for the same task keep winning the race.</summary>
+        private const int MaxReportAttempts = 3;
+
         /// <summary>Upper bound on tasks returned to a TRE Agent in a single poll.</summary>
         private const int MaxPendingTasks = 50;
 
@@ -79,9 +82,9 @@ namespace Submission.Api.Controllers
                 Operation = spec.Operation,
                 Dataset = spec.Dataset,
                 TesTaskJson = JsonConvert.SerializeObject(task),
-                State = TesState.QUEUEDEnum,
                 SubmittedAt = DateTime.UtcNow
             };
+            entity.MoveTo(FederatedTaskStep.Queued, entity.SubmittedAt);
             _DbContext.FederatedTasks.Add(entity);
             await _DbContext.SaveChangesAsync(cancellationToken);
 
@@ -105,12 +108,18 @@ namespace Submission.Api.Controllers
 
             var treName = tre.Name.ToLower();
 
-            // The Agent refuses tasks whose tres is not its own name and leaves them QUEUED. Tasks enqueued under a
-            // name the TRE no longer has would sit at the front of the queue forever, so they are not handed out.
+            // The Agent refuses tasks whose tres is not its own name and leaves them as they are. Tasks enqueued under a
+            // name the TRE no longer has would stay unfinished forever and fill the list, so they are not handed out.
+            // ToTesTask reads the history. Without the Include, lazy loading would run one query per task.
             var tasks = await _DbContext.FederatedTasks
                 .AsNoTracking()
-                .Where(x => x.TreId == tre.Id && x.State == TesState.QUEUEDEnum && x.TreName == treName)
-                .OrderBy(x => x.SubmittedAt)
+                .Include(x => x.StepChanges)
+                .Where(x => x.TreId == tre.Id && x.TreName == treName)
+                .Where(FederatedTaskSteps.IsUnfinishedTask)
+                // Running first (the Agent may need to resume it), then queued, then waiting: waiting tasks are
+                // only polled for their approval outcome, so they must not crowd out tasks that need action.
+                .OrderBy(x => x.Step == FederatedTaskStep.Running ? 0 : x.Step == FederatedTaskStep.Queued ? 1 : 2)
+                .ThenBy(x => x.SubmittedAt)
                 .Take(MaxPendingTasks)
                 .ToListAsync(cancellationToken);
 
@@ -143,10 +152,17 @@ namespace Submission.Api.Controllers
             var state = ParseWireState(form.State);
             if (state == null)
             {
-                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "State must be COMPLETE, EXECUTOR_ERROR or SYSTEM_ERROR");
+                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "State must be COMPLETE, EXECUTOR_ERROR, SYSTEM_ERROR or CANCELED");
+            }
+
+            if (state != TesState.CANCELEDEnum && form.RejectedAt is not null)
+            {
+                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "RejectedAt is only accepted with state CANCELED");
             }
 
             var files = Request.Form.Files;
+            FederatedTaskStep? rejectedStep = null;
+
             if (state != TesState.COMPLETEEnum)
             {
                 // Without a code the orchestrator cannot tell what failed. Any well-formed code is accepted, not only
@@ -159,6 +175,26 @@ namespace Submission.Api.Controllers
                 if (!FederatedResultLimits.IsValidErrorMessage(form.ErrorMessage))
                 {
                     return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, $"ErrorMessage must be at most {FederatedResultLimits.MaxErrorMessageLength} characters with no control characters");
+                }
+
+                if (state == TesState.CANCELEDEnum)
+                {
+                    rejectedStep = form.RejectedAt switch
+                    {
+                        FederatedRejectedAt.InputChecks => FederatedTaskStep.RejectedByInputChecks,
+                        FederatedRejectedAt.OutputApproval => FederatedTaskStep.RejectedAtOutputApproval,
+                        _ => null
+                    };
+                    if (rejectedStep == null)
+                    {
+                        return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask,
+                            $"RejectedAt must be {FederatedRejectedAt.InputChecks} or {FederatedRejectedAt.OutputApproval} for a CANCELED report");
+                    }
+
+                    if (string.IsNullOrWhiteSpace(form.ErrorMessage))
+                    {
+                        return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "ErrorMessage is required for a rejection");
+                    }
                 }
 
                 if (files.Count > 0)
@@ -185,17 +221,19 @@ namespace Submission.Api.Controllers
 
             // A task that belongs to another TRE is indistinguishable from one that doesn't exist.
             var task = await _DbContext.FederatedTasks
+                .Include(x => x.StepChanges)
                 .FirstOrDefaultAsync(x => x.TaskId == taskId && x.TreId == tre.Id, cancellationToken);
             if (task == null)
             {
                 return TaskNotFound();
             }
 
-            if (task.State != TesState.QUEUEDEnum)
+            if (FederatedTaskSteps.IsFinal(task.Step))
             {
                 return AlreadyReported(task);
             }
 
+            Action<FederatedTask> apply;
             var response = new FederatedReportResponse { Result = true };
             if (state == TesState.COMPLETEEnum)
             {
@@ -241,13 +279,17 @@ namespace Submission.Api.Controllers
                         "the result could not be stored, try again later");
                 }
 
-                task.State = TesState.COMPLETEEnum;
-                task.CompletedAt = DateTime.UtcNow;
-                task.ResultBucket = _resultStore.Bucket;
-                task.ResultKey = key;
-                task.ResultSha256 = sha;
-                task.DatasetSha256 = validation.Document!.DatasetSha256;
-                response.ResultBucket = task.ResultBucket;
+                var bucket = _resultStore.Bucket;
+                var datasetSha = validation.Document!.DatasetSha256;
+                apply = t =>
+                {
+                    t.MoveTo(FederatedTaskStep.Released, DateTime.UtcNow);
+                    t.ResultBucket = bucket;
+                    t.ResultKey = key;
+                    t.ResultSha256 = sha;
+                    t.DatasetSha256 = datasetSha;
+                };
+                response.ResultBucket = bucket;
                 response.ResultKey = key;
                 response.ResultSha256 = sha;
 
@@ -256,36 +298,134 @@ namespace Submission.Api.Controllers
             }
             else
             {
-                task.State = state.Value;
-                task.CompletedAt = DateTime.UtcNow;
-                task.DatasetSha256 = form.DatasetSha256;
-                task.ErrorCode = form.ErrorCode;
-                task.ResultErrorMessage = form.ErrorMessage;
+                // ErrorCode was checked above; ErrorMessage was checked for a rejection.
+                var errorCode = form.ErrorCode!;
+                apply = rejectedStep is { } rejected
+                    ? t =>
+                    {
+                        t.Reject(rejected, DateTime.UtcNow, errorCode, form.ErrorMessage!);
+                        t.DatasetSha256 = form.DatasetSha256;
+                    }
+                    : t =>
+                    {
+                        t.Fail(DateTime.UtcNow, state.Value, errorCode, form.ErrorMessage);
+                        t.DatasetSha256 = form.DatasetSha256;
+                    };
             }
 
-            try
+            for (var attempt = 0; attempt < MaxReportAttempts; attempt++)
             {
-                await _DbContext.SaveChangesAsync(cancellationToken);
-            }
-            catch (DbUpdateConcurrencyException)
-            {
-                // Another report for this task was saved after this one read it as QUEUED. A file stored above stays
-                // as an orphan: its key is unique to its content, and nothing references it.
-                FederatedTask? winner = null;
+                apply(task);
                 try
                 {
-                    winner = await _DbContext.FederatedTasks.AsNoTracking()
-                        .FirstOrDefaultAsync(x => x.TaskId == task.TaskId, cancellationToken);
+                    await _DbContext.SaveChangesAsync(cancellationToken);
+                    return Ok(response);
                 }
-                catch (Exception ex)
+                catch (DbUpdateConcurrencyException)
                 {
-                    Log.Warning(ex, "Re-reading federated task {TaskId} after a concurrent report failed", task.TaskId);
-                }
+                    // Another report moved the task after it was read here. A file stored above stays as an orphan if
+                    // the other report wins: its key is unique to its content, and nothing references it.
+                    _DbContext.ChangeTracker.Clear();
+                    try
+                    {
+                        var current = await _DbContext.FederatedTasks
+                            .Include(x => x.StepChanges)
+                            .FirstOrDefaultAsync(x => x.TaskId == taskId && x.TreId == tre.Id, cancellationToken);
+                        if (current == null)
+                        {
+                            return TaskNotFound();
+                        }
 
-                return AlreadyReported(winner);
+                        if (FederatedTaskSteps.IsFinal(current.Step))
+                        {
+                            return AlreadyReported(current);
+                        }
+
+                        // A progress report moved it (e.g. to running): apply this final report on top of that.
+                        task = current;
+                    }
+                    catch (Exception ex)
+                    {
+                        // Nothing was recorded, and it is not known whether the task is final: tell the Agent to retry.
+                        Log.Warning(ex, "Re-reading federated task {TaskId} after a concurrent report failed", taskId);
+                        return Error(StatusCodes.Status503ServiceUnavailable, FederatedTaskErrorCodes.StorageUnavailable,
+                            "the report could not be recorded, try again later");
+                    }
+                }
             }
 
-            return Ok(response);
+            return Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.TaskBusy,
+                "the task is being updated by other reports, try again");
+        }
+
+        [Authorize(Roles = "dare-tre-admin")]
+        [HttpPost]
+        [Route("ReportProgress")]
+        [ValidateModelState]
+        [SwaggerOperation("ReportProgress")]
+        [SwaggerResponse(statusCode: 200, type: typeof(FederatedProgressResponse), description: "")]
+        [SwaggerResponse(statusCode: 400, type: typeof(FederatedApiError), description: "")]
+        [SwaggerResponse(statusCode: 403, description: "The caller is not a TRE Agent service account")]
+        [SwaggerResponse(statusCode: 404, type: typeof(FederatedApiError), description: "")]
+        [SwaggerResponse(statusCode: 409, type: typeof(FederatedApiError), description: "")]
+        public virtual async Task<IActionResult> ReportProgress([FromBody] FederatedTaskProgressReport report, CancellationToken cancellationToken = default)
+        {
+            var tre = ControllerHelpers.GetAgentTre(User, _DbContext);
+            if (tre == null)
+            {
+                return Forbid();
+            }
+
+            if (!FederatedTaskSteps.TryParse(report.Step, out var step)
+                || step is not (FederatedTaskStep.Running or FederatedTaskStep.WaitingForOutputApproval))
+            {
+                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask,
+                    "Step must be running or waiting_for_output_approval");
+            }
+
+            if (!Guid.TryParse(report.TaskId, out var taskId))
+            {
+                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "TaskId must be a GUID");
+            }
+
+            for (var attempt = 0; attempt < MaxReportAttempts; attempt++)
+            {
+                // A task that belongs to another TRE is indistinguishable from one that doesn't exist.
+                var task = await _DbContext.FederatedTasks
+                    .Include(x => x.StepChanges)
+                    .FirstOrDefaultAsync(x => x.TaskId == taskId && x.TreId == tre.Id, cancellationToken);
+                if (task == null)
+                {
+                    return TaskNotFound();
+                }
+
+                switch (FederatedTaskSteps.Check(task.Step, step))
+                {
+                    case FederatedTaskTransition.NoChange:
+                        return Ok(new FederatedProgressResponse { Step = FederatedTaskSteps.ToWire(task.Step) });
+                    case FederatedTaskTransition.Backwards:
+                        return Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.InvalidTransition,
+                            $"task is at step '{FederatedTaskSteps.ToWire(task.Step)}' and cannot go back to '{FederatedTaskSteps.ToWire(step)}'");
+                    case FederatedTaskTransition.AlreadyFinal:
+                        return AlreadyReported(task);
+                }
+
+                task.MoveTo(step, DateTime.UtcNow);
+                try
+                {
+                    await _DbContext.SaveChangesAsync(cancellationToken);
+                    return Ok(new FederatedProgressResponse { Step = FederatedTaskSteps.ToWire(step) });
+                }
+                catch (DbUpdateConcurrencyException)
+                {
+                    // Another report moved the task after it was read here. Drop the stale copy and decide again
+                    // against the step the winner left.
+                    _DbContext.ChangeTracker.Clear();
+                }
+            }
+
+            return Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.TaskBusy,
+                "the task is being updated by other reports, try again");
         }
 
         [Authorize(Roles = "dare-control-admin")]
@@ -304,6 +444,7 @@ namespace Submission.Api.Controllers
 
             var task = await _DbContext.FederatedTasks
                 .AsNoTracking()
+                .Include(x => x.StepChanges)
                 .FirstOrDefaultAsync(x => x.TaskId == taskId, cancellationToken);
             if (task == null)
             {
@@ -405,6 +546,7 @@ namespace Submission.Api.Controllers
             "COMPLETE" => TesState.COMPLETEEnum,
             "EXECUTOR_ERROR" => TesState.EXECUTORERROREnum,
             "SYSTEM_ERROR" => TesState.SYSTEMERROREnum,
+            "CANCELED" => TesState.CANCELEDEnum,
             _ => null
         };
 
@@ -412,10 +554,10 @@ namespace Submission.Api.Controllers
         /// 409. For a task already COMPLETE the body carries the stored result's sha256 and key, because the Agent cannot
         /// call GetTask.
         /// </summary>
-        private static ObjectResult AlreadyReported(FederatedTask? existing)
+        private static ObjectResult AlreadyReported(FederatedTask existing)
         {
             var result = Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.TaskAlreadyReported, "a result has already been reported for this task");
-            if (existing is { State: TesState.COMPLETEEnum })
+            if (existing.State == TesState.COMPLETEEnum)
             {
                 var body = (FederatedApiError)result.Value!;
                 body.ResultSha256 = existing.ResultSha256;

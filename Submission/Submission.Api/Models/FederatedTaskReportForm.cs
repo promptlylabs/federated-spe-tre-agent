@@ -9,11 +9,14 @@ namespace Submission.Api.Models
         // Nullable so a missing field is not a model-state error: the identity check must run before any validation.
         public string? TaskId { get; set; }
 
-        /// <summary>TES state as sent on the wire: COMPLETE, EXECUTOR_ERROR or SYSTEM_ERROR.</summary>
+        /// <summary>TES state as sent on the wire: COMPLETE, EXECUTOR_ERROR, SYSTEM_ERROR or CANCELED.</summary>
         public string? State { get; set; }
 
         public string? ErrorCode { get; set; }
         public string? ErrorMessage { get; set; }
         public string? DatasetSha256 { get; set; }
+
+        /// <summary>For a CANCELED report: <c>input_checks</c> or <c>output_approval</c>.</summary>
+        public string? RejectedAt { get; set; }
     }
 }

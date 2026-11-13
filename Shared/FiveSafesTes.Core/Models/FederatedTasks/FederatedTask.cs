@@ -59,6 +59,66 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         /// <summary>Reserved for DAAMS.</summary>
         public string? ApprovalReference { get; set; }
 
+        public FederatedTaskStep Step { get; set; } = FederatedTaskStep.Queued;
+
+        public virtual List<FederatedTaskStepChange> StepChanges { get; set; } = [];
+
+        /// <summary>
+        /// Moves the task to a step without an error (queued, running, waiting or released), updating its TES state
+        /// and recording the change. Rejections go through <see cref="Reject"/>, failures through <see cref="Fail"/>.
+        /// </summary>
+        public void MoveTo(FederatedTaskStep step, DateTime atUtc)
+        {
+            if (step == FederatedTaskStep.Failed || FederatedTaskSteps.IsRejection(step))
+            {
+                throw new ArgumentException($"use {nameof(Reject)} or {nameof(Fail)} for step {step}", nameof(step));
+            }
+
+            Record(step, FederatedTaskSteps.ToTesState(step), atUtc, null, null);
+        }
+
+        /// <summary>Moves the task to a rejected step (TES CANCELED) with the reason.</summary>
+        public void Reject(FederatedTaskStep step, DateTime atUtc, string errorCode, string errorMessage)
+        {
+            if (!FederatedTaskSteps.IsRejection(step))
+            {
+                throw new ArgumentException($"{step} is not a rejection", nameof(step));
+            }
+
+            Record(step, FederatedTaskSteps.ToTesState(step), atUtc, errorCode, errorMessage);
+        }
+
+        /// <summary>Moves the task to failed with <paramref name="state"/> (EXECUTOR_ERROR or SYSTEM_ERROR) and the reason.</summary>
+        public void Fail(DateTime atUtc, TesState state, string errorCode, string? errorMessage)
+        {
+            if (state is not (TesState.EXECUTORERROREnum or TesState.SYSTEMERROREnum))
+            {
+                throw new ArgumentException("a failed task must be EXECUTOR_ERROR or SYSTEM_ERROR", nameof(state));
+            }
+
+            Record(FederatedTaskStep.Failed, state, atUtc, errorCode, errorMessage);
+        }
+
+        private void Record(FederatedTaskStep step, TesState state, DateTime atUtc, string? errorCode, string? errorMessage)
+        {
+            Step = step;
+            State = state;
+            if (FederatedTaskSteps.IsFinal(step))
+            {
+                CompletedAt = atUtc;
+            }
+
+            ErrorCode = errorCode;
+            ResultErrorMessage = errorMessage;
+            StepChanges.Add(new FederatedTaskStepChange
+            {
+                Step = step,
+                At = atUtc,
+                ErrorCode = errorCode,
+                ErrorMessage = errorMessage
+            });
+        }
+
         public TesTask ToTesTask()
         {
             var task = JsonConvert.DeserializeObject<TesTask>(TesTaskJson) ?? new TesTask();
@@ -66,38 +126,57 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             task.State = State;
             task.CreationTime = AsUtc(SubmittedAt);
 
-            Dictionary<string, string>? metadata = State switch
+            var metadata = new Dictionary<string, string> { ["step"] = FederatedTaskSteps.ToWire(Step) };
+            DateTime? runningAt = null;
+            DateTime? finalAt = null;
+            foreach (var change in StepChanges.OrderBy(c => c.At).ThenBy(c => c.Id))
             {
-                TesState.COMPLETEEnum => new Dictionary<string, string>
+                var key = FederatedTaskSteps.ToWire(change.Step) + "_at";
+                // A step is recorded once on Postgres, where a failed save rolls back. The in-memory test provider
+                // can keep a row from a save that lost a race, so the first time a step was reached wins.
+                if (metadata.ContainsKey(key))
                 {
-                    ["result_bucket"] = ResultBucket ?? "",
-                    ["result_key"] = ResultKey ?? "",
-                    ["result_sha256"] = ResultSha256 ?? ""
-                },
-                TesState.EXECUTORERROREnum or TesState.SYSTEMERROREnum => new Dictionary<string, string>
-                {
-                    ["error_code"] = ErrorCode ?? "",
-                    ["error_message"] = ResultErrorMessage ?? ""
-                },
-                _ => null
-            };
-
-            if (metadata is not null)
-            {
-                if (DatasetSha256 is not null)
-                {
-                    metadata["dataset_sha256"] = DatasetSha256;
+                    continue;
                 }
 
-                task.Logs =
-                [
-                    new TesTaskLog
-                    {
-                        EndTime = CompletedAt is { } completed ? AsUtc(completed) : null,
-                        Metadata = metadata
-                    }
-                ];
+                metadata[key] = DateTime.SpecifyKind(change.At, DateTimeKind.Utc).ToString("O");
+                if (change.Step == FederatedTaskStep.Running)
+                {
+                    runningAt = change.At;
+                }
+
+                if (change.Step == Step && FederatedTaskSteps.IsFinal(Step))
+                {
+                    finalAt = change.At;
+                }
             }
+
+            if (Step == FederatedTaskStep.Released)
+            {
+                metadata["result_bucket"] = ResultBucket ?? "";
+                metadata["result_key"] = ResultKey ?? "";
+                metadata["result_sha256"] = ResultSha256 ?? "";
+            }
+            else if (Step == FederatedTaskStep.Failed || FederatedTaskSteps.IsRejection(Step))
+            {
+                metadata["error_code"] = ErrorCode ?? "";
+                metadata["error_message"] = ResultErrorMessage ?? "";
+            }
+
+            if (DatasetSha256 is not null)
+            {
+                metadata["dataset_sha256"] = DatasetSha256;
+            }
+
+            task.Logs =
+            [
+                new TesTaskLog
+                {
+                    StartTime = runningAt is { } started ? AsUtc(started) : null,
+                    EndTime = finalAt is { } ended ? AsUtc(ended) : null,
+                    Metadata = metadata
+                }
+            ];
 
             return task;
         }

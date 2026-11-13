@@ -41,11 +41,19 @@ namespace Submission.Api.Repositories.DbContexts
             modelBuilder.Entity<FederatedTask>(b =>
             {
                 b.HasIndex(x => x.TaskId).IsUnique();
-                b.HasIndex(x => new { x.TreId, x.State });
-                // Reporting a result is a QUEUED -> final transition; the token makes a second, concurrent report fail.
-                b.Property(x => x.State).IsConcurrencyToken();
+                b.HasIndex(x => new { x.TreId, x.Step });
+                b.Property(x => x.Step).HasConversion<string>();
+                // Every step change is guarded by the current step; the token makes a stale or concurrent change fail.
+                b.Property(x => x.Step).IsConcurrencyToken();
+                b.HasMany(x => x.StepChanges).WithOne().HasForeignKey(x => x.FederatedTaskId).OnDelete(DeleteBehavior.Cascade);
                 // Task history is the audit record of released results; deleting a TRE must not erase it.
                 b.HasOne(x => x.Tre).WithMany().HasForeignKey(x => x.TreId).OnDelete(DeleteBehavior.Restrict);
+            });
+            modelBuilder.Entity<FederatedTaskStepChange>(b =>
+            {
+                b.ToTable("FederatedTaskStepChanges");
+                b.Property(x => x.Step).HasConversion<string>();
+                b.HasIndex(x => x.FederatedTaskId);
             });
         }
     }

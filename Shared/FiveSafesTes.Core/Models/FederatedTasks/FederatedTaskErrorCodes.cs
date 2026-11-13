@@ -21,8 +21,17 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         public const string ResultNotFound = "result_not_found";
         public const string StorageUnavailable = "storage_unavailable";
 
+        /// <summary>Codes that mean the task was rejected by the input checks; every other code is a failure.</summary>
+        public static readonly IReadOnlySet<string> InputCheckCodes = new HashSet<string>
+        {
+            InvalidTask, UnknownOperation, InvalidFilter, InvalidDatasetName, DatasetNotFound, AmbiguousDataset
+        };
+
         // Returned only in API error bodies, never in task metadata.
         public const string TaskNotFound = "task_not_found";
         public const string TaskAlreadyReported = "task_already_reported";
+        public const string InvalidTransition = "invalid_transition";
+        // Other reports for the same task kept winning the race; the report was not applied and can be sent again.
+        public const string TaskBusy = "task_busy";
     }
 }

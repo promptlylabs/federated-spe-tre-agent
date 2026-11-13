@@ -26,6 +26,10 @@ public class DoFederatedTaskWorkTests
         public Queue<FederatedReportOutcome> Outcomes { get; } = new();
         public bool ThrowOnReport { get; set; }
         public int GetPendingCalls { get; private set; }
+        public List<(string TaskId, FederatedTaskStep Step)> ProgressCalls { get; } = new();
+        public Queue<FederatedReportOutcome> ProgressOutcomes { get; } = new();
+        public bool ThrowOnProgress { get; set; }
+        public List<string> Order { get; } = new();
 
         public List<FederatedTaskResultReport> Reports => Calls.Select(c => c.Report).ToList();
 
@@ -35,8 +39,17 @@ public class DoFederatedTaskWorkTests
             return Task.FromResult(Pending);
         }
 
+        public Task<FederatedReportOutcome> ReportProgressAsync(string taskId, FederatedTaskStep step)
+        {
+            if (ThrowOnProgress) throw new HttpRequestException("network down");
+            ProgressCalls.Add((taskId, step));
+            Order.Add("progress:" + FederatedTaskSteps.ToWire(step));
+            return Task.FromResult(ProgressOutcomes.Count > 0 ? ProgressOutcomes.Dequeue() : new FederatedReportOutcome(200, null, null, null, null));
+        }
+
         public Task<FederatedReportOutcome> ReportAsync(FederatedTaskResultReport report, byte[]? resultFile)
         {
+            Order.Add("report:" + report.State);
             if (ThrowOnReport) throw new HttpRequestException("network down");
             Calls.Add((report, resultFile));
             return Task.FromResult(Outcomes.Count > 0 ? Outcomes.Dequeue() : new FederatedReportOutcome(200, null, null, null, null));
@@ -76,19 +89,28 @@ public class DoFederatedTaskWorkTests
         }
     }
 
+    private static readonly DateTimeOffset Now = new(2026, 11, 5, 10, 0, 0, TimeSpan.Zero);
+
     private sealed class FixedClock : TimeProvider
     {
-        public override DateTimeOffset GetUtcNow() => new(2026, 11, 5, 10, 0, 0, TimeSpan.Zero);
+        public override DateTimeOffset GetUtcNow() => Now;
     }
 
+    /// <summary>Finds any dataset, but throws if its data is read.</summary>
     private sealed class ThrowingReader : IDatasetReader
     {
-        public Task<DatasetReadResult> ReadAsync(string datasetName, CancellationToken ct) => throw new InvalidOperationException("reader must not be called");
+        public Task<DatasetResolveResult> ResolveAsync(string datasetName, CancellationToken ct) =>
+            Task.FromResult(DatasetResolveResult.Ok($"dataset/{datasetName}/data.csv"));
+
+        public Task<DatasetReadResult> ReadAsync(string fileKey, CancellationToken ct) => throw new InvalidOperationException("reader must not be called");
     }
 
     private sealed class FuncReader(Func<DatasetReadResult> f) : IDatasetReader
     {
-        public Task<DatasetReadResult> ReadAsync(string datasetName, CancellationToken ct) => Task.FromResult(f());
+        public Task<DatasetResolveResult> ResolveAsync(string datasetName, CancellationToken ct) =>
+            Task.FromResult(DatasetResolveResult.Ok($"dataset/{datasetName}/data.csv"));
+
+        public Task<DatasetReadResult> ReadAsync(string fileKey, CancellationToken ct) => Task.FromResult(f());
     }
 
     private static FakeDatasetStore Store() => new FakeDatasetStore().Add("dataset/cohort_2024/cohort.csv", Csv);
@@ -97,18 +119,23 @@ public class DoFederatedTaskWorkTests
     {
         var task = FederatedTesProfile.Build(new FederatedTaskSpec(operation, dataset, column, filters, "study-1", "tre-a"));
         task.Id = id;
+        task.State = TesState.QUEUEDEnum;
+        // Submission always sets it; a minute before FixedClock makes the task young enough to be retried.
+        task.CreationTime = Now.AddMinutes(-1);
         return task;
     }
 
     private static DoFederatedTaskWork Work(FakeClient client, FakeDatasetStore store, string? treName = "tre-a", FakeResultOutputStore? outputs = null)
         => Work(client, new DatasetReader(store, new FederatedTaskSettings()), treName, outputs);
 
-    private static DoFederatedTaskWork Work(FakeClient client, IDatasetReader reader, string? treName = "tre-a", FakeResultOutputStore? outputs = null)
+    private static DoFederatedTaskWork Work(FakeClient client, IDatasetReader reader, string? treName = "tre-a",
+        FakeResultOutputStore? outputs = null, FederatedTaskSettings? settings = null)
     {
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?> { ["TreName"] = treName })
             .Build();
-        return new DoFederatedTaskWork(client, reader, outputs ?? new FakeResultOutputStore(), config, new FixedClock());
+        return new DoFederatedTaskWork(client, reader, outputs ?? new FakeResultOutputStore(), config, new FixedClock(),
+            settings ?? new FederatedTaskSettings());
     }
 
     [Fact]
@@ -126,7 +153,7 @@ public class DoFederatedTaskWorkTests
     }
 
     [Fact]
-    public async Task Execute_MissingDataset_ReportsExecutorErrorDatasetNotFound()
+    public async Task Execute_missing_dataset_reports_rejected_by_input_checks()
     {
         var client = new FakeClient();
         client.Pending.Add(PendingTask(T1, "nope", "count", null));
@@ -134,8 +161,12 @@ public class DoFederatedTaskWorkTests
         await Work(client, Store()).Execute();
 
         var report = Assert.Single(client.Reports);
-        Assert.Equal(TesState.EXECUTORERROREnum, report.State);
+        Assert.Equal(TesState.CANCELEDEnum, report.State);
+        Assert.Equal("input_checks", report.RejectedAt);
         Assert.Equal("dataset_not_found", report.ErrorCode);
+        // Rejected before it was marked running: the history has no running step.
+        Assert.Empty(client.ProgressCalls);
+        Assert.False(string.IsNullOrWhiteSpace(report.ErrorMessage));
     }
 
     [Fact]
@@ -149,6 +180,20 @@ public class DoFederatedTaskWorkTests
         var report = Assert.Single(client.Reports);
         Assert.Equal(TesState.EXECUTORERROREnum, report.State);
         Assert.Equal("column_not_found", report.ErrorCode);
+        Assert.Null(report.RejectedAt);
+    }
+
+    [Fact]
+    public async Task Execute_missing_column_still_reports_executor_error()
+    {
+        var client = new FakeClient();
+        client.Pending.Add(PendingTask(T1, "cohort_2024", "mean", "height"));
+
+        await Work(client, Store()).Execute();
+
+        var report = Assert.Single(client.Reports);
+        Assert.Equal(TesState.EXECUTORERROREnum, report.State);
+        Assert.Null(report.RejectedAt);
     }
 
     [Fact]
@@ -162,8 +207,10 @@ public class DoFederatedTaskWorkTests
         await Work(client, Store()).Execute();
 
         var report = Assert.Single(client.Reports);
-        Assert.Equal(TesState.EXECUTORERROREnum, report.State);
+        Assert.Equal(TesState.CANCELEDEnum, report.State);
+        Assert.Equal("input_checks", report.RejectedAt);
         Assert.Equal("invalid_task", report.ErrorCode);
+        Assert.False(string.IsNullOrWhiteSpace(report.ErrorMessage));
     }
 
     [Fact]
@@ -172,7 +219,9 @@ public class DoFederatedTaskWorkTests
         var store = Store().Add("dataset/other/other.csv", "a\n1\n");
         store.ThrowOnOpenKey = "dataset/other/other.csv";
         var client = new FakeClient();
-        client.Pending.Add(PendingTask(T1, "other", "count", null));
+        var failing = PendingTask(T1, "other", "count", null);
+        failing.CreationTime = Now.AddMinutes(-60); // old enough that the read failure is reported, not retried
+        client.Pending.Add(failing);
         client.Pending.Add(PendingTask(T2, "cohort_2024", "count", null));
 
         await Work(client, store).Execute();
@@ -208,7 +257,7 @@ public class DoFederatedTaskWorkTests
 
         await Work(client, store).Execute();
 
-        // t1 stays QUEUED on the server; t2 still runs.
+        // t1 keeps its step on the server; t2 still runs.
         var report = Assert.Single(client.Reports);
         Assert.Equal(T2, report.TaskId);
         Assert.Equal(TesState.COMPLETEEnum, report.State);
@@ -527,13 +576,14 @@ public class DoFederatedTaskWorkTests
         var client = new FakeClient();
         var task = FederatedTesProfile.Build(new FederatedTaskSpec("count", "cohort_2024", null, Array.Empty<TaskFilter>(), new string('s', 1025), "tre-a"));
         task.Id = T1;
+        task.State = TesState.QUEUEDEnum;
         client.Pending.Add(task);
         var outputs = new FakeResultOutputStore();
 
         await Work(client, new FuncReader(() => throw new InvalidOperationException("dataset must not be read")), outputs: outputs).Execute();
 
         var call = Assert.Single(client.Calls);
-        Assert.Equal(TesState.EXECUTORERROREnum, call.Report.State);
+        Assert.Equal(TesState.CANCELEDEnum, call.Report.State);
         Assert.Equal("invalid_task", call.Report.ErrorCode);
         Assert.Null(call.Bytes);
         Assert.Empty(outputs.Files);
@@ -577,5 +627,275 @@ public class DoFederatedTaskWorkTests
         await Work(client, Store()).Execute();
 
         Assert.Equal(2, client.Calls.Count);
+    }
+
+    [Fact]
+    public async Task Execute_queued_task_reports_running_before_result()
+    {
+        var client = OneMean();
+
+        await Work(client, Store()).Execute();
+
+        var progress = Assert.Single(client.ProgressCalls);
+        Assert.Equal((T1, FederatedTaskStep.Running), progress);
+        Assert.Equal(new[] { "progress:running", "report:COMPLETEEnum" }, client.Order);
+    }
+
+    [Fact]
+    public async Task Execute_running_task_is_resumed_without_reporting_running()
+    {
+        var client = OneMean();
+        client.Pending[0].State = TesState.RUNNINGEnum;
+
+        await Work(client, Store()).Execute();
+
+        Assert.Empty(client.ProgressCalls);
+        Assert.Equal(TesState.COMPLETEEnum, Assert.Single(client.Reports).State);
+    }
+
+    [Fact]
+    public async Task Execute_paused_task_is_left_alone()
+    {
+        var client = OneMean();
+        client.Pending[0].State = TesState.PAUSEDEnum;
+
+        await Work(client, new ThrowingReader()).Execute();
+
+        Assert.Empty(client.ProgressCalls);
+        Assert.Empty(client.Reports);
+    }
+
+    [Fact]
+    public async Task Execute_running_report_network_failure_leaves_task_for_next_poll()
+    {
+        var client = OneMean();
+        client.ThrowOnProgress = true;
+
+        await Work(client, new ThrowingReader()).Execute();
+
+        Assert.Empty(client.Calls);
+    }
+
+    [Fact]
+    public async Task Execute_running_report_409_already_final_skips_task()
+    {
+        var client = OneMean();
+        client.ProgressOutcomes.Enqueue(new FederatedReportOutcome(409, "task_already_reported", "final", null, null));
+
+        await Work(client, new ThrowingReader()).Execute();
+
+        Assert.Single(client.ProgressCalls);
+        Assert.Empty(client.Calls);
+    }
+
+    [Fact]
+    public async Task Execute_task_for_other_tre_does_not_report_running()
+    {
+        var client = new FakeClient();
+        var task = PendingTask(T1, "cohort_2024", "count", null);
+        task.Tags!["tres"] = "tre-b";
+        client.Pending.Add(task);
+
+        await Work(client, new ThrowingReader()).Execute();
+
+        Assert.Empty(client.ProgressCalls);
+        Assert.Empty(client.Calls);
+    }
+
+    [Theory]
+    [InlineData(TesState.COMPLETEEnum)]
+    [InlineData(TesState.CANCELEDEnum)]
+    [InlineData(TesState.EXECUTORERROREnum)]
+    [InlineData(TesState.UNKNOWNEnum)]
+    public async Task Execute_task_in_unexpected_state_is_skipped(TesState state)
+    {
+        var client = OneMean();
+        client.Pending[0].State = state;
+
+        await Work(client, new ThrowingReader()).Execute();
+
+        Assert.Empty(client.ProgressCalls);
+        Assert.Empty(client.Calls);
+    }
+
+    [Fact]
+    public async Task Execute_ambiguous_dataset_is_rejected_without_reporting_running()
+    {
+        var client = new FakeClient();
+        client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+        var store = Store().Add("dataset/cohort_2024/second.csv", Csv);
+
+        await Work(client, store).Execute();
+
+        Assert.Empty(client.ProgressCalls);
+        var report = Assert.Single(client.Reports);
+        Assert.Equal(TesState.CANCELEDEnum, report.State);
+        Assert.Equal("ambiguous_dataset", report.ErrorCode);
+    }
+
+    [Fact]
+    public async Task Execute_store_failure_while_finding_dataset_leaves_task_for_next_poll()
+    {
+        var client = OneMean();
+        client.Pending.Add(PendingTask(T2, "cohort_2024", "count", null));
+
+        await Work(client, new FailingResolveReader()).Execute();
+
+        // Nothing is reported for either task, and the failure of the first does not stop the second being tried.
+        Assert.Empty(client.ProgressCalls);
+        Assert.Empty(client.Calls);
+    }
+
+    private sealed class FailingResolveReader : IDatasetReader
+    {
+        public Task<DatasetResolveResult> ResolveAsync(string datasetName, CancellationToken ct) => throw new IOException("store down");
+
+        public Task<DatasetReadResult> ReadAsync(string fileKey, CancellationToken ct) => throw new InvalidOperationException("must not be read");
+    }
+
+    [Fact]
+    public async Task Execute_running_report_409_task_busy_leaves_task_for_next_poll()
+    {
+        var client = OneMean();
+        client.ProgressOutcomes.Enqueue(new FederatedReportOutcome(409, "task_busy", "busy", null, null));
+
+        await Work(client, new ThrowingReader()).Execute();
+
+        Assert.Single(client.ProgressCalls);
+        Assert.Empty(client.Calls);
+    }
+
+    [Fact]
+    public async Task Result_409_task_busy_does_not_mark_released_and_keeps_the_saved_file()
+    {
+        var client = OneMean();
+        client.Outcomes.Enqueue(new FederatedReportOutcome(409, "task_busy", "busy", null, null));
+        var outputs = new FakeResultOutputStore();
+
+        await Work(client, Store(), outputs: outputs).Execute();
+
+        // One release attempt, no follow-up report, the TRE copy is kept untagged for the next poll to release.
+        Assert.Single(client.Calls);
+        Assert.Empty(outputs.Released);
+        Assert.Single(outputs.Files);
+    }
+
+    [Fact]
+    public async Task Error_report_409_task_busy_sends_nothing_more()
+    {
+        var client = new FakeClient();
+        client.Pending.Add(PendingTask(T1, "nope", "count", null));
+        client.Outcomes.Enqueue(new FederatedReportOutcome(409, "task_busy", "busy", null, null));
+        var outputs = new FakeResultOutputStore();
+
+        await Work(client, Store(), outputs: outputs).Execute();
+
+        Assert.Single(client.Calls);
+        Assert.Empty(outputs.Files);
+    }
+
+    [Theory]
+    [InlineData(60)]
+    [InlineData(600)]
+    public async Task Execute_dataset_bucket_unreachable_for_too_long_reports_internal_error(int ageMinutes)
+    {
+        var client = OneMean();
+        client.Pending[0].CreationTime = Now.AddMinutes(-ageMinutes);
+
+        await Work(client, new FailingResolveReader()).Execute();
+
+        Assert.Empty(client.ProgressCalls);
+        var report = Assert.Single(client.Reports);
+        Assert.Equal(TesState.SYSTEMERROREnum, report.State);
+        Assert.Equal("internal_error", report.ErrorCode);
+        Assert.Null(report.RejectedAt);
+        Assert.DoesNotContain("store down", report.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task Execute_dataset_bucket_unreachable_uses_the_configured_give_up_time()
+    {
+        var client = OneMean();
+        client.Pending[0].CreationTime = Now.AddMinutes(-10);
+
+        await Work(client, new FailingResolveReader(), settings: new FederatedTaskSettings { DatasetUnreachableGiveUpMinutes = 5 }).Execute();
+
+        Assert.Equal("internal_error", Assert.Single(client.Reports).ErrorCode);
+    }
+
+    [Fact]
+    public async Task Execute_dataset_bucket_unreachable_without_creation_time_reports_internal_error()
+    {
+        var client = OneMean();
+        client.Pending[0].CreationTime = null;
+
+        await Work(client, new FailingResolveReader()).Execute();
+
+        Assert.Equal("internal_error", Assert.Single(client.Reports).ErrorCode);
+    }
+
+    [Fact]
+    public async Task Execute_dataset_read_fails_on_a_young_queued_task_marks_it_running_and_reports_nothing_else()
+    {
+        var client = OneMean();
+        var outputs = new FakeResultOutputStore();
+
+        await Work(client, new FuncReader(() => throw new DatasetStoreException("read failed", new IOException("store down"))), outputs: outputs).Execute();
+
+        // Marked running before the read; the failed read leaves it running for the next poll to resume.
+        Assert.Single(client.ProgressCalls);
+        Assert.Empty(client.Calls);
+        Assert.Empty(outputs.Files);
+    }
+
+    [Fact]
+    public async Task Execute_dataset_read_fails_on_a_young_running_task_reports_nothing()
+    {
+        var client = OneMean();
+        client.Pending[0].State = TesState.RUNNINGEnum;
+
+        await Work(client, new FuncReader(() => throw new DatasetStoreException("read failed", new IOException("store down")))).Execute();
+
+        Assert.Empty(client.ProgressCalls);
+        Assert.Empty(client.Calls);
+    }
+
+    [Fact]
+    public async Task Execute_dataset_read_fails_for_too_long_reports_internal_error()
+    {
+        var client = OneMean();
+        client.Pending[0].State = TesState.RUNNINGEnum;
+        client.Pending[0].CreationTime = Now.AddMinutes(-60);
+
+        await Work(client, new FuncReader(() => throw new DatasetStoreException("read failed", new IOException("store down")))).Execute();
+
+        var report = Assert.Single(client.Reports);
+        Assert.Equal(TesState.SYSTEMERROREnum, report.State);
+        Assert.Equal("internal_error", report.ErrorCode);
+        Assert.DoesNotContain("store down", report.ErrorMessage);
+    }
+
+    [Fact]
+    public async Task Execute_invalid_csv_on_a_young_task_is_still_reported_at_once()
+    {
+        var client = OneMean();
+
+        await Work(client, new FuncReader(() => DatasetReadResult.Fail("invalid_dataset", "dataset file is not valid CSV"))).Execute();
+
+        Assert.Equal("invalid_dataset", Assert.Single(client.Reports).ErrorCode);
+    }
+
+    [Fact]
+    public async Task Execute_dataset_read_fault_that_is_not_the_bucket_is_reported_at_once()
+    {
+        var client = OneMean();
+
+        await Work(client, new FuncReader(() => throw new InvalidOperationException("parser bug"))).Execute();
+
+        // A young task: a bucket failure would be retried, but waiting cannot fix a fault in the TRE.
+        Assert.Single(client.ProgressCalls);
+        var report = Assert.Single(client.Reports);
+        Assert.Equal(TesState.SYSTEMERROREnum, report.State);
+        Assert.Equal("internal_error", report.ErrorCode);
     }
 }
