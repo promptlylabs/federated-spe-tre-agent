@@ -1,3 +1,4 @@
+using FiveSafesTes.Core.Models.FederatedTasks;
 using Microsoft.Extensions.Configuration;
 
 namespace Agent.Api.Models
@@ -42,13 +43,45 @@ namespace Agent.Api.Models
         public string OutputReadPolicyName { get; set; } = "federated-outputs-read";
 
         /// <summary>
-        /// How long, in minutes after a task was queued, the Agent keeps retrying a task whose dataset bucket cannot
-        /// be listed or read. Until then a failure is treated as an outage and the task is tried again at the next
-        /// poll; after it, the task fails with internal_error so a bucket that is wrongly configured does not leave it
-        /// unfinished for good.
+        /// How long, in minutes, the Agent keeps retrying a task whose dataset bucket cannot be listed or read. The time
+        /// counts from when the task was queued, or from when the Agent started if that is later, so a task held while
+        /// ApprovedImages was missing, or queued while the Agent was down, gets the whole window. Each Agent restart gives
+        /// pending tasks the whole window again. Until then a failure is treated as an outage and the task is tried again
+        /// at the next poll; after it, the task fails with internal_error so a bucket that is wrongly configured does not
+        /// leave it unfinished for good.
         /// 0 or less gives up at the first failure.
         /// </summary>
         public int DatasetUnreachableGiveUpMinutes { get; set; } = 60;
+
+        /// <summary>
+        /// Executor images this TRE has approved. A task whose image is not listed is rejected by the input checks with
+        /// image_not_approved. There is no default: approving an image is the site's decision. When the list is missing
+        /// or empty, a task that fails the profile is still rejected, but no other new task is checked, run or
+        /// reported: a forgotten setting never rejects anything. Entries are trimmed and blank ones dropped, however the
+        /// list is set; matching is exact and case-sensitive.
+        /// </summary>
+        public string[] ApprovedImages
+        {
+            get => _approvedImages;
+            set => _approvedImages = (value ?? [])
+                .Where(image => !string.IsNullOrWhiteSpace(image))
+                .Select(image => image.Trim())
+                .ToArray();
+        }
+
+        private string[] _approvedImages = [];
+
+        /// <summary>
+        /// A message for the site admin when the list is set but holds none of the images the federated profile accepts:
+        /// every federated task is then rejected with image_not_approved. That can be a deliberate refusal or a typo
+        /// (for example a registry prefix). The Agent cannot tell them apart, so it logs this as an error at startup but
+        /// still applies the list. Null otherwise.
+        /// </summary>
+        public string? ApprovedImagesProblem() =>
+            ApprovedImages.Length == 0 || ApprovedImages.Contains(FederatedTesProfile.ExecutorImage, StringComparer.Ordinal)
+                ? null
+                : $"FederatedTaskSettings:ApprovedImages does not list '{FederatedTesProfile.ExecutorImage}', the image every federated task uses, " +
+                  "so every federated task will be rejected with image_not_approved. If that is not intended, check the list for a typo or a registry prefix.";
 
         public static FederatedTaskSettings FromConfiguration(IConfiguration configuration)
         {
@@ -60,6 +93,13 @@ namespace Agent.Api.Models
             if (section.GetSection(nameof(AllowedExtensions)).Get<string[]>() is { Length: > 0 } extensions)
             {
                 settings.AllowedExtensions = extensions;
+            }
+
+            // A single value ("img" or "img1,img2") is split, not lost. It replaces any indexed entries
+            // ("ApprovedImages:0"), as an environment variable is expected to override appsettings.
+            if (section[nameof(ApprovedImages)] is { } single && !string.IsNullOrWhiteSpace(single))
+            {
+                settings.ApprovedImages = single.Split(',');
             }
 
             return settings;

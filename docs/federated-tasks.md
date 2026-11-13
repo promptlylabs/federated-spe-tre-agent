@@ -10,7 +10,7 @@ To try the flow locally, see [dev/federated](../dev/federated/README.md). It is 
 
 1. A `dare-control-admin` user calls `POST /api/FederatedTask/Enqueue` with a TES task. Submission validates it against the federated profile. The task is stored at the step `queued`. The response holds the task id.
 2. The Agent job `Run Federated Tasks` (`JobSettings:FederatedTaskJobName`) runs every `JobSettings:federatedTaskSchedule` minutes. It calls `GET /api/FederatedTask/GetPendingTasksForTre`. The TRE is taken from the token.
-3. The Agent checks the task against the profile and finds the one `.csv` under `dataset/<name>/` in the dataset bucket. It reads no data values yet. If a check fails, or there is no file or more than one, the task is rejected (`rejected_by_input_checks`). A `queued` task rejected here never reaches `running`. A resumed `running` task is checked again, so if its dataset was removed in the meantime it is rejected with a `running_at` in its history. If the dataset bucket cannot be listed, the task keeps its step and is tried again at the next poll, until `DatasetUnreachableGiveUpMinutes` (default 60) have passed since it was queued. After that it fails with `SYSTEM_ERROR` and `internal_error`, so a bucket that is wrongly configured or denied does not leave tasks queued for good.
+3. The Agent checks the task against the profile, then runs the hospital's input checks in this order: the executor image is in `ApprovedImages` (see "Approved images"), and the one `.csv` under `dataset/<name>/` is in the dataset bucket. It reads no data values yet. If a check fails, or there is no file or more than one, the task is rejected (`rejected_by_input_checks`). If `ApprovedImages` is not set, the task still gets the profile check, but the hospital's checks do not run. The task is not run or reported, and keeps its step. A `queued` task rejected here never reaches `running`. A resumed `running` task is checked again, so if its dataset was removed in the meantime it is rejected with a `running_at` in its history. If the dataset bucket cannot be listed, the task keeps its step and is tried again at the next poll, until `DatasetUnreachableGiveUpMinutes` (default 60) have passed since it was queued, or since the Agent started if that is later. A task that waited while the Agent was down, or while `ApprovedImages` was not set, so gets the full time. Each restart of the Agent gives pending tasks the full time again. After that it fails with `SYSTEM_ERROR` and `internal_error`, so a bucket that is wrongly configured or denied does not leave tasks queued for good.
 4. For a `queued` task, the Agent calls `POST /api/FederatedTask/ReportProgress` with the step `running`. Submission moves the task to `running`. Then the Agent reads the file. If the bucket fails during the read, the task stays `running` and is resumed at the next poll, with the same `DatasetUnreachableGiveUpMinutes` limit as a failed listing. A file that is not valid CSV is reported at once (`invalid_dataset`).
 5. The Agent runs the operation in-process. It does not start a container. The result is a JSON file (see "Task state and result").
 6. The Agent saves the file in the TRE bucket `federated-outputs` as `<taskId>.json`. If the file is already there from an earlier poll, the Agent reuses it and does not compute again.
@@ -216,7 +216,7 @@ A task has a step. It says where the task is, from intake to release. `GetTask` 
 | `running` | `RUNNING` | The Agent has picked the task up. |
 | `waiting_for_output_approval` | `PAUSED` | The result waits for approval in the TRE. Nothing sets this step yet. |
 | `released` | `COMPLETE` | The result file is stored in the orchestrator. |
-| `rejected_by_input_checks` | `CANCELED` | The task was refused before it ran. The error code is one of `invalid_task`, `unknown_operation`, `invalid_filter`, `invalid_dataset_name`, `dataset_not_found` or `ambiguous_dataset`. |
+| `rejected_by_input_checks` | `CANCELED` | The task was refused before it ran. The error code is one of `invalid_task`, `unknown_operation`, `invalid_filter`, `image_not_approved`, `invalid_dataset_name`, `dataset_not_found` or `ambiguous_dataset`. |
 | `rejected_at_output_approval` | `CANCELED` | The result was refused at approval. Nothing sets this step yet. |
 | `failed` | `EXECUTOR_ERROR` or `SYSTEM_ERROR` | Any other error. The Agent sends the state. `SYSTEM_ERROR` is for `internal_error` and `tre_renamed`. `EXECUTOR_ERROR` is for the other codes. |
 
@@ -229,7 +229,14 @@ The result is in `logs[0].metadata`. Every key and value is a string.
 - On `released`: `result_bucket`, `result_key` and `result_sha256` (where the result file is stored in the orchestrator, and its SHA-256). On a rejection or a failure: `error_code` and `error_message`.
 
 - The computed values (count, mean) are in the result file, not in the metadata.
-- `dataset_sha256` is added whenever the Agent read the dataset file, on success and on errors raised after the read (including `invalid_dataset`). It is the lowercase hex SHA-256 of the exact bytes of the CSV. It is absent when the file was not read (`invalid_task`, `dataset_not_found`, `ambiguous_dataset`, `invalid_dataset_name`, `tre_renamed`, and `internal_error` before the read). An empty file gives `invalid_dataset` with the hash.
+- `dataset_sha256` is added whenever the Agent read the dataset file, on success and on errors raised after the read (including `invalid_dataset`). It is the lowercase hex SHA-256 of the exact bytes of the CSV. It is absent when the file was not read: every input-check rejection (`invalid_task`, `unknown_operation`, `invalid_filter`, `image_not_approved`, `invalid_dataset_name`, `dataset_not_found`, `ambiguous_dataset`), `tre_renamed`, and `internal_error` before the read. An empty file gives `invalid_dataset` with the hash.
+
+### How the steps fit the standards
+
+- **GA4GH TES.** `GetTask` always returns a valid TES task with a standard TES `state`. The step, `error_code` and `error_message` are in `logs[0].metadata`, which TES leaves free-form. TES defines no error codes, so ours clash with nothing. `PAUSED` for `waiting_for_output_approval` fits: in TES a task can be paused, and support for it is optional.
+- **`CANCELED` for a rejection is a stretch.** TES says `CANCELED` means the user canceled the task. A hospital that refuses a task is not that, but TES has no "rejected" state. `SYSTEM_ERROR` and `EXECUTOR_ERROR` say that something broke, and a refusal is a decision, not a fault. `CANCELED` is the closest: the task stopped on purpose, the state is final, and TES clients don't retry it. A generic TES client that reads only `state` can tell the researcher that they canceled the task. A client that reads the metadata sees the real step and reason. DAAMS should read the status from the metadata (task 4.3).
+- **Upstream 5S-TES** has its own status list. Only `CancelTask` sets `CANCELED`, so there is no rejection mapping to follow.
+- **Five Safes RO-Crate (TRE-FX).** The profile records checks, such as validation and sign-off, as actions in the crate. When the crate becomes the audit trail, map the input-check and output-approval rejections to those actions instead of a separate naming. Confirm the profile's exact terms before that work.
 
 ### Result document
 
@@ -268,6 +275,7 @@ TODO: researcher access scoped by study once study_id → project mapping exists
 | Code | Meaning |
 |---|---|
 | `invalid_task` | The task does not follow the profile. The message says which rule failed. |
+| `image_not_approved` | The executor image is not in this TRE's `ApprovedImages`. The message names the image. |
 | `invalid_dataset_name` | The name does not match `^[a-z0-9][a-z0-9_-]{0,62}$`. |
 | `dataset_not_found` | No `.csv` file under `dataset/<name>/`. |
 | `ambiguous_dataset` | More than one `.csv` file under `dataset/<name>/`. |
@@ -296,6 +304,14 @@ The Agent does not run a task whose `tres` is not its own `TreName`. It logs an 
 If a TRE is renamed in Submission, its unfinished tasks (`queued`, `running` or `waiting_for_output_approval`) that were enqueued under the old name fail at once with the step `failed`, `SYSTEM_ERROR` and `tre_renamed`. Enqueue them again under the new name. A change of case only (`My-TRE` to `my-tre`) is not a rename. If the name is changed directly in the database instead, the old tasks are not failed, but they are no longer sent to the Agent.
 
 A TRE that has federated tasks cannot be deleted. The tasks are the record of which results left the TRE.
+
+### Approved images
+
+Set `FederatedTaskSettings:ApprovedImages` to the executor images that this TRE accepts. For example, as an environment variable: `FederatedTaskSettings__ApprovedImages__0=5s-tes/federated-ops:1`. A single value also works, with images separated by commas: `FederatedTaskSettings__ApprovedImages=5s-tes/federated-ops:1`. A single value replaces any indexed entries, for example those in `appsettings`. Matching is exact and case-sensitive. Entries are trimmed, and blank entries are ignored.
+
+There is no default, because the site approves the images. Only `appsettings.Development*.json` lists `5s-tes/federated-ops:1`. If the list is not set, the Agent logs an error. A task that fails the profile is still rejected. Other new tasks are not run or reported. They keep their step and run when the list is set. A task whose result file is already saved is still released. Every federated task uses `5s-tes/federated-ops:1` today, so a list without it rejects every federated task at this TRE with `image_not_approved`. The Agent cannot tell a deliberate refusal from a typo or a registry prefix, so at startup it logs an error when the list is set but does not include that image.
+
+The input checks run on every poll until the task's result file is saved, so a resumed `running` task is checked again. After the file is saved, the task is released without checking again. Releasing a result is the decision of output approval, not of the input checks. If its image was removed from the list in the meantime, the Agent logs a warning and still releases the result.
 
 ### Agent identity
 

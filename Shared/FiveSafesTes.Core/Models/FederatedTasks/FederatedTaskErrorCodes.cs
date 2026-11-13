@@ -11,6 +11,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         public const string AmbiguousDataset = "ambiguous_dataset";
         public const string InvalidDataset = "invalid_dataset";
         public const string UnknownOperation = "unknown_operation";
+        public const string ImageNotApproved = "image_not_approved";
         public const string InvalidFilter = "invalid_filter";
         public const string ColumnNotFound = "column_not_found";
         public const string NonNumericValue = "non_numeric_value";
@@ -24,7 +25,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         /// <summary>Codes that mean the task was rejected by the input checks; every other code is a failure.</summary>
         public static readonly IReadOnlySet<string> InputCheckCodes = new HashSet<string>
         {
-            InvalidTask, UnknownOperation, InvalidFilter, InvalidDatasetName, DatasetNotFound, AmbiguousDataset
+            InvalidTask, UnknownOperation, InvalidFilter, InvalidDatasetName, DatasetNotFound, AmbiguousDataset, ImageNotApproved
         };
 
         // Returned only in API error bodies, never in task metadata.

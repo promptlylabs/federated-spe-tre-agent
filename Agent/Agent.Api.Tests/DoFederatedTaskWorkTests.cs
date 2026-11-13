@@ -129,13 +129,96 @@ public class DoFederatedTaskWorkTests
         => Work(client, new DatasetReader(store, new FederatedTaskSettings()), treName, outputs);
 
     private static DoFederatedTaskWork Work(FakeClient client, IDatasetReader reader, string? treName = "tre-a",
-        FakeResultOutputStore? outputs = null, FederatedTaskSettings? settings = null)
+        FakeResultOutputStore? outputs = null, FederatedTaskSettings? settings = null, DateTimeOffset? startedAt = null)
     {
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?> { ["TreName"] = treName })
             .Build();
+        // An Agent that started long ago, so the give-up window counts from when the task was queued.
         return new DoFederatedTaskWork(client, reader, outputs ?? new FakeResultOutputStore(), config, new FixedClock(),
-            settings ?? new FederatedTaskSettings());
+            settings ?? Approving(FederatedTesProfile.ExecutorImage), new AgentStartTime(startedAt ?? Now.AddDays(-1)));
+    }
+
+    private static FederatedTaskSettings Approving(params string[] images) => new() { ApprovedImages = images };
+
+    private static DoFederatedTaskWork Work(FakeClient client, FakeDatasetStore store, FederatedTaskSettings settings,
+        FakeResultOutputStore? outputs = null)
+        => Work(client, new DatasetReader(store, new FederatedTaskSettings()), outputs: outputs, settings: settings);
+
+    [Fact]
+    public async Task Execute_unapproved_image_is_rejected_by_input_checks()
+    {
+        var store = Store();
+        var client = new FakeClient();
+        client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+
+        await Work(client, store, Approving("other:1")).Execute();
+
+        var report = Assert.Single(client.Reports);
+        Assert.Equal(TesState.CANCELEDEnum, report.State);
+        Assert.Equal("input_checks", report.RejectedAt);
+        Assert.Equal("image_not_approved", report.ErrorCode);
+        Assert.False(string.IsNullOrWhiteSpace(report.ErrorMessage));
+        Assert.Empty(client.ProgressCalls);
+        Assert.Equal(0, store.ListCalls);
+    }
+
+    [Fact]
+    public async Task Execute_running_task_whose_image_is_no_longer_approved_is_rejected()
+    {
+        var client = new FakeClient();
+        var task = PendingTask(T1, "cohort_2024", "count", null);
+        task.State = TesState.RUNNINGEnum;
+        client.Pending.Add(task);
+
+        await Work(client, Store(), Approving("other:1")).Execute();
+
+        var report = Assert.Single(client.Reports);
+        Assert.Equal(TesState.CANCELEDEnum, report.State);
+        Assert.Equal("image_not_approved", report.ErrorCode);
+        Assert.Empty(client.ProgressCalls);
+    }
+
+    [Fact]
+    public async Task Execute_without_approved_images_holds_tasks_and_reports_nothing()
+    {
+        var store = Store();
+        var client = new FakeClient();
+        client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+
+        await Work(client, store, Approving()).Execute();
+
+        Assert.Empty(client.Reports);
+        Assert.Empty(client.ProgressCalls);
+        Assert.Equal(0, store.ListCalls);
+    }
+
+    [Fact]
+    public async Task Execute_without_approved_images_still_releases_a_saved_result()
+    {
+        var client = new FakeClient();
+        client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+        var outputs = new FakeResultOutputStore();
+        outputs.Files[T1] = Encoding.UTF8.GetBytes("{\"schemaVersion\":1}");
+
+        await Work(client, new ThrowingReader(), outputs: outputs, settings: Approving()).Execute();
+
+        var report = Assert.Single(client.Reports);
+        Assert.Equal(TesState.COMPLETEEnum, report.State);
+    }
+
+    [Fact]
+    public async Task Execute_task_outside_profile_is_rejected_as_invalid_task_before_the_image_check()
+    {
+        var client = new FakeClient();
+        var task = PendingTask(T1, "cohort_2024", "count", null);
+        task.Executors[0].Image = "ubuntu:22.04";
+        client.Pending.Add(task);
+
+        await Work(client, Store(), Approving("other:1")).Execute();
+
+        var report = Assert.Single(client.Reports);
+        Assert.Equal("invalid_task", report.ErrorCode);
     }
 
     [Fact]
@@ -794,6 +877,29 @@ public class DoFederatedTaskWorkTests
         Assert.Empty(outputs.Files);
     }
 
+    [Fact]
+    public async Task Execute_dataset_bucket_unreachable_soon_after_agent_start_retries_a_long_queued_task()
+    {
+        // Queued 10 hours ago, for example held while ApprovedImages was missing; the Agent was restarted a minute ago.
+        var client = OneMean();
+        client.Pending[0].CreationTime = Now.AddMinutes(-600);
+
+        await Work(client, new FailingResolveReader(), startedAt: Now.AddMinutes(-1)).Execute();
+
+        Assert.Empty(client.Reports);
+    }
+
+    [Fact]
+    public async Task Execute_dataset_bucket_unreachable_gives_up_once_the_agent_has_run_for_the_whole_window()
+    {
+        var client = OneMean();
+        client.Pending[0].CreationTime = Now.AddMinutes(-600);
+
+        await Work(client, new FailingResolveReader(), startedAt: Now.AddMinutes(-60)).Execute();
+
+        Assert.Equal("internal_error", Assert.Single(client.Reports).ErrorCode);
+    }
+
     [Theory]
     [InlineData(60)]
     [InlineData(600)]
@@ -818,7 +924,7 @@ public class DoFederatedTaskWorkTests
         var client = OneMean();
         client.Pending[0].CreationTime = Now.AddMinutes(-10);
 
-        await Work(client, new FailingResolveReader(), settings: new FederatedTaskSettings { DatasetUnreachableGiveUpMinutes = 5 }).Execute();
+        await Work(client, new FailingResolveReader(), settings: new FederatedTaskSettings { DatasetUnreachableGiveUpMinutes = 5, ApprovedImages = [FederatedTesProfile.ExecutorImage] }).Execute();
 
         Assert.Equal("internal_error", Assert.Single(client.Reports).ErrorCode);
     }
@@ -897,5 +1003,103 @@ public class DoFederatedTaskWorkTests
         var report = Assert.Single(client.Reports);
         Assert.Equal(TesState.SYSTEMERROREnum, report.State);
         Assert.Equal("internal_error", report.ErrorCode);
+    }
+
+    /// <summary>
+    /// Tests that read the log. They swap Serilog's global logger, so they run alone in GlobalLoggerCollection; the rest
+    /// of this class runs in parallel as usual.
+    /// </summary>
+    [Collection(GlobalLoggerCollection.Name)]
+    public class LogTests
+    {
+        private sealed class CollectingSink : Serilog.Core.ILogEventSink
+        {
+            public List<Serilog.Events.LogEvent> Events { get; } = new();
+
+            public void Emit(Serilog.Events.LogEvent logEvent)
+            {
+                lock (Events) Events.Add(logEvent);
+            }
+        }
+
+        /// <summary>Runs the work with a collecting global logger; returns the events whose template contains the text.</summary>
+        private static async Task<List<Serilog.Events.LogEvent>> Logged(string text, Func<Task> work)
+        {
+            var sink = new CollectingSink();
+            var previous = Serilog.Log.Logger;
+            Serilog.Log.Logger = new Serilog.LoggerConfiguration().WriteTo.Sink(sink).CreateLogger();
+            try
+            {
+                await work();
+            }
+            finally
+            {
+                Serilog.Log.Logger = previous;
+            }
+
+            lock (sink.Events) return sink.Events.Where(e => e.MessageTemplate.Text.Contains(text)).ToList();
+        }
+
+        private static FakeResultOutputStore SavedResult()
+        {
+            var outputs = new FakeResultOutputStore();
+            outputs.Files[T1] = Encoding.UTF8.GetBytes("{\"schemaVersion\":1}");
+            return outputs;
+        }
+
+        [Fact]
+        public async Task Execute_without_approved_images_logs_once_per_poll()
+        {
+            var client = new FakeClient();
+            client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+            client.Pending.Add(PendingTask(T2, "cohort_2024", "count", null));
+            client.Pending.Add(PendingTask("33333333-3333-3333-3333-333333333333", "cohort_2024", "count", null));
+
+            var events = await Logged("ApprovedImages", () => Work(client, Store(), Approving()).Execute());
+
+            Assert.Equal(Serilog.Events.LogEventLevel.Error, Assert.Single(events).Level);
+        }
+
+        [Fact]
+        public async Task Execute_saved_result_whose_image_is_no_longer_approved_is_released_with_a_warning()
+        {
+            var client = new FakeClient();
+            client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+
+            var events = await Logged("no longer approved", () =>
+                Work(client, new ThrowingReader(), outputs: SavedResult(), settings: Approving("other:1")).Execute());
+
+            // Releasing is output approval's call, not the input checks'; the site is told the image check was skipped.
+            Assert.Equal(TesState.COMPLETEEnum, Assert.Single(client.Reports).State);
+            Assert.Equal(Serilog.Events.LogEventLevel.Warning, Assert.Single(events).Level);
+        }
+
+        [Fact]
+        public async Task Execute_saved_result_whose_image_is_approved_is_released_without_a_warning()
+        {
+            var client = new FakeClient();
+            client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+
+            var events = await Logged("no longer approved", () =>
+                Work(client, new ThrowingReader(), outputs: SavedResult()).Execute());
+
+            Assert.Equal(TesState.COMPLETEEnum, Assert.Single(client.Reports).State);
+            Assert.Empty(events);
+        }
+
+        [Fact]
+        public async Task Execute_saved_result_of_a_task_without_an_image_is_released_without_a_warning()
+        {
+            var client = new FakeClient();
+            var task = PendingTask(T1, "cohort_2024", "count", null);
+            task.Executors = null;
+            client.Pending.Add(task);
+
+            var events = await Logged("no longer approved", () =>
+                Work(client, new ThrowingReader(), outputs: SavedResult(), settings: Approving("other:1")).Execute());
+
+            Assert.Equal(TesState.COMPLETEEnum, Assert.Single(client.Reports).State);
+            Assert.Empty(events);
+        }
     }
 }
