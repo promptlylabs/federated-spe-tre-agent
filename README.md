@@ -40,6 +40,14 @@ Web FrontEnd for the Agent.Api. Allows TRE Admins to:
 
 An alternative to the Agent.Web built with Next.js and TypeScript. More information in the directory's README.md
 
+## Data Egress
+
+`Egress/` holds the Data Egress app, forked from Swansea's DARE-Control (see `Egress/README.md`).
+
+- Data-Egress-API and Data-Egress-UI: a reviewer at the TRE approves or rejects each output before it leaves.
+- Reviews native 5S-TES outputs, and federated task results with their study, code and SHA-256 (see `docs/federated-tasks.md`, "Output approval").
+- Calls the TRE Agent back with each decision.
+
 ## Credentials
 
 ### Credentials.Camunda

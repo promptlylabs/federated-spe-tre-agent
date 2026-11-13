@@ -12,6 +12,12 @@ namespace FiveSafesTes.Core.Models.ViewModels
         public List<EgressResult> FileResults { get; set; }
 
         public string OutputBucket { get; set; }
+
+        // Federated reviews only; null for native egress.
+        public string? Reviewer { get; set; }
+        public DateTime? DecidedAt { get; set; }
+        public string? Reason { get; set; }
+        public string? ResultSha256 { get; set; }
     }
 
     public class EgressResult

@@ -1,8 +1,10 @@
 ﻿using Agent.Api.Attributes;
 using Agent.Api.Constants;
+using Agent.Api.FederatedTasks;
 using Agent.Api.Models;
 using Agent.Api.Services;
 using EasyNetQ;
+using Hangfire;
 using FiveSafesTes.Core.Models;
 using FiveSafesTes.Core.Models.APISimpleTypeReturns;
 using FiveSafesTes.Core.Models.Enums;
@@ -29,6 +31,8 @@ namespace Agent.Api.Controllers
         private readonly MinioTRESettings _minioTreSettings;
         private readonly AgentSettings _agentSettings;
         private readonly IFeatureManager _features;
+        private readonly IOutputApproval _outputApproval;
+        private readonly IBackgroundJobClient _jobs;
 
         public SubmissionController(           
             IBus rabbit,
@@ -37,8 +41,10 @@ namespace Agent.Api.Controllers
             IProjectS3SubHelperFactory projectS3SubHelperFactory,
             IDareClientWithoutTokenHelper dareHelper,
             MinioTRESettings minioTreSettings,
-            AgentSettings agentSettings, IFeatureManager features)
-        {            
+            AgentSettings agentSettings, IFeatureManager features,
+            IOutputApproval outputApproval, IBackgroundJobClient jobs)
+        {
+            _jobs = jobs;            
             _rabbit = rabbit;
             _subHelper = subHelper;
             _minioTreHelper = minioTreHelper;
@@ -47,6 +53,7 @@ namespace Agent.Api.Controllers
             _minioTreSettings = minioTreSettings;
             _agentSettings = agentSettings;
             _features = features;
+            _outputApproval = outputApproval;
         }
 
 
@@ -178,6 +185,15 @@ namespace Agent.Api.Controllers
         [SwaggerResponse(statusCode: 200, type: typeof(BoolReturn), description: "")]
         public async Task<IActionResult> EgressResults([FromBody] EgressReview review)
         {
+            if (await FederatedEgressDecision.TryHandleAsync(review, User, _outputApproval,
+                    taskId => _jobs.Enqueue<IDoFederatedTaskWork>(x => x.ActOnDecision(taskId)),
+                    HttpContext.RequestAborted) is int status)
+                return StatusCode(status, new FederatedDecisionReply
+                {
+                    Result = status == 200,
+                    Refusal = FederatedDecisionReply.IsFinal(status) ? FederatedDecisionReply.FinalRefusal : null
+                });
+
             try
             {               
                 ApprovalType approvalStatus;

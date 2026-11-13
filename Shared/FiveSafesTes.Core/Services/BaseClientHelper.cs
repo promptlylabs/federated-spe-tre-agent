@@ -99,7 +99,8 @@ namespace FiveSafesTes.Core.Services
             else
             {
                 Log.Error("{Function} Invalid Return Code", "CallAPIWithReturnType");
-                throw new Exception("API Failure");
+                var failureBody = response.Content == null ? null : await response.Content.ReadAsStringAsync();
+                throw new ApiCallException("API Failure", response.StatusCode, failureBody);
             }
 
             
@@ -156,7 +157,7 @@ namespace FiveSafesTes.Core.Services
                     }
 
                      Log.Information("{Function} Api returned an error for {endPoint} Response {Res} Error content {Content}", "ClientHelperRequestAsync",endPoint ,  res, content);
-                    throw new Exception("API Call Failure: " + res.StatusCode + ": " + res.ReasonPhrase + " " + content);
+                    throw new ApiCallException("API Call Failure: " + res.StatusCode + ": " + res.ReasonPhrase + " " + content, res.StatusCode, content);
                 }
                 Log.Information("{Function} The response {res}", "ClientHelperRequestAsync", res);
                 return res;

@@ -2,6 +2,11 @@
   "realm": "tre-test",
   "enabled": true,
   "sslRequired": "none",
+  "roles": {
+    "realm": [
+      { "name": "data-egress-admin" }
+    ]
+  },
   "groups": [
     { "name": "dataset-upload", "path": "/dataset-upload" }
   ],
@@ -29,6 +34,23 @@
           }
         }
       ]
+    },
+    {
+      "clientId": "Dare-TRE-API",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "dev-dare-tre-api-secret",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "protocolMappers": [
+        {
+          "name": "aud-dare-tre-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": { "included.client.audience": "Dare-TRE-API", "access.token.claim": "true", "id.token.claim": "false" }
+        }
+      ]
     }
   ],
   "users": [
@@ -41,6 +63,16 @@
       "lastName": "Uploader",
       "credentials": [{ "type": "password", "value": "uploader123", "temporary": false }],
       "groups": ["/dataset-upload"]
+    },
+    {
+      "username": "egress-app",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "egress-app@example.local",
+      "firstName": "Egress",
+      "lastName": "App",
+      "credentials": [{ "type": "password", "value": "EgressApp1!", "temporary": false }],
+      "realmRoles": ["data-egress-admin"]
     }
   ]
 }

@@ -1,7 +1,7 @@
 
 # Contributions
 - Use the **Issues** page for any Bug reports and feature requests.
-- All code contributions must pass the SonarQube Quality Gate and scan.
+- All code contributions must pass the Upwind code scans (SAST, SCA, secrets and IaC) that run on every pull request.
 - Contributions are reviewed by the University of Nottingham Centre for 
 Health Informatics and Swansea University Medical School developer team
 before they are approved and merged into the codebase.

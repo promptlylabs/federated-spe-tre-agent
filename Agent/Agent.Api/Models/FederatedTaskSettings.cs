@@ -54,6 +54,16 @@ namespace Agent.Api.Models
         public int DatasetUnreachableGiveUpMinutes { get; set; } = 60;
 
         /// <summary>
+        /// How long, in minutes, the Agent keeps trying to register a saved result with the Egress app when the
+        /// registration fails (the Egress app is down, unreachable or refuses it). The time counts from when the
+        /// result was first sent for review, or from when the Agent started if that is later. Until then the task
+        /// keeps its step and is tried again at the next poll; after it, the task fails with internal_error, so a
+        /// broken Egress connection does not leave finished tasks running for good. The default, one day, lets an
+        /// Egress outage pass without failing finished work. 0 or less gives up at the first failure.
+        /// </summary>
+        public int EgressUnreachableGiveUpMinutes { get; set; } = 1440;
+
+        /// <summary>
         /// Executor images this TRE has approved. A task whose image is not listed is rejected by the input checks with
         /// image_not_approved. There is no default: approving an image is the site's decision. When the list is missing
         /// or empty, a task that fails the profile is still rejected, but no other new task is checked, run or

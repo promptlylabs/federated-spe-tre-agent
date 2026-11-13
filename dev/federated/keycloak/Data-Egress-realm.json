@@ -1,0 +1,99 @@
+{
+  "realm": "Data-Egress",
+  "enabled": true,
+  "sslRequired": "none",
+  "accessTokenLifespan": 1800,
+  "roles": {
+    "realm": [
+      { "name": "data-egress-admin" },
+      { "name": "dare-tre-admin" }
+    ]
+  },
+  "clients": [
+    {
+      "clientId": "Data-Egress-API",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "dev-data-egress-api-secret",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": true,
+      "serviceAccountsEnabled": false,
+      "protocolMappers": [
+        {
+          "name": "aud-data-egress-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": { "included.client.audience": "Data-Egress-API", "access.token.claim": "true", "id.token.claim": "false" }
+        }
+      ]
+    },
+    {
+      "clientId": "Data-Egress-UI",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "dev-data-egress-ui-secret",
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "redirectUris": ["http://localhost:5280/*"],
+      "webOrigins": ["http://localhost:5280"],
+      "attributes": { "post.logout.redirect.uris": "http://localhost:5280/*" },
+      "protocolMappers": [
+        {
+          "name": "realm-roles-in-id-token",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-realm-role-mapper",
+          "config": {
+            "claim.name": "realm_access.roles",
+            "multivalued": "true",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "true",
+            "userinfo.token.claim": "true"
+          }
+        },
+        {
+          "name": "aud-data-egress-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": { "included.client.audience": "Data-Egress-API", "access.token.claim": "true", "id.token.claim": "false" }
+        }
+      ]
+    },
+    {
+      "clientId": "tre-agent",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "dev-tre-agent-egress-secret",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "protocolMappers": [
+        {
+          "name": "aud-data-egress-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": { "included.client.audience": "Data-Egress-API", "access.token.claim": "true", "id.token.claim": "false" }
+        }
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "reviewer",
+      "enabled": true,
+      "emailVerified": true,
+      "email": "reviewer@example.local",
+      "firstName": "Output",
+      "lastName": "Reviewer",
+      "credentials": [{ "type": "password", "value": "Reviewer1!", "temporary": false }],
+      "realmRoles": ["data-egress-admin"]
+    },
+    {
+      "username": "service-account-tre-agent",
+      "enabled": true,
+      "serviceAccountClientId": "tre-agent",
+      "realmRoles": ["dare-tre-admin"]
+    }
+  ]
+}

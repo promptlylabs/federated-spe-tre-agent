@@ -13,6 +13,12 @@ namespace Agent.Api
         [AutomaticRetry(Attempts = 0)]
         [DisableConcurrentExecution(timeoutInSeconds: 300)]
         Task Execute();
+
+        /// <summary>
+        /// Releases or rejects one task as soon as its reviewer's decision is recorded, without waiting for the task
+        /// to come up in a poll. Retried by Hangfire on a transport failure; the poll acts on the decision too.
+        /// </summary>
+        Task ActOnDecision(string taskId);
     }
 
     /// <summary>
@@ -23,6 +29,8 @@ namespace Agent.Api
         private readonly IFederatedTaskClient _client;
         private readonly IFederatedTaskExecution _execution;
         private readonly IResultOutputStore _outputs;
+        private readonly IOutputApproval _approval;
+        private readonly IEgressReviewClient _egress;
         private readonly IConfiguration _config;
         private readonly TimeProvider _clock;
         private readonly FederatedTaskSettings _settings;
@@ -30,12 +38,14 @@ namespace Agent.Api
         private readonly AgentStartTime _startedAt;
 
         public DoFederatedTaskWork(IFederatedTaskClient client, IDatasetReader reader, IFederatedTaskExecution execution,
-            IResultOutputStore outputs, IConfiguration config, TimeProvider clock, FederatedTaskSettings settings,
-            AgentStartTime startedAt)
+            IResultOutputStore outputs, IOutputApproval approval, IEgressReviewClient egress, IConfiguration config,
+            TimeProvider clock, FederatedTaskSettings settings, AgentStartTime startedAt)
         {
             _client = client;
             _execution = execution;
             _outputs = outputs;
+            _approval = approval;
+            _egress = egress;
             _config = config;
             _clock = clock;
             _settings = settings;
@@ -65,14 +75,13 @@ namespace Agent.Api
 
             Log.Information("Federated tasks: {Count} pending task(s)", pending.Count);
             var held = 0;
+            var heldForEgress = 0;
 
             foreach (var task in pending)
             {
-                // Waiting for output approval: the TRE has nothing to do until Submission records a decision.
-                if (task.State == TesState.PAUSEDEnum) continue;
-
-                // Only QUEUED and RUNNING tasks are the Agent's to work on. Any other state here is unexpected.
-                if (task.State is not (TesState.QUEUEDEnum or TesState.RUNNINGEnum))
+                // QUEUED and RUNNING tasks are run; PAUSED ones wait for the hospital's output approval. Any other
+                // state here is unexpected.
+                if (task.State is not (TesState.QUEUEDEnum or TesState.RUNNINGEnum or TesState.PAUSEDEnum))
                 {
                     Log.Warning("Federated tasks: task {TaskId} is pending in unexpected state {State}; skipping it", task.Id, task.State);
                     continue;
@@ -80,7 +89,11 @@ namespace Agent.Api
 
                 try
                 {
-                    if (await ProcessAsync(task, treName.Trim())) held++;
+                    switch (await ProcessAsync(task, treName.Trim()))
+                    {
+                        case Hold.InputChecks: held++; break;
+                        case Hold.Egress: heldForEgress++; break;
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -93,13 +106,25 @@ namespace Agent.Api
             if (held > 0)
                 Log.Error("Federated tasks: FederatedTaskSettings:ApprovedImages is not configured; {Count} task(s) were not checked or run and keep their step",
                     held);
+            if (heldForEgress > 0)
+                Log.Error("Federated tasks: FederatedEgressSettings BaseUrl/ClientId/ClientSecret are not configured; {Count} result(s) are held for output approval and not released",
+                    heldForEgress);
+        }
+
+        /// <summary>Why a task was left without a report because the site has not configured something.</summary>
+        private enum Hold
+        {
+            None,
+            InputChecks,
+            Egress
         }
 
         /// <summary>
-        /// Compute, save, release and verify one task. Returns true when the input checks held it because the site has
-        /// not configured them, so the caller can log that once per poll. Throws on storage or report transport failure.
+        /// Compute, save, submit for output approval, then release, reject or verify one task. Returns which
+        /// unconfigured setting held it, so the caller can log that once per poll. Throws on storage, approval or
+        /// report transport failure.
         /// </summary>
-        private async Task<bool> ProcessAsync(TesTask task, string treName)
+        private async Task<Hold> ProcessAsync(TesTask task, string treName)
         {
             var taskId = task.Id ?? string.Empty;
 
@@ -107,21 +132,46 @@ namespace Agent.Api
             if (!Guid.TryParse(taskId, out var guid))
             {
                 await ReportErrorAsync(Error(taskId, FederatedTaskErrorCodes.InvalidTask, "the task id is not a valid GUID"));
-                return false;
+                return Hold.None;
             }
             var storeKey = guid.ToString("D");
 
-            // A file saved by an earlier poll is released as it is; the result is never computed twice.
+            // The review is read before the result: once a result has been reviewed, it is never computed again.
+            var review = await _approval.GetAsync(storeKey, CancellationToken.None);
+
+            // A file saved by an earlier poll is used as it is; the result is never computed twice.
             var bytes = await _outputs.TryGetAsync(storeKey, CancellationToken.None);
+
+            if (bytes == null && review != null)
+            {
+                if (review.IsPending)
+                {
+                    Log.Error("Federated tasks: the saved result of task {TaskId} (reviewed sha256 {Reviewed}) is missing; not releasing it",
+                        taskId, review.ResultSha256);
+                    await WithdrawPendingReviewAsync(storeKey, ResultChangedReason);
+                    await ReportErrorAsync(ResultChanged(taskId));
+                    return Hold.None;
+                }
+
+                await ActOnDecidedAsync(taskId, storeKey, review, null);
+                return Hold.None;
+            }
+
+            if (bytes == null && task.State == TesState.PAUSEDEnum)
+            {
+                Log.Warning("Federated tasks: task {TaskId} is waiting for output approval, but the TRE has no saved result and no review for it; skipping it",
+                    taskId);
+                return Hold.None;
+            }
 
             if (bytes == null)
             {
                 var prepared = Prepare(task, taskId, treName);
-                if (prepared.Skip) return false;
+                if (prepared.Skip) return Hold.None;
                 if (prepared.ErrorReport != null)
                 {
                     await ReportErrorAsync(prepared.ErrorReport);
-                    return false;
+                    return Hold.None;
                 }
 
                 // The hospital's input checks run before the task is marked running and before any data is read.
@@ -134,20 +184,20 @@ namespace Agent.Api
                 catch (Exception ex)
                 {
                     await RetryOrGiveUpAsync(task, taskId, ex, "listed");
-                    return false;
+                    return Hold.None;
                 }
 
-                if (checkOutcome.Kind == InputCheckKind.Held) return true;
+                if (checkOutcome.Kind == InputCheckKind.Held) return Hold.InputChecks;
                 if (checkOutcome.Kind == InputCheckKind.Rejected)
                 {
                     await ReportErrorAsync(Error(taskId, checkOutcome.ErrorCode!, checkOutcome.ErrorMessage));
-                    return false;
+                    return Hold.None;
                 }
 
                 // A QUEUED task is marked running before its data is read. A RUNNING one was marked by an earlier
                 // poll and is resumed. A transport failure here throws and leaves the task for the next poll.
                 if (task.State == TesState.QUEUEDEnum && !await ReportRunningAsync(taskId))
-                    return false;
+                    return Hold.None;
 
                 // The task is running now. If the bucket fails during the read, it stays running and is resumed at the
                 // next poll, under the same time limit as a failed listing. Any other fault cannot be fixed by
@@ -160,18 +210,18 @@ namespace Agent.Api
                 catch (DatasetStoreException ex)
                 {
                     await RetryOrGiveUpAsync(task, taskId, ex, "read");
-                    return false;
+                    return Hold.None;
                 }
                 catch (Exception ex)
                 {
                     await ReportErrorAsync(InternalError(taskId, ex));
-                    return false;
+                    return Hold.None;
                 }
 
                 if (!executed.IsSuccess)
                 {
                     await ReportErrorAsync(Error(taskId, executed.ErrorCode!, executed.ErrorMessage, executed.DatasetSha256));
-                    return false;
+                    return Hold.None;
                 }
 
                 bytes = FederatedResultDocumentJson.Serialize(executed.Document!);
@@ -183,19 +233,194 @@ namespace Agent.Api
                 // output approval's decision. If the site has since removed the task's image, say so in the log.
                 var image = FederatedInputChecks.ImageOf(task);
                 if (image != null && _checks.IsConfigured && !_checks.IsImageApproved(image))
-                    Log.Warning("Federated tasks: releasing the saved result of task {TaskId}, although its image {Image} is no longer approved at this TRE; the input checks passed before the result was saved",
+                    Log.Warning("Federated tasks: the saved result of task {TaskId} goes on to output approval, although its image {Image} is no longer approved at this TRE; the input checks passed before the result was saved",
                         taskId, image);
             }
 
             var sha = FederatedResultDocumentJson.Sha256Hex(bytes);
             Log.Information("Federated tasks: saved result for {TaskId} sha256 {Sha}", taskId, sha);
 
-            // Egress review will be inserted here, between save and release.
+            // A review that is still pending was made for one set of bytes. If the saved file differs, registering or
+            // waiting would end in a SHA-256 mismatch at every decision, so the task is failed now.
+            if (review is { IsPending: true } && !string.Equals(sha, review.ResultSha256, StringComparison.Ordinal))
+            {
+                Log.Error("Federated tasks: the saved result of task {TaskId} (sha256 {Saved}) does not match the pending review (sha256 {Reviewed}); not registering or waiting",
+                    taskId, sha, review.ResultSha256);
+                await WithdrawPendingReviewAsync(storeKey, ResultChangedReason);
+                await ReportErrorAsync(ResultChanged(taskId));
+                return Hold.None;
+            }
+
+            // The hospital approves each result before it leaves. A result not yet sent for review is registered with
+            // the Egress app; a registration that failed part-way (pending record, no registration marker) is sent
+            // again. A decided review came from the Egress app, so it needs no marker.
+            if (review == null || (review.IsPending && !await _approval.IsRegisteredAsync(storeKey, CancellationToken.None)))
+            {
+                // A review withdrawn earlier (registration gave up, but reporting the failure did not get through) is
+                // never registered again: no decision would be accepted, so the task would wait for good.
+                if (review is { IsPending: true } && await _approval.IsWithdrawnAsync(storeKey, CancellationToken.None))
+                {
+                    Log.Error("Federated tasks: the review of task {TaskId} was withdrawn; reporting the task as failed", taskId);
+                    await ReportErrorAsync(InternalError(taskId, null));
+                    return Hold.None;
+                }
+
+                if (!_egress.IsConfigured) return Hold.Egress;
+                // The pending record is written before the first attempt, so its time is when the result was first
+                // sent for review.
+                var firstSentAt = review?.StartTime ?? _clock.GetUtcNow();
+                try
+                {
+                    review = await _approval.RegisterAsync(Registration(task, storeKey, bytes, sha), CancellationToken.None);
+                }
+                catch (Exception ex)
+                {
+                    if (!HasWaitedTooLong(firstSentAt, _settings.EgressUnreachableGiveUpMinutes))
+                    {
+                        Log.Warning(ex, "Federated tasks: the result of task {TaskId} could not be registered with the Egress app; it keeps its step and is tried again at the next poll",
+                            taskId);
+                        return Hold.None;
+                    }
+
+                    // The Egress app may have saved the request even though the call failed, so it is withdrawn:
+                    // no reviewer can decide a task that has already failed.
+                    await WithdrawPendingReviewAsync(storeKey,
+                        "The result could not be registered for review in time, so the task has failed. It cannot be decided.");
+                    await ReportErrorAsync(InternalError(taskId, ex));
+                    return Hold.None;
+                }
+            }
+
+            if (review.IsPending)
+            {
+                // Submission shows the task as waiting (PAUSED) until the reviewer decides.
+                if (task.State != TesState.PAUSEDEnum) await ReportWaitingAsync(taskId);
+                return Hold.None;
+            }
+
+            await ActOnDecidedAsync(taskId, storeKey, review, bytes);
+            return Hold.None;
+        }
+
+        public async Task ActOnDecision(string taskId)
+        {
+            if (!_client.IsConfigured || !Guid.TryParse(taskId, out var guid))
+            {
+                Log.Warning("Federated tasks: cannot act on the decision for task {TaskId} now; the next poll does", taskId);
+                return;
+            }
+
+            var storeKey = guid.ToString("D");
+            var review = await _approval.GetAsync(storeKey, CancellationToken.None);
+            if (review == null || review.IsPending)
+            {
+                Log.Warning("Federated tasks: task {TaskId} has no recorded decision; nothing to act on", taskId);
+                return;
+            }
+
+            var bytes = await _outputs.TryGetAsync(storeKey, CancellationToken.None);
+            await ActOnDecidedAsync(storeKey, storeKey, review, bytes);
+        }
+
+        /// <summary>
+        /// Rejects or releases a decided task. Only the exact bytes the reviewer approved may leave; a rejection
+        /// stands even when the file is gone. Shared by the poll and <see cref="ActOnDecision"/>.
+        /// </summary>
+        private async Task ActOnDecidedAsync(string taskId, string storeKey, OutputReview review, byte[]? bytes)
+        {
+            if (review.IsRejected)
+            {
+                await ReportErrorAsync(Rejection(taskId, review));
+                return;
+            }
+
+            if (bytes == null)
+            {
+                Log.Error("Federated tasks: the saved result of task {TaskId} (reviewed sha256 {Reviewed}) is missing; not releasing it",
+                    taskId, review.ResultSha256);
+                await ReportErrorAsync(ResultChanged(taskId));
+                return;
+            }
+
+            var sha = FederatedResultDocumentJson.Sha256Hex(bytes);
+            if (!string.Equals(sha, review.ResultSha256, StringComparison.Ordinal))
+            {
+                Log.Error("Federated tasks: the saved result of task {TaskId} (sha256 {Saved}) does not match the reviewed result (sha256 {Reviewed}); not releasing it",
+                    taskId, sha, review.ResultSha256);
+                await ReportErrorAsync(ResultChanged(taskId));
+                return;
+            }
 
             var outcome = await _client.ReportAsync(
                 new FederatedTaskResultReport { TaskId = taskId, State = TesState.COMPLETEEnum }, bytes);
             await HandleOutcomeAsync(taskId, storeKey, sha, bytes, outcome);
-            return false;
+        }
+
+        /// <summary>What the reviewer sees in the Egress app: the study, the code that ran and the result itself.</summary>
+        private EgressRegistration Registration(TesTask task, string storeKey, byte[] bytes, string sha)
+        {
+            var executor = task.Executors?.FirstOrDefault();
+            var command = string.Join(' ', executor?.Command ?? []);
+            var parsed = FederatedTesProfile.Parse(task);
+            // A saved result passed the profile when it was computed; fall back to the raw tag only in defence.
+            var studyId = parsed.IsSuccess
+                ? parsed.Spec!.StudyId
+                : task.Tags?.GetValueOrDefault("study_id") ?? string.Empty;
+            return new EgressRegistration(
+                storeKey,
+                $"Federated task {storeKey}: {command}",
+                studyId,
+                $"{executor?.Image} {command}".Trim(),
+                System.Text.Encoding.UTF8.GetString(bytes),
+                sha,
+                _settings.OutputBucket);
+        }
+
+        /// <summary>Tells Submission the result is waiting for output approval; logs when it is not accepted.</summary>
+        private async Task ReportWaitingAsync(string taskId)
+        {
+            var outcome = await _client.ReportProgressAsync(taskId, FederatedTaskStep.WaitingForOutputApproval);
+            if (!outcome.Accepted)
+                Log.Warning("Federated tasks: Submission did not accept the waiting-for-output-approval report for task {TaskId} (status {Status}, {ErrorCode}); it is sent again at the next poll",
+                    taskId, outcome.StatusCode, outcome.ErrorCode);
+        }
+
+        /// <summary>The reviewer rejected the result: CANCELED at output approval, with the reviewer's reason.</summary>
+        private static FederatedTaskResultReport Rejection(string taskId, OutputReview review)
+        {
+            Log.Information("Federated tasks: the result of task {TaskId} was rejected by output reviewer {Reviewer}", taskId, review.Agent);
+            var reason = string.IsNullOrWhiteSpace(review.Description) ? "the output reviewer rejected the result" : review.Description;
+            return new FederatedTaskResultReport
+            {
+                TaskId = taskId,
+                State = TesState.CANCELEDEnum,
+                RejectedAt = FederatedRejectedAt.OutputApproval,
+                ErrorCode = FederatedTaskErrorCodes.RejectedByReviewer,
+                ErrorMessage = FederatedResultLimits.TruncateErrorMessage(CleanControlChars(reason))
+            };
+        }
+
+        /// <summary>
+        /// The task fails before its reviewer decided: no decision is accepted from now on, and the Egress app is asked
+        /// to take the request out of the reviewers' queue.
+        /// </summary>
+        private Task WithdrawPendingReviewAsync(string storeKey, string reason) =>
+            _approval.WithdrawAsync(storeKey, reason, CancellationToken.None);
+
+        private const string ResultChangedReason =
+            "The result changed before it was reviewed, so the task has failed. It cannot be decided.";
+
+        /// <summary>The saved result is missing or differs from the one the reviewer saw; it is never released.</summary>
+        private static FederatedTaskResultReport ResultChanged(string taskId)
+        {
+            // The caller logs what changed, with the SHA-256 values.
+            return new FederatedTaskResultReport
+            {
+                TaskId = taskId,
+                State = TesState.SYSTEMERROREnum,
+                ErrorCode = FederatedTaskErrorCodes.ResultChangedAfterReview,
+                ErrorMessage = "the saved result no longer matches the reviewed result"
+            };
         }
 
         /// <summary>Reports an error state (no file) and logs when Submission does not accept it.</summary>
@@ -350,9 +575,9 @@ namespace Agent.Api
         /// The dataset reader lets store failures propagate; they are reported rather than failing the whole poll.
         /// The exception can name buckets, endpoints or hosts, so it stays in the TRE's own log.
         /// </summary>
-        private static FederatedTaskResultReport InternalError(string taskId, Exception ex)
+        private static FederatedTaskResultReport InternalError(string taskId, Exception? ex)
         {
-            Log.Error(ex, "Federated tasks: task {TaskId} failed unexpectedly", taskId);
+            if (ex != null) Log.Error(ex, "Federated tasks: task {TaskId} failed unexpectedly", taskId);
             return new FederatedTaskResultReport
             {
                 TaskId = taskId,
@@ -372,8 +597,14 @@ namespace Agent.Api
 
             // Count from the later of enqueue and Agent start. A task held while ApprovedImages was missing (setting it
             // means a restart), or queued while the Agent was down, gets the full window once this Agent can try it.
-            var since = created > _startedAt.Value ? created : _startedAt.Value;
-            return _clock.GetUtcNow() - since >= TimeSpan.FromMinutes(_settings.DatasetUnreachableGiveUpMinutes);
+            return HasWaitedTooLong(created, _settings.DatasetUnreachableGiveUpMinutes);
+        }
+
+        /// <summary>True when the given minutes have passed since the later of <paramref name="start"/> and Agent start.</summary>
+        private bool HasWaitedTooLong(DateTimeOffset start, int giveUpMinutes)
+        {
+            var since = start > _startedAt.Value ? start : _startedAt.Value;
+            return _clock.GetUtcNow() - since >= TimeSpan.FromMinutes(giveUpMinutes);
         }
 
         /// <summary>A 409 that says the task is already final on Submission; task_busy means "send it again".</summary>

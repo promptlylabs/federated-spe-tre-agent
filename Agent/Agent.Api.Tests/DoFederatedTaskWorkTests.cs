@@ -89,6 +89,76 @@ public class DoFederatedTaskWorkTests
         }
     }
 
+    /// <summary>Output approval stand-in. By default it approves every registration at once.</summary>
+    private sealed class FakeOutputApproval : IOutputApproval
+    {
+        public bool AutoApprove { get; set; } = true;
+        public bool ThrowOnRegister { get; set; }
+        public Dictionary<string, OutputReview> Records { get; } = new();
+        public Dictionary<string, EgressRegistration> Registered { get; } = new();
+        /// <summary>Task ids with a registration marker (the Egress app has accepted the registration).</summary>
+        public HashSet<string> Marked { get; } = new();
+        public int RegisterCalls { get; private set; }
+
+        public FakeOutputApproval Preset(string taskId, OutputReview review, bool registered = false)
+        {
+            Records[taskId] = review;
+            if (registered) Marked.Add(taskId);
+            return this;
+        }
+
+        public Task<OutputReview?> GetAsync(string taskId, CancellationToken ct) =>
+            Task.FromResult(Records.TryGetValue(taskId, out var r) ? r : null);
+
+        public Task<bool> IsRegisteredAsync(string taskId, CancellationToken ct) =>
+            Task.FromResult(Marked.Contains(taskId));
+
+        public Task<OutputReview> RegisterAsync(EgressRegistration r, CancellationToken ct)
+        {
+            RegisterCalls++;
+            if (ThrowOnRegister) throw new HttpRequestException("egress down");
+            Registered[r.TaskId] = r;
+            if (Records.TryGetValue(r.TaskId, out var existing) && !existing.IsPending) return Task.FromResult(existing);
+
+            var record = AutoApprove
+                ? Approved(r.ResultSha256)
+                : existing ?? OutputReview.Pending(r.ResultSha256, Now);
+            Records[r.TaskId] = record;
+            Marked.Add(r.TaskId);
+            return Task.FromResult(record);
+        }
+
+        public Task<DecisionOutcome> RecordDecisionAsync(string taskId, ReviewDecision d, CancellationToken ct) =>
+            throw new NotSupportedException();
+
+        public HashSet<string> Withdrawn { get; } = new();
+
+        public Task<bool> IsWithdrawnAsync(string taskId, CancellationToken ct) => Task.FromResult(Withdrawn.Contains(taskId));
+
+        public Task WithdrawAsync(string taskId, string reason, CancellationToken ct)
+        {
+            Withdrawn.Add(taskId);
+            return Task.CompletedTask;
+        }
+    }
+
+    private sealed class FakeEgressClient : IEgressReviewClient
+    {
+        public bool IsConfigured { get; set; } = true;
+
+        public Task RegisterAsync(EgressRegistration r, CancellationToken ct) => throw new NotSupportedException();
+
+        public Task WithdrawAsync(string taskId, string reason, CancellationToken ct) => throw new NotSupportedException();
+    }
+
+    private static OutputReview PendingReview(string sha) => OutputReview.Pending(sha, Now);
+
+    private static OutputReview Approved(string sha) =>
+        new(sha, Now, DisclosureCheckStatus.Completed, "reviewer", Now);
+
+    private static OutputReview Rejected(string sha, string reason) =>
+        new(sha, Now, DisclosureCheckStatus.Failed, "reviewer", Now, reason);
+
     private static readonly DateTimeOffset Now = new(2026, 11, 5, 10, 0, 0, TimeSpan.Zero);
 
     private sealed class FixedClock : TimeProvider
@@ -130,7 +200,7 @@ public class DoFederatedTaskWorkTests
 
     private static DoFederatedTaskWork Work(FakeClient client, IDatasetReader reader, string? treName = "tre-a",
         FakeResultOutputStore? outputs = null, FederatedTaskSettings? settings = null, DateTimeOffset? startedAt = null,
-        IFederatedTaskExecution? execution = null)
+        IFederatedTaskExecution? execution = null, FakeOutputApproval? approval = null, FakeEgressClient? egress = null)
     {
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?> { ["TreName"] = treName })
@@ -138,7 +208,8 @@ public class DoFederatedTaskWorkTests
         var clock = new FixedClock();
         // An Agent that started long ago, so the give-up window counts from when the task was queued.
         return new DoFederatedTaskWork(client, reader, execution ?? new OperationExecution(reader, clock),
-            outputs ?? new FakeResultOutputStore(), config, clock,
+            outputs ?? new FakeResultOutputStore(),
+            approval ?? new FakeOutputApproval(), egress ?? new FakeEgressClient(), config, clock,
             settings ?? Approving(FederatedTesProfile.ExecutorImage), new AgentStartTime(startedAt ?? Now.AddDays(-1)));
     }
 
@@ -739,16 +810,446 @@ public class DoFederatedTaskWorkTests
         Assert.Equal(TesState.COMPLETEEnum, Assert.Single(client.Reports).State);
     }
 
+    private static IDatasetReader Reader() => new DatasetReader(Store(), new FederatedTaskSettings());
+
+    private static FakeClient OneAgeMean()
+    {
+        var client = new FakeClient();
+        client.Pending.Add(PendingTask(T1, "cohort_2024", "mean", "age"));
+        return client;
+    }
+
+    private static FakeResultOutputStore Saved(string content = "{\"schemaVersion\":1}")
+    {
+        var outputs = new FakeResultOutputStore();
+        outputs.Files[T1] = Encoding.UTF8.GetBytes(content);
+        return outputs;
+    }
+
+    private static string ShaOf(byte[] bytes) => FederatedResultDocumentJson.Sha256Hex(bytes);
+
     [Fact]
-    public async Task Execute_paused_task_is_left_alone()
+    public async Task Computed_result_is_registered_and_reported_waiting_not_uploaded()
+    {
+        var client = OneMean();
+        var outputs = new FakeResultOutputStore();
+        var approval = new FakeOutputApproval { AutoApprove = false };
+
+        await Work(client, Reader(), outputs: outputs, approval: approval).Execute();
+
+        Assert.Equal((T1, FederatedTaskStep.WaitingForOutputApproval), client.ProgressCalls[^1]);
+        Assert.DoesNotContain(client.Reports, r => r.State == TesState.COMPLETEEnum);
+        Assert.Empty(client.Calls);
+        Assert.Equal(ShaOf(outputs.Files[T1]), approval.Registered[T1].ResultSha256);
+    }
+
+    [Fact]
+    public async Task Registration_carries_study_code_and_result()
+    {
+        var client = OneAgeMean();
+        var outputs = new FakeResultOutputStore();
+        var approval = new FakeOutputApproval { AutoApprove = false };
+
+        await Work(client, Reader(), outputs: outputs, approval: approval).Execute();
+
+        var r = approval.Registered[T1];
+        Assert.Equal(T1, r.TaskId);
+        Assert.Equal("study-1", r.StudyId);
+        Assert.Equal("5s-tes/federated-ops:1 mean --column age", r.Code);
+        Assert.Equal($"Federated task {T1}: mean --column age", r.Name);
+        Assert.Equal(Encoding.UTF8.GetString(outputs.Files[T1]), r.ResultContent);
+        Assert.Equal(new FederatedTaskSettings().OutputBucket, r.OutputBucket);
+    }
+
+    [Fact]
+    public async Task Paused_task_without_decision_reports_nothing()
     {
         var client = OneMean();
         client.Pending[0].State = TesState.PAUSEDEnum;
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), registered: true);
 
-        await Work(client, new ThrowingReader()).Execute();
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
 
         Assert.Empty(client.ProgressCalls);
-        Assert.Empty(client.Reports);
+        Assert.Empty(client.Calls);
+        Assert.Equal(0, approval.RegisterCalls);
+    }
+
+    [Fact]
+    public async Task Paused_task_without_file_or_record_is_skipped_without_computing()
+    {
+        var client = OneMean();
+        client.Pending[0].State = TesState.PAUSEDEnum;
+        var outputs = new FakeResultOutputStore();
+        var approval = new FakeOutputApproval { AutoApprove = false };
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+
+        Assert.Empty(client.ProgressCalls);
+        Assert.Empty(client.Calls);
+        Assert.Empty(outputs.Files);
+        Assert.Equal(0, approval.RegisterCalls);
+    }
+
+    [Fact]
+    public async Task Paused_approved_task_is_released_with_the_reviewed_sha()
+    {
+        var client = OneMean();
+        client.Pending[0].State = TesState.PAUSEDEnum;
+        var outputs = Saved();
+        var sha = ShaOf(outputs.Files[T1]);
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Approved(sha));
+        client.Outcomes.Enqueue(new FederatedReportOutcome(200, null, null, $"1/{T1}/{sha}.json", sha));
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+
+        var call = Assert.Single(client.Calls);
+        Assert.Equal(TesState.COMPLETEEnum, call.Report.State);
+        Assert.Equal(sha, ShaOf(call.Bytes!));
+        Assert.Equal(($"1/{T1}/{sha}.json", sha), outputs.Released[T1]);
+        Assert.Empty(client.ProgressCalls);
+        // A decided record means the Egress app has the row, even without a registration marker.
+        Assert.Equal(0, approval.RegisterCalls);
+    }
+
+    [Fact]
+    public async Task Approved_task_whose_file_changed_is_failed_and_not_uploaded()
+    {
+        var client = OneMean();
+        client.Pending[0].State = TesState.PAUSEDEnum;
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Approved(ShaOf(outputs.Files[T1])));
+        outputs.Files[T1] = Encoding.UTF8.GetBytes("{\"schemaVersion\":2}");
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+
+        var call = Assert.Single(client.Calls);
+        Assert.Equal(TesState.SYSTEMERROREnum, call.Report.State);
+        Assert.Equal("result_changed_after_review", call.Report.ErrorCode);
+        Assert.Equal("the saved result no longer matches the reviewed result", call.Report.ErrorMessage);
+        Assert.Null(call.Report.RejectedAt);
+        Assert.Null(call.Bytes);
+        Assert.Empty(outputs.Released);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Pending_task_whose_file_changed_since_the_review_record_is_failed_not_registered_or_waiting(bool registered)
+    {
+        var client = OneMean();
+        client.Pending[0].State = TesState.RUNNINGEnum;
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(new string('d', 64)), registered);
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+
+        var call = Assert.Single(client.Calls);
+        Assert.Equal(TesState.SYSTEMERROREnum, call.Report.State);
+        Assert.Equal("result_changed_after_review", call.Report.ErrorCode);
+        Assert.Equal("the saved result no longer matches the reviewed result", call.Report.ErrorMessage);
+        Assert.Null(call.Bytes);
+        Assert.Equal(0, approval.RegisterCalls);
+        Assert.Empty(client.ProgressCalls);
+        Assert.Empty(outputs.Released);
+        Assert.Contains(T1, approval.Withdrawn);
+    }
+
+    [Fact]
+    public async Task Pending_task_whose_file_is_gone_is_withdrawn_and_failed()
+    {
+        var client = OneMean();
+        client.Pending[0].State = TesState.PAUSEDEnum;
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(new string('c', 64)), true);
+
+        await Work(client, new ThrowingReader(), approval: approval).Execute();
+
+        var call = Assert.Single(client.Calls);
+        Assert.Equal("result_changed_after_review", call.Report.ErrorCode);
+        Assert.Contains(T1, approval.Withdrawn);
+    }
+
+    [Fact]
+    public async Task Approved_task_whose_file_is_gone_is_failed_without_recomputing()
+    {
+        var client = OneMean();
+        client.Pending[0].State = TesState.RUNNINGEnum;
+        var outputs = new FakeResultOutputStore();
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Approved(new string('c', 64)));
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+
+        var call = Assert.Single(client.Calls);
+        Assert.Equal(TesState.SYSTEMERROREnum, call.Report.State);
+        Assert.Equal("result_changed_after_review", call.Report.ErrorCode);
+        Assert.Null(call.Bytes);
+        Assert.Empty(outputs.Files);
+        Assert.Equal(0, approval.RegisterCalls);
+        // Decided reviews are not withdrawn: the decision already reached the Agent.
+        Assert.Empty(approval.Withdrawn);
+    }
+
+    [Fact]
+    public async Task Rejected_task_reports_rejection_at_output_approval_with_reason()
+    {
+        var client = OneMean();
+        client.Pending[0].State = TesState.PAUSEDEnum;
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Rejected(ShaOf(outputs.Files[T1]), "small cells"));
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+
+        var call = Assert.Single(client.Calls);
+        Assert.Equal(TesState.CANCELEDEnum, call.Report.State);
+        Assert.Equal("output_approval", call.Report.RejectedAt);
+        Assert.Equal("rejected_by_reviewer", call.Report.ErrorCode);
+        Assert.Equal("small cells", call.Report.ErrorMessage);
+        Assert.Null(call.Bytes);
+        Assert.Empty(outputs.Released);
+    }
+
+    [Fact]
+    public async Task Rejected_task_whose_file_is_gone_still_reports_the_rejection()
+    {
+        var client = OneMean();
+        client.Pending[0].State = TesState.PAUSEDEnum;
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Rejected(new string('c', 64), "small cells"));
+
+        await Work(client, new ThrowingReader(), approval: approval).Execute();
+
+        var call = Assert.Single(client.Calls);
+        Assert.Equal(TesState.CANCELEDEnum, call.Report.State);
+        Assert.Equal("rejected_by_reviewer", call.Report.ErrorCode);
+        Assert.Null(call.Bytes);
+    }
+
+    [Fact]
+    public async Task ActOnDecision_releases_an_approved_task_that_is_not_in_the_pending_list()
+    {
+        var client = OneMean();
+        client.Pending.Clear();
+        var outputs = Saved();
+        var sha = ShaOf(outputs.Files[T1]);
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Approved(sha));
+        client.Outcomes.Enqueue(new FederatedReportOutcome(200, null, null, $"1/{T1}/{sha}.json", sha));
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).ActOnDecision(T1.ToUpperInvariant());
+
+        var call = Assert.Single(client.Calls);
+        Assert.Equal(T1, call.Report.TaskId);
+        Assert.Equal(TesState.COMPLETEEnum, call.Report.State);
+        Assert.Equal(sha, ShaOf(call.Bytes!));
+        Assert.Equal(($"1/{T1}/{sha}.json", sha), outputs.Released[T1]);
+    }
+
+    [Fact]
+    public async Task ActOnDecision_reports_a_rejection_with_its_reason()
+    {
+        var client = OneMean();
+        client.Pending.Clear();
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Rejected(ShaOf(outputs.Files[T1]), "small cells"));
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).ActOnDecision(T1);
+
+        var call = Assert.Single(client.Calls);
+        Assert.Equal(TesState.CANCELEDEnum, call.Report.State);
+        Assert.Equal("rejected_by_reviewer", call.Report.ErrorCode);
+        Assert.Equal("small cells", call.Report.ErrorMessage);
+        Assert.Null(call.Bytes);
+    }
+
+    [Fact]
+    public async Task ActOnDecision_fails_an_approved_task_whose_file_changed()
+    {
+        var client = OneMean();
+        client.Pending.Clear();
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Approved(ShaOf(outputs.Files[T1])));
+        outputs.Files[T1] = Encoding.UTF8.GetBytes("{\"schemaVersion\":2}");
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).ActOnDecision(T1);
+
+        var call = Assert.Single(client.Calls);
+        Assert.Equal("result_changed_after_review", call.Report.ErrorCode);
+        Assert.Null(call.Bytes);
+        Assert.Empty(outputs.Released);
+    }
+
+    [Fact]
+    public async Task ActOnDecision_does_nothing_for_a_pending_or_unknown_review()
+    {
+        var client = OneMean();
+        client.Pending.Clear();
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), true);
+
+        var work = Work(client, new ThrowingReader(), outputs: outputs, approval: approval);
+        await work.ActOnDecision(T1);
+        await work.ActOnDecision("22222222-2222-2222-2222-222222222222");
+        await work.ActOnDecision("not-a-guid");
+
+        Assert.Empty(client.Calls);
+        Assert.Empty(client.ProgressCalls);
+        Assert.Empty(outputs.Released);
+    }
+
+    [Fact]
+    public async Task Rejection_reason_is_cleaned_and_truncated()
+    {
+        var client = OneMean();
+        client.Pending[0].State = TesState.PAUSEDEnum;
+        var outputs = Saved();
+        var reason = "small\ncells\t" + new string('r', 2000);
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Rejected(ShaOf(outputs.Files[T1]), reason));
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+
+        var message = Assert.Single(client.Calls).Report.ErrorMessage!;
+        Assert.Equal(FederatedResultLimits.MaxErrorMessageLength, message.Length);
+        Assert.StartsWith("small cells r", message);
+        Assert.True(FederatedResultLimits.IsValidErrorMessage(message));
+    }
+
+    [Fact]
+    public async Task Running_task_with_unregistered_record_registers_again()
+    {
+        var client = OneMean();
+        client.Pending[0].State = TesState.RUNNINGEnum;
+        var outputs = Saved();
+        var sha = ShaOf(outputs.Files[T1]);
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(sha), registered: false);
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+
+        Assert.Equal(sha, approval.Registered[T1].ResultSha256);
+        Assert.Contains(T1, approval.Marked);
+        Assert.Equal((T1, FederatedTaskStep.WaitingForOutputApproval), Assert.Single(client.ProgressCalls));
+        Assert.Empty(client.Calls);
+    }
+
+    [Fact]
+    public async Task Running_task_with_registered_pending_record_reports_waiting_without_registering()
+    {
+        var client = OneMean();
+        client.Pending[0].State = TesState.RUNNINGEnum;
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), registered: true);
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+
+        Assert.Equal(0, approval.RegisterCalls);
+        Assert.Equal((T1, FederatedTaskStep.WaitingForOutputApproval), Assert.Single(client.ProgressCalls));
+        Assert.Empty(client.Calls);
+    }
+
+    [Fact]
+    public async Task Egress_not_configured_holds_the_result_and_uploads_nothing()
+    {
+        var client = OneMean();
+        var outputs = new FakeResultOutputStore();
+        var approval = new FakeOutputApproval { AutoApprove = false };
+
+        await Work(client, Reader(), outputs: outputs, approval: approval, egress: new FakeEgressClient { IsConfigured = false }).Execute();
+
+        Assert.Empty(client.Calls);
+        Assert.DoesNotContain(client.ProgressCalls, p => p.Step == FederatedTaskStep.WaitingForOutputApproval);
+        Assert.True(outputs.Files.ContainsKey(T1));
+        Assert.Equal(0, approval.RegisterCalls);
+    }
+
+    [Fact]
+    public async Task Registration_failure_leaves_task_running_for_next_poll()
+    {
+        var client = OneMean();
+        var outputs = new FakeResultOutputStore();
+        var approval = new FakeOutputApproval { AutoApprove = false, ThrowOnRegister = true };
+
+        await Work(client, Reader(), outputs: outputs, approval: approval).Execute();
+
+        Assert.Equal((T1, FederatedTaskStep.Running), Assert.Single(client.ProgressCalls));
+        Assert.Empty(client.Calls);
+        Assert.True(outputs.Files.ContainsKey(T1));
+    }
+
+    [Theory]
+    [InlineData(23 * 60, false)]   // first sent for review 23 hours ago: still an outage
+    [InlineData(25 * 60, true)]    // 25 hours ago: past the one-day default
+    public async Task Registration_failing_since_the_result_was_first_sent_gives_up_after_the_limit(int minutesAgo, bool givesUp)
+    {
+        var client = OneMean();
+        client.Pending[0].State = TesState.RUNNINGEnum;
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false, ThrowOnRegister = true }
+            .Preset(T1, OutputReview.Pending(ShaOf(outputs.Files[T1]), Now.AddMinutes(-minutesAgo)));
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval, startedAt: Now.AddDays(-3)).Execute();
+
+        if (givesUp)
+        {
+            var call = Assert.Single(client.Calls);
+            Assert.Equal(TesState.SYSTEMERROREnum, call.Report.State);
+            Assert.Equal("internal_error", call.Report.ErrorCode);
+            Assert.Null(call.Bytes);
+            Assert.Contains(T1, approval.Withdrawn);
+        }
+        else
+        {
+            Assert.Empty(client.Calls);
+            Assert.Empty(approval.Withdrawn);
+        }
+        Assert.Empty(client.ProgressCalls);
+        Assert.Empty(outputs.Released);
+    }
+
+    [Fact]
+    public async Task Withdrawn_pending_review_is_reported_failed_and_not_registered_again()
+    {
+        // Registration gave up and withdrew the review, but the failure report did not get through.
+        var client = OneMean();
+        client.Pending[0].State = TesState.RUNNINGEnum;
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false }
+            .Preset(T1, OutputReview.Pending(ShaOf(outputs.Files[T1]), Now.AddDays(-2)));
+        approval.Withdrawn.Add(T1);
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+
+        var call = Assert.Single(client.Calls);
+        Assert.Equal(TesState.SYSTEMERROREnum, call.Report.State);
+        Assert.Equal("internal_error", call.Report.ErrorCode);
+        Assert.Equal(0, approval.RegisterCalls);
+        Assert.Empty(client.ProgressCalls);
+    }
+
+    [Fact]
+    public async Task Registration_failure_limit_counts_from_agent_start_when_that_is_later()
+    {
+        var client = OneMean();
+        client.Pending[0].State = TesState.RUNNINGEnum;
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false, ThrowOnRegister = true }
+            .Preset(T1, OutputReview.Pending(ShaOf(outputs.Files[T1]), Now.AddDays(-3)));
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval, startedAt: Now.AddHours(-1)).Execute();
+
+        Assert.Empty(client.Calls);
+    }
+
+    [Fact]
+    public async Task Registration_failure_with_a_zero_limit_gives_up_at_once()
+    {
+        var client = OneMean();
+        var outputs = new FakeResultOutputStore();
+        var approval = new FakeOutputApproval { AutoApprove = false, ThrowOnRegister = true };
+        var settings = Approving(FederatedTesProfile.ExecutorImage);
+        settings.EgressUnreachableGiveUpMinutes = 0;
+
+        await Work(client, Reader(), outputs: outputs, approval: approval, settings: settings, startedAt: Now.AddDays(-1)).Execute();
+
+        var call = Assert.Single(client.Calls);
+        Assert.Equal("internal_error", call.Report.ErrorCode);
     }
 
     [Fact]
@@ -1165,6 +1666,22 @@ public class DoFederatedTaskWorkTests
             var events = await Logged("ApprovedImages", () => Work(client, Store(), Approving()).Execute());
 
             Assert.Equal(Serilog.Events.LogEventLevel.Error, Assert.Single(events).Level);
+        }
+
+        [Fact]
+        public async Task Execute_without_egress_credentials_logs_once_per_poll()
+        {
+            var client = new FakeClient();
+            client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+            client.Pending.Add(PendingTask(T2, "cohort_2024", "count", null));
+
+            var events = await Logged("FederatedEgressSettings", () =>
+                Work(client, Reader(), approval: new FakeOutputApproval { AutoApprove = false },
+                    egress: new FakeEgressClient { IsConfigured = false }).Execute());
+
+            var e = Assert.Single(events);
+            Assert.Equal(Serilog.Events.LogEventLevel.Error, e.Level);
+            Assert.Equal("2", e.Properties["Count"].ToString());
         }
 
         [Fact]

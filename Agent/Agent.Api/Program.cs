@@ -106,6 +106,8 @@ treKeyCloakSettings.KeycloakDemoMode =
   configuration.GetValue<bool>("KeycloakDemoMode");
 builder.Services.AddKeycloakSettings<DataEgressKeyCloakSettings>(
   configuration, "DataEgressKeyCloakSettings");
+builder.Services.AddKeycloakSettings<FederatedEgressSettings>(
+  configuration, FederatedEgressSettings.SectionName);
 
 builder.Services.AddKeycloakSettings<SubmissionKeyCloakSettings>(
   configuration, "SubmissionKeyCloakSettings");
@@ -405,6 +407,9 @@ void AddDependencies(WebApplicationBuilder builder, ConfigurationManager configu
     builder.Services.AddScoped<IResultOutputStore, MinioResultOutputStore>();
     builder.Services.AddScoped<IFederatedTokenSource, KeycloakFederatedTokenSource>();
     builder.Services.AddScoped<IFederatedTaskClient, FederatedTaskClient>();
+    builder.Services.AddScoped<IOutputReviewStore, MinioOutputReviewStore>();
+    builder.Services.AddScoped<IEgressReviewClient, EgressReviewClient>();
+    builder.Services.AddScoped<IOutputApproval, EgressOutputApproval>();
     builder.Services.AddScoped<IMinioSubHelper, MinioSubHelper>();
     builder.Services.AddScoped<IProjectS3AccessKeySyncService, ProjectS3AccessKeySyncService>();
     builder.Services.AddScoped<IProjectS3SubHelperFactory, ProjectS3SubHelperFactory>();
