@@ -69,7 +69,7 @@ namespace Data_Egress_API.Services
         /// The same status from anything else (a proxy, an ingress during a redeploy, a wrong address), network
         /// errors, 5xx and 401/403 from a configuration problem may pass, and are retried.
         /// </summary>
-        public static System.Net.HttpStatusCode? FinalRefusal(Exception ex)
+        private static System.Net.HttpStatusCode? FinalRefusal(Exception ex)
         {
             for (var e = ex; e != null; e = e.InnerException)
             {
@@ -87,9 +87,9 @@ namespace Data_Egress_API.Services
             if (string.IsNullOrWhiteSpace(body)) return false;
             try
             {
-                var json = Newtonsoft.Json.Linq.JObject.Parse(body);
-                var refusal = json.GetValue(nameof(FederatedDecisionReply.Refusal), StringComparison.OrdinalIgnoreCase);
-                return refusal?.ToString() == FederatedDecisionReply.FinalRefusal;
+                // Read with the shared type, so the Agent and the Egress app agree on the field by construction.
+                return Newtonsoft.Json.JsonConvert.DeserializeObject<FederatedDecisionReply>(body)?.Refusal ==
+                       FederatedDecisionReply.FinalRefusal;
             }
             catch (Newtonsoft.Json.JsonException)
             {

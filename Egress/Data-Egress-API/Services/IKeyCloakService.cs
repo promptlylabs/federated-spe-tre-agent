@@ -77,10 +77,12 @@ namespace Data_Egress_API.Services
            
             var response = await client.GetAsync(url);
             var content = await response.Content.ReadAsStringAsync();
-            // The body lists every reviewer's id and email: log only the status and the count.
+            // The body lists every reviewer's id and email: log only the status (before parsing, so a Keycloak
+            // error is still logged) and the count.
+            Log.Information("{Function} Role {Role} users lookup answered HTTP {Status}", "GetEmailsOfAccountWithRole",
+                role, (int)response.StatusCode);
             var uers = JsonConvert.DeserializeObject<List<User>>(content).Where(x => _EmailSettings.EmailsToIgnor.Contains( x.email) == false ).Select(x => x.email).ToList();
-            Log.Information("{Function} Role {Role} users: HTTP {Status}, {Count} to email", "GetEmailsOfAccountWithRole",
-                role, (int)response.StatusCode, uers.Count);
+            Log.Information("{Function} {Count} reviewer(s) to email", "GetEmailsOfAccountWithRole", uers.Count);
 
             return uers;
         }
