@@ -1190,10 +1190,12 @@ public class DoFederatedTaskWorkTests
             Assert.Equal(TesState.SYSTEMERROREnum, call.Report.State);
             Assert.Equal("internal_error", call.Report.ErrorCode);
             Assert.Null(call.Bytes);
+            Assert.Contains(T1, approval.Withdrawn);
         }
         else
         {
             Assert.Empty(client.Calls);
+            Assert.Empty(approval.Withdrawn);
         }
         Assert.Empty(client.ProgressCalls);
         Assert.Empty(outputs.Released);
