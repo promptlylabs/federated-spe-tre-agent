@@ -173,8 +173,15 @@ public sealed class AgentPoll
     private const string JobName = "Run Federated Tasks";
     private static readonly Regex CsrfToken = new("<meta name=\"csrf-token\" content=\"([^\"]+)\"", RegexOptions.Compiled);
     private readonly Uri agent;
+    private readonly TimeSpan timeout;
 
-    internal AgentPoll(StackSettings s) => agent = s.Agent;
+    internal AgentPoll(StackSettings s) : this(s.Agent, TimeSpan.FromSeconds(15)) { }
+
+    internal AgentPoll(Uri agent, TimeSpan timeout)
+    {
+        this.agent = agent;
+        this.timeout = timeout;
+    }
 
     /// <summary>Best effort: false when the dashboard did not accept the trigger (the minute poll still runs).</summary>
     public async Task<bool> TriggerAsync()
@@ -182,7 +189,7 @@ public sealed class AgentPoll
         try
         {
             using var handler = new HttpClientHandler { CookieContainer = new CookieContainer() };
-            using var http = new HttpClient(handler) { BaseAddress = agent, Timeout = TimeSpan.FromSeconds(15) };
+            using var http = new HttpClient(handler) { BaseAddress = agent, Timeout = timeout };
             http.DefaultRequestHeaders.Authorization =
                 new AuthenticationHeaderValue("Basic", Convert.ToBase64String(Encoding.UTF8.GetBytes("admin:password")));
             var page = await http.GetStringAsync("/hangfire/recurring");
@@ -196,8 +203,9 @@ public sealed class AgentPoll
             using var response = await http.SendAsync(request);
             return response.IsSuccessStatusCode;
         }
-        catch (HttpRequestException)
+        catch (Exception ex) when (ex is HttpRequestException or OperationCanceledException)
         {
+            // Unreachable or too slow (HttpClient's timeout throws TaskCanceledException): the minute poll still runs.
             return false;
         }
     }
@@ -215,6 +223,12 @@ public sealed class TreStorage : IDisposable
             new AmazonS3Config { ServiceURL = s.RustFs, ForcePathStyle = true, AuthenticationRegion = "us-east-1" });
 
     public Task ListDatasetsAsync() => s3.ListObjectsV2Async(new ListObjectsV2Request { BucketName = Datasets, MaxKeys = 1 });
+
+    public async Task<bool> HasDatasetAsync(string dataset)
+    {
+        var listed = await s3.ListObjectsV2Async(new ListObjectsV2Request { BucketName = Datasets, Prefix = $"dataset/{dataset}/" });
+        return (listed.S3Objects ?? []).Any(o => o.Key.EndsWith(".csv", StringComparison.OrdinalIgnoreCase));
+    }
 
     public Task PutDatasetFileAsync(string dataset, string fileName, string csv) =>
         s3.PutObjectAsync(new PutObjectRequest { BucketName = Datasets, Key = $"dataset/{dataset}/{fileName}", ContentBody = csv });

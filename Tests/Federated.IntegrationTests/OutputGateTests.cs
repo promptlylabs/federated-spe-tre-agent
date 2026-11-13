@@ -28,7 +28,7 @@ public class OutputGateTests
     [SkippableFact]
     public async Task Approved_result_is_released_and_stored_with_the_reviewed_sha256()
     {
-        Skip.IfNot(stack.Available, stack.UnavailableReason);
+        stack.EnsureReady();
         var id = await WaitingForReviewAsync("mean", "--column", "age");
 
         await stack.Egress.DecideAsync(id, approve: true, reason: null);
@@ -44,7 +44,7 @@ public class OutputGateTests
     [SkippableFact]
     public async Task Reviewer_rejection_is_reported_with_the_reason_and_nothing_is_stored()
     {
-        Skip.IfNot(stack.Available, stack.UnavailableReason);
+        stack.EnsureReady();
         var id = await WaitingForReviewAsync("count");
 
         await stack.Egress.DecideAsync(id, approve: false, reason: "small cells");
@@ -60,7 +60,7 @@ public class OutputGateTests
     [SkippableFact]
     public async Task Result_changed_after_registration_is_never_released_even_when_approved()
     {
-        Skip.IfNot(stack.Available, stack.UnavailableReason);
+        stack.EnsureReady();
         var id = await WaitingForReviewAsync("count");
 
         await stack.Storage.OverwriteResultAsync(id, Encoding.UTF8.GetBytes("{\"tampered\":true}"));

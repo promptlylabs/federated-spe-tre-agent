@@ -13,7 +13,7 @@ public class InputGateTests
     [SkippableFact]
     public async Task Hospital_input_checks_stop_a_task_for_a_dataset_the_hospital_does_not_hold()
     {
-        Skip.IfNot(stack.Available, stack.UnavailableReason);
+        stack.EnsureReady();
         var queued = await stack.Submission.EnqueueAsync($"missing_{Guid.NewGuid():N}", "count");
         Assert.Equal(200, queued.Status);
 
@@ -28,7 +28,7 @@ public class InputGateTests
     [SkippableFact]
     public async Task Hospital_input_checks_stop_a_task_whose_dataset_folder_holds_two_files()
     {
-        Skip.IfNot(stack.Available, stack.UnavailableReason);
+        stack.EnsureReady();
         var dataset = $"ambiguous_{Guid.NewGuid():N}";
         try
         {
@@ -56,7 +56,7 @@ public class InputGateTests
     [InlineData("foreign image", "invalid_task")]
     public async Task Submission_refuses_a_task_outside_the_federated_profile(string kind, string expectedCode)
     {
-        Skip.IfNot(stack.Available, stack.UnavailableReason);
+        stack.EnsureReady();
         var outcome = kind switch
         {
             "unknown operation" => await stack.Submission.EnqueueAsync("cohort_2024", "median"),

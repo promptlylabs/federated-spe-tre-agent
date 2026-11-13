@@ -47,8 +47,30 @@ public sealed class StackFixture : IAsyncLifetime
         {
             UnavailableReason = $"The dev stack at {Host} is not reachable ({ex.GetType().Name}: {ex.Message}). Start it with: {StartCommand}" +
                                 (Host == "localhost" ? " (from a container, set FEDERATED_STACK_HOST=host.docker.internal)" : "");
+            return;
+        }
+
+        // Reachable but not seeded: the tests fail (not skip) and say which seed step is missing.
+        if (!await Storage.HasDatasetAsync("cohort_2024"))
+            SeedProblem = "The dev stack has no dataset cohort_2024: the seed step seed-dataset has not finished. Run: docker compose -f dev/federated/docker-compose.yml up seed-dataset";
+        else
+        {
+            using var creds = await Egress.SendAsync(HttpMethod.Get, "/api/TreCredentials/CheckCredentialsAreValid");
+            if (!creds.IsSuccessStatusCode || !(await creds.Content.ReadAsStringAsync()).Contains("\"result\":true", StringComparison.OrdinalIgnoreCase))
+                SeedProblem = "The Egress app has no usable TRE login, so decisions cannot reach the Agent: the seed step seed-egress-creds has not finished. Run: docker compose -f dev/federated/docker-compose.yml up seed-egress-creds";
         }
     }
+
+    /// <summary>Skips the test when the stack is not reachable; fails it, naming the step, when it is not seeded.</summary>
+    public void EnsureReady()
+    {
+        Skip.IfNot(Available, UnavailableReason);
+        if (SeedProblem != null) Assert.Fail(SeedProblem);
+    }
+
+    public string? SeedProblem { get; private set; }
+
+
 
     public Task DisposeAsync()
     {

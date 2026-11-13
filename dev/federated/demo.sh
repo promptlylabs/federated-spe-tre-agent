@@ -16,6 +16,7 @@ MODE=live
 B=$'\033[1m'; DIM=$'\033[2m'; G=$'\033[32m'; R=$'\033[31m'; A=$'\033[33m'; C=$'\033[36m'; X=$'\033[0m'
 PICKUP_TIMEOUT=150   # seconds for the Agent to pick a task up (it polls once a minute)
 ACT_TIMEOUT=60       # seconds for the Agent to act on a decision (it acts within seconds)
+REVIEW_TIMEOUT=$(( ${DEMO_REVIEW_MINUTES:-15} * 60 ))   # live: how long to wait for the reviewer
 
 FAILURES=0
 SUMMARY=()
@@ -150,10 +151,18 @@ run_case() {
     if [ "$step" = waiting_for_output_approval ]; then
       ok "Analysis ran inside the hospital" "the researcher sees nothing yet"
       local page limit=$ACT_TIMEOUT
-      if [ "$expected" = released ]; then page=$(review "$id" 1); else page=$(review "$id" 2 "small cells"); fi
-      # A person decides in live mode: no time limit while waiting for them.
-      [ "$MODE" = live ] && limit=0
-      view=$(wait_while_state "$id" "$limit" "Waiting for the hospital reviewer…" "$page" PAUSED) || true
+      local reviewed=true
+      if [ "$expected" = released ]; then page=$(review "$id" 1) || reviewed=false
+      else page=$(review "$id" 2 "small cells") || reviewed=false; fi
+      if [ "$reviewed" = false ]; then
+        FAILURES=$((FAILURES + 1)); SUMMARY+=("$n|$title|no review|?"); return
+      fi
+      # A person decides in live mode: wait longer for them, but not for ever.
+      [ "$MODE" = live ] && limit=$REVIEW_TIMEOUT
+      if ! view=$(wait_while_state "$id" "$limit" "Waiting for the hospital reviewer…" "$page" PAUSED); then
+        stop "No decision reached the hospital in $((limit / 60)) minute(s)" "task $id · check the Egress app and its logs"
+        FAILURES=$((FAILURES + 1)); SUMMARY+=("$n|$title|no decision|?"); return
+      fi
       IFS='|' read -r state step code message <<<"$view"
     fi
     case "$step" in
@@ -227,6 +236,19 @@ preflight() {
   if [ -n "$problem" ]; then
     printf '%sThe dev stack is not ready: %s.%s\n' "$R" "$problem" "$X" >&2
     printf 'Start it with: docker compose -f dev/federated/docker-compose.yml up -d --build\n' >&2
+    exit 1
+  fi
+  # Reachable but not seeded: name the seed step that has not finished.
+  local seed=""
+  curl -s --max-time 10 --aws-sigv4 "aws:amz:us-east-1:s3" -u rustfsadmin:rustfsadmin123 \
+      "http://localhost:9000/federated-datasets?list-type=2&prefix=dataset/cohort_2024/" | grep -q '\.csv</Key>' ||
+    seed="the dataset cohort_2024 is missing (seed step seed-dataset)"
+  [ -z "$seed" ] && { curl -s --max-time 10 "$EGRESS/api/TreCredentials/CheckCredentialsAreValid" \
+      -H "Authorization: Bearer $(egress_token)" | grep -qi '"result":true' ||
+    seed="the Egress app has no usable TRE login, so decisions cannot reach the Agent (seed step seed-egress-creds)"; }
+  if [ -n "$seed" ]; then
+    printf '%sThe dev stack is not seeded: %s.%s\n' "$R" "$seed" "$X" >&2
+    printf 'Run: docker compose -f dev/federated/docker-compose.yml up %s\n' "$(echo "$seed" | grep -oE 'seed-[a-z-]+')" >&2
     exit 1
   fi
 }

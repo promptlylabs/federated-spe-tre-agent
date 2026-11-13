@@ -115,7 +115,7 @@ cd dev/federated
 ./demo.sh --unattended   # no pauses: approves case 1 and rejects case 3 through the Egress API; exit 1 if a case ends unexpectedly
 ```
 
-In the live run, approve case 1 and reject case 3 (with a reason) in the Egress app; the script notices the decision on its own and carries on. If the reviewer decides differently, the demo shows what really happened. The demo shows real timing: the Agent picks up new requests once a minute, so a case can wait up to a minute, with a ticking timer, before the hospital checks it.
+In the live run, approve case 1 and reject case 3 (with a reason) in the Egress app; the script notices the decision on its own and carries on. If the reviewer decides differently, the demo shows what really happened. If no decision reaches the hospital within 15 minutes (`DEMO_REVIEW_MINUTES` changes this), the case ends with a message naming the task. The demo shows real timing: the Agent picks up new requests once a minute, so a case can wait up to a minute, with a ticking timer, before the hospital checks it.
 
 ### Before the demo
 
