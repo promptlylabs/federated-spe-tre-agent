@@ -339,6 +339,85 @@ public class FederatedEgressTests
         Assert.Empty(NewController(NewDb()).GetAllEgresses(unprocessedonly: true));
     }
 
+    private static readonly EgressWithdrawal Withdrawal = new() { SubmissionId = "task-1", Reason = "result changed" };
+
+    [Fact]
+    public async Task WithdrawEgress_closes_an_undecided_request_that_then_cannot_be_decided()
+    {
+        var (id, fileId) = Seed("federated");
+
+        var withdrawn = await NewController(NewDb()).WithdrawEgress(Withdrawal);
+        var result = await NewController(NewDb()).CompleteEgressAsync(Form(id, fileId, FileStatus.Approved, null));
+
+        Assert.True(withdrawn.Value!.Result);
+        Assert.Equal("result changed", Load(id).TreClosedReason);
+        AssertRefused(result, "This request was closed by the TRE: result changed");
+        Assert.Empty(_tre.Sent);
+        Assert.Empty(NewController(NewDb()).GetAllEgresses(unprocessedonly: true));
+        await Assert.ThrowsAnyAsync<Exception>(() => NewController(NewDb()).UpdateFileData(fileId, FileStatus.Approved));
+    }
+
+    [Fact]
+    public async Task WithdrawEgress_closes_an_undelivered_decision_so_it_is_not_sent_again()
+    {
+        var id = await DecidedButUndelivered();
+
+        await NewController(NewDb()).WithdrawEgress(Withdrawal);
+        var sent = await FederatedDecisionDelivery.RedeliverPendingAsync(NewDb(), _tre, default);
+
+        Assert.Equal(0, sent);
+        Assert.Equal(1, _tre.Calls);   // only the first, failed, attempt
+        Assert.Equal("result changed", Load(id).TreClosedReason);
+    }
+
+    [Fact]
+    public async Task WithdrawEgress_leaves_a_delivered_decision_and_an_unknown_task_alone()
+    {
+        var (id, fileId) = Seed("federated");
+        await NewController(NewDb()).CompleteEgressAsync(Form(id, fileId, FileStatus.Approved, null));
+
+        var delivered = await NewController(NewDb()).WithdrawEgress(Withdrawal);
+        var unknown = await NewController(NewDb()).WithdrawEgress(new EgressWithdrawal { SubmissionId = "nope", Reason = "x" });
+
+        Assert.False(delivered.Value!.Result);
+        Assert.False(unknown.Value!.Result);
+        Assert.Null(Load(id).TreClosedReason);
+    }
+
+    [Theory]
+    [InlineData(System.Net.HttpStatusCode.Conflict)]
+    [InlineData(System.Net.HttpStatusCode.NotFound)]
+    [InlineData(System.Net.HttpStatusCode.BadRequest)]
+    public async Task CompleteEgress_federated_decision_the_agent_refuses_for_good_is_closed_and_not_retried(System.Net.HttpStatusCode status)
+    {
+        var (id, fileId) = Seed("federated");
+        _tre.Status = status;
+
+        var result = await NewController(NewDb()).CompleteEgressAsync(Form(id, fileId, FileStatus.Approved, null));
+        var retried = await FederatedDecisionDelivery.RedeliverPendingAsync(NewDb(), _tre, default);
+
+        var message = $"The TRE refused this decision (HTTP {(int)status}). It is not sent again.";
+        AssertRefused(result, message);
+        Assert.Equal(0, retried);
+        Assert.Equal(1, _tre.Calls);
+        var row = Load(id);
+        Assert.Equal(message, row.TreClosedReason);
+        Assert.False(row.DecisionDelivered);
+        Assert.Empty(NewController(NewDb()).GetAllEgresses(unprocessedonly: true));
+    }
+
+    [Fact]
+    public async Task RedeliverPending_keeps_retrying_after_a_server_error()
+    {
+        var id = await DecidedButUndelivered();
+        _tre.Status = System.Net.HttpStatusCode.InternalServerError;
+
+        await FederatedDecisionDelivery.RedeliverPendingAsync(NewDb(), _tre, default);
+
+        Assert.Null(Load(id).TreClosedReason);
+        Assert.False(Load(id).DecisionDelivered);
+    }
+
     [Fact]
     public async Task CompleteEgress_native_is_unchanged()
     {
@@ -455,12 +534,17 @@ public class FederatedEgressTests
     {
         public List<EgressReview> Sent { get; } = new();
         public bool Throw { get; set; }
+        /// <summary>When set, the Agent answers with this status (an ApiCallException, as BaseClientHelper throws).</summary>
+        public System.Net.HttpStatusCode? Status { get; set; }
+        public int Calls { get; private set; }
 
         public Task<TOutput?> CallAPI<TInput, TOutput>(string endPoint, TInput model,
             Dictionary<string, string>? paramList = null, bool usePut = false)
             where TInput : class? where TOutput : class?, new()
         {
+            Calls++;
             if (Throw) throw new HttpRequestException("TRE Agent unreachable");
+            if (Status is { } status) throw new ApiCallException("API Failure", status, "{\"result\":false}");
             if (model is EgressReview review) Sent.Add(review);
             return Task.FromResult<TOutput?>(new TOutput());
         }

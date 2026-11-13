@@ -11,5 +11,9 @@ namespace Agent.Api.FederatedTasks
         Task SaveAsync(string taskId, OutputReview review, CancellationToken ct);
         Task<bool> IsRegisteredAsync(string taskId, CancellationToken ct);
         Task MarkRegisteredAsync(string taskId, CancellationToken ct);
+        Task<bool> IsWithdrawnAsync(string taskId, CancellationToken ct);
+
+        /// <summary>Marks a pending review as withdrawn: the task failed before a decision, so none is accepted.</summary>
+        Task MarkWithdrawnAsync(string taskId, CancellationToken ct);
     }
 }

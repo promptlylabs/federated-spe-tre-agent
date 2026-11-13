@@ -32,8 +32,13 @@ public class FederatedEgressDecisionTests
         public Task<OutputReview> RegisterAsync(EgressRegistration r, CancellationToken ct) =>
             throw new NotSupportedException();
 
+        public bool WithdrawnTask { get; set; }
+
+        public Task WithdrawAsync(string taskId, string reason, CancellationToken ct) => throw new NotSupportedException();
+
         public Task<DecisionOutcome> RecordDecisionAsync(string taskId, ReviewDecision d, CancellationToken ct)
         {
+            if (WithdrawnTask) return Task.FromResult(DecisionOutcome.Withdrawn);
             if (!Records.TryGetValue(taskId, out var rec)) return Task.FromResult(DecisionOutcome.NotRegistered);
             if (d.ResultSha256 != rec.ResultSha256) return Task.FromResult(DecisionOutcome.ShaMismatch);
             if (!d.Approved && string.IsNullOrWhiteSpace(d.Reason)) return Task.FromResult(DecisionOutcome.ReasonRequired);
@@ -194,5 +199,17 @@ public class FederatedEgressDecisionTests
         await FederatedEgressDecision.TryHandleAsync(review, User("data-egress-admin"), approval, a => Acted.Add(a), default);
 
         Assert.Equal(new DateTimeOffset(2026, 11, 11, 10, 0, 0, TimeSpan.Zero), approval.Decisions[T1].DecidedAt);
+    }
+
+    [Fact]
+    public async Task Decision_on_a_withdrawn_task_is_409_and_not_acted_on()
+    {
+        var approval = Registered();
+        approval.WithdrawnTask = true;
+
+        var status = await FederatedEgressDecision.TryHandleAsync(Review(), User("data-egress-admin"), approval, a => Acted.Add(a), default);
+
+        Assert.Equal(409, status);
+        Assert.Empty(Acted);
     }
 }

@@ -148,6 +148,7 @@ namespace Agent.Api
                 {
                     Log.Error("Federated tasks: the saved result of task {TaskId} (reviewed sha256 {Reviewed}) is missing; not releasing it",
                         taskId, review.ResultSha256);
+                    await WithdrawPendingReviewAsync(storeKey);
                     await ReportErrorAsync(ResultChanged(taskId));
                     return Hold.None;
                 }
@@ -245,6 +246,7 @@ namespace Agent.Api
             {
                 Log.Error("Federated tasks: the saved result of task {TaskId} (sha256 {Saved}) does not match the pending review (sha256 {Reviewed}); not registering or waiting",
                     taskId, sha, review.ResultSha256);
+                await WithdrawPendingReviewAsync(storeKey);
                 await ReportErrorAsync(ResultChanged(taskId));
                 return Hold.None;
             }
@@ -384,6 +386,15 @@ namespace Agent.Api
                 ErrorMessage = FederatedResultLimits.TruncateErrorMessage(CleanControlChars(reason))
             };
         }
+
+        /// <summary>
+        /// The task fails before its reviewer decided: no decision is accepted from now on, and the Egress app is asked
+        /// to take the request out of the reviewers' queue.
+        /// </summary>
+        private Task WithdrawPendingReviewAsync(string storeKey) =>
+            _approval.WithdrawAsync(storeKey,
+                "The result changed before it was reviewed, so the task has failed. It cannot be decided.",
+                CancellationToken.None);
 
         /// <summary>The saved result is missing or differs from the one the reviewer saw; it is never released.</summary>
         private static FederatedTaskResultReport ResultChanged(string taskId)

@@ -35,6 +35,17 @@ public class EgressOutputApprovalTests
             Markers.Add(taskId);
             return Task.CompletedTask;
         }
+
+        public readonly HashSet<string> Withdrawn = new();
+
+        public Task<bool> IsWithdrawnAsync(string taskId, CancellationToken ct) =>
+            Task.FromResult(Withdrawn.Contains(taskId));
+
+        public Task MarkWithdrawnAsync(string taskId, CancellationToken ct)
+        {
+            Withdrawn.Add(taskId);
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class FakeEgress : IEgressReviewClient
@@ -48,6 +59,16 @@ public class EgressOutputApprovalTests
             Calls++;
             if (OnRegister != null)
                 await OnRegister(r);
+        }
+
+        public List<(string TaskId, string Reason)> Withdrawals = new();
+        public bool ThrowOnWithdraw;
+
+        public Task WithdrawAsync(string taskId, string reason, CancellationToken ct)
+        {
+            if (ThrowOnWithdraw) throw new HttpRequestException("egress down");
+            Withdrawals.Add((taskId, reason));
+            return Task.CompletedTask;
         }
     }
 
@@ -307,5 +328,42 @@ public class EgressOutputApprovalTests
 
         Assert.Equal(store.Records[TaskId], await approval.GetAsync(TaskId, CancellationToken.None));
         Assert.Null(await approval.GetAsync("other", CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task Withdraw_marks_the_task_and_closes_the_egress_request()
+    {
+        var (approval, store, egress) = Make();
+        store.Records[TaskId] = OutputReview.Pending(Sha, Now);
+
+        await approval.WithdrawAsync(TaskId, "changed", default);
+
+        Assert.Contains(TaskId, store.Withdrawn);
+        Assert.Equal((TaskId, "changed"), Assert.Single(egress.Withdrawals));
+        Assert.Equal(0, store.Saves);
+    }
+
+    [Fact]
+    public async Task Withdraw_still_marks_the_task_when_the_egress_app_cannot_be_reached()
+    {
+        var (approval, store, egress) = Make();
+        egress.ThrowOnWithdraw = true;
+
+        await approval.WithdrawAsync(TaskId, "changed", default);
+
+        Assert.Contains(TaskId, store.Withdrawn);
+    }
+
+    [Fact]
+    public async Task Decision_on_a_withdrawn_task_is_refused_and_not_saved()
+    {
+        var (approval, store) = Registered();
+        store.Withdrawn.Add(TaskId);
+
+        var outcome = await approval.RecordDecisionAsync(TaskId, Approve(), default);
+
+        Assert.Equal(DecisionOutcome.Withdrawn, outcome);
+        Assert.True(store.Records[TaskId].IsPending);
+        Assert.Equal(0, store.Saves);
     }
 }

@@ -130,6 +130,14 @@ public class DoFederatedTaskWorkTests
 
         public Task<DecisionOutcome> RecordDecisionAsync(string taskId, ReviewDecision d, CancellationToken ct) =>
             throw new NotSupportedException();
+
+        public HashSet<string> Withdrawn { get; } = new();
+
+        public Task WithdrawAsync(string taskId, string reason, CancellationToken ct)
+        {
+            Withdrawn.Add(taskId);
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class FakeEgressClient : IEgressReviewClient
@@ -137,6 +145,8 @@ public class DoFederatedTaskWorkTests
         public bool IsConfigured { get; set; } = true;
 
         public Task RegisterAsync(EgressRegistration r, CancellationToken ct) => throw new NotSupportedException();
+
+        public Task WithdrawAsync(string taskId, string reason, CancellationToken ct) => throw new NotSupportedException();
     }
 
     private static OutputReview PendingReview(string sha) => OutputReview.Pending(sha, Now);
@@ -941,6 +951,21 @@ public class DoFederatedTaskWorkTests
         Assert.Equal(0, approval.RegisterCalls);
         Assert.Empty(client.ProgressCalls);
         Assert.Empty(outputs.Released);
+        Assert.Contains(T1, approval.Withdrawn);
+    }
+
+    [Fact]
+    public async Task Pending_task_whose_file_is_gone_is_withdrawn_and_failed()
+    {
+        var client = OneMean();
+        client.Pending[0].State = TesState.PAUSEDEnum;
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(new string('c', 64)), true);
+
+        await Work(client, new ThrowingReader(), approval: approval).Execute();
+
+        var call = Assert.Single(client.Calls);
+        Assert.Equal("result_changed_after_review", call.Report.ErrorCode);
+        Assert.Contains(T1, approval.Withdrawn);
     }
 
     [Fact]
@@ -959,6 +984,8 @@ public class DoFederatedTaskWorkTests
         Assert.Null(call.Bytes);
         Assert.Empty(outputs.Files);
         Assert.Equal(0, approval.RegisterCalls);
+        // Decided reviews are not withdrawn: the decision already reached the Agent.
+        Assert.Empty(approval.Withdrawn);
     }
 
     [Fact]

@@ -152,6 +152,20 @@ public class EgressReviewClientTests
     }
 
     [Fact]
+    public async Task Client_withdraw_posts_the_task_id_and_reason()
+    {
+        var handler = new StubHandler(HttpStatusCode.OK, "{\"Result\":true}");
+
+        await Client(handler).WithdrawAsync(TaskId, "changed", CancellationToken.None);
+
+        Assert.Equal("http://egress/api/DataEgress/WithdrawEgress/", handler.Request!.RequestUri!.ToString());
+        Assert.Equal("fake-token", handler.Request.Headers.Authorization!.Parameter);
+        var json = JObject.Parse(handler.Body!);
+        Assert.Equal(TaskId, (string?)json["SubmissionId"]);
+        Assert.Equal("changed", (string?)json["Reason"]);
+    }
+
+    [Fact]
     public async Task Client_fetches_one_token_for_several_registrations()
     {
         var client = (TestClient)Client(new StubHandler(HttpStatusCode.OK, "{\"Result\":true}"));

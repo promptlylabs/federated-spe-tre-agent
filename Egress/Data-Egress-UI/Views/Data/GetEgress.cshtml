@@ -53,9 +53,13 @@
             <h2 class="fs-5 mt-4">Result</h2>
             <pre class="border p-2 bg-light">@FederatedReviewFormatter.PrettyPrintJson(Model.ResultContent)</pre>
             <p class="text-muted">SHA-256: @Model.ResultSha256</p>
-            @if (Model.Status != EgressStatus.NotCompleted && !Model.DecisionDelivered)
+            @if (Model.TreClosedReason != null)
             {
-                <div class="alert alert-warning">This decision is saved but has not reached the TRE yet. Complete &amp; Close sends the saved decision again.</div>
+                <div class="alert alert-danger">This request was closed by the TRE and cannot be decided: @Model.TreClosedReason</div>
+            }
+            else if (Model.Status != EgressStatus.NotCompleted && !Model.DecisionDelivered)
+            {
+                <div class="alert alert-warning">This decision is saved but has not reached the TRE yet. It is sent again automatically, and Complete &amp; Close sends it again now.</div>
             }
         </div>
     }

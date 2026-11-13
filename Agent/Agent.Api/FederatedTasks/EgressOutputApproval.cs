@@ -51,6 +51,9 @@ namespace Agent.Api.FederatedTasks
             if (!string.Equals(current.ResultSha256, d.ResultSha256, StringComparison.Ordinal))
                 return DecisionOutcome.ShaMismatch;
 
+            if (current.IsPending && await _store.IsWithdrawnAsync(taskId, ct))
+                return DecisionOutcome.Withdrawn;
+
             var reason = string.IsNullOrWhiteSpace(d.Reason) ? null : d.Reason;
             if (!d.Approved && reason is null)
                 return DecisionOutcome.ReasonRequired;
@@ -69,6 +72,19 @@ namespace Agent.Api.FederatedTasks
             };
             await _store.SaveAsync(taskId, decided, ct);
             return DecisionOutcome.Recorded;
+        }
+
+        public async Task WithdrawAsync(string taskId, string reason, CancellationToken ct)
+        {
+            await _store.MarkWithdrawnAsync(taskId, ct);
+            try
+            {
+                await _egress.WithdrawAsync(taskId, reason, ct);
+            }
+            catch (Exception ex)
+            {
+                Serilog.Log.Warning(ex, "Federated tasks: the Egress request for task {TaskId} could not be closed; a decision on it is refused", taskId);
+            }
         }
     }
 }

@@ -119,6 +119,49 @@ namespace Data_Egress_API.Controllers
             }
         }
 
+        /// <summary>
+        /// The TRE Agent closes a federated request it can no longer accept a decision for (the task failed while the
+        /// review was pending). Result is false when there is no such request or its decision already reached the TRE.
+        /// </summary>
+        [Authorize(Roles = "data-egress-admin,dare-tre-admin")]
+        [HttpPost("WithdrawEgress")]
+        public async Task<ActionResult<BoolReturn>> WithdrawEgress([FromBody] EgressWithdrawal withdrawal)
+        {
+            if (string.IsNullOrWhiteSpace(withdrawal.SubmissionId) || string.IsNullOrWhiteSpace(withdrawal.Reason))
+            {
+                return BadRequest("SubmissionId and Reason are required");
+            }
+
+            for (var attempt = 0; ; attempt++)
+            {
+                var row = _DbContext.EgressSubmissions.FirstOrDefault(x =>
+                    x.SubmissionId == withdrawal.SubmissionId && x.Kind == EgressSubmission.FederatedKind);
+                if (row == null || row.DecisionDelivered)
+                {
+                    return new BoolReturn { Result = false };
+                }
+
+                if (row.TreClosedReason != null)
+                {
+                    return new BoolReturn { Result = true };
+                }
+
+                row.TreClosedReason = withdrawal.Reason.Trim();
+                try
+                {
+                    await _DbContext.SaveChangesAsync();
+                    Log.Information("{Function} Request for Submission {SubId} closed by the TRE", "WithdrawEgress",
+                        row.SubmissionId);
+                    return new BoolReturn { Result = true };
+                }
+                catch (DbUpdateConcurrencyException) when (attempt == 0)
+                {
+                    // A reviewer saved the row meanwhile: read it again and decide on the new state.
+                    _DbContext.ChangeTracker.Clear();
+                }
+            }
+        }
+
         [Authorize(Roles = "data-egress-admin")]
         [HttpGet("GetAllEgresses")]
         public List<EgressSubmission> GetAllEgresses(bool unprocessedonly)
@@ -129,8 +172,9 @@ namespace Data_Egress_API.Controllers
                 if (unprocessedonly)
                 {
                     // A federated decision stays listed until it has reached the Agent.
-                    query = query.Where(x => x.Status == EgressStatus.NotCompleted ||
-                                             (x.Kind == EgressSubmission.FederatedKind && !x.DecisionDelivered));
+                    query = query.Where(x => x.TreClosedReason == null &&
+                                             (x.Status == EgressStatus.NotCompleted ||
+                                              (x.Kind == EgressSubmission.FederatedKind && !x.DecisionDelivered)));
                 }
 
                 var results = query.ToList();
@@ -290,6 +334,11 @@ namespace Data_Egress_API.Controllers
             if (string.IsNullOrWhiteSpace(approvedBy))
             {
                 approvedBy = "[Unknown]";
+            }
+
+            if (dbegress.TreClosedReason != null)
+            {
+                throw new EgressRefusedException($"This request was closed by the TRE: {dbegress.TreClosedReason}");
             }
 
             if (dbegress.Status != EgressStatus.NotCompleted)
@@ -466,9 +515,11 @@ namespace Data_Egress_API.Controllers
 
                 var returned = _DbContext.EgressFiles.First(x => x.Id == fileId);
 
-                // A completed federated decision is final, even while its callback is still pending.
+                // A completed federated decision is final, even while its callback is still pending, and a request
+                // the TRE closed cannot be decided.
                 if (returned.EgressSubmission?.IsFederated == true &&
-                    returned.EgressSubmission.Status != EgressStatus.NotCompleted)
+                    (returned.EgressSubmission.Status != EgressStatus.NotCompleted ||
+                     returned.EgressSubmission.TreClosedReason != null))
                 {
                     throw new Exception("Egress has already been completed");
                 }

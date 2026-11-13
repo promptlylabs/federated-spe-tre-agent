@@ -30,6 +30,11 @@ namespace FiveSafesTes.Core.Models
         public string? ResultSha256 { get; set; }
         public string? DecisionReason { get; set; }
         public bool DecisionDelivered { get; set; }
+        /// <summary>
+        /// Set when the TRE closed the request: it withdrew it before a decision, or it refused the decision for good.
+        /// A closed request cannot be decided and its decision is not sent again.
+        /// </summary>
+        public string? TreClosedReason { get; set; }
 
         public const string FederatedKind = "federated";
 

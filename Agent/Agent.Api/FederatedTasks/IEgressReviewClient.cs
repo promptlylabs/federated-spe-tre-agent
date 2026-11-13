@@ -17,5 +17,11 @@ namespace Agent.Api.FederatedTasks
 
         /// <summary>Succeeds also when the result is already registered. Throws on any other failure.</summary>
         Task RegisterAsync(EgressRegistration r, CancellationToken ct);
+
+        /// <summary>
+        /// Closes the task's undecided request in the Egress app with a reason, so reviewers can no longer decide it.
+        /// Succeeds also when there is no such request. Throws on any other failure.
+        /// </summary>
+        Task WithdrawAsync(string taskId, string reason, CancellationToken ct);
     }
 }

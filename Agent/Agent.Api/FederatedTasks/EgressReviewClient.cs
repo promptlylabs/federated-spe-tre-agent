@@ -3,6 +3,7 @@ using System.Text;
 using FiveSafesTes.Core.Models;
 using FiveSafesTes.Core.Models.Enums;
 using FiveSafesTes.Core.Models.Settings;
+using FiveSafesTes.Core.Models.ViewModels;
 using FiveSafesTes.Core.Services;
 using Microsoft.Extensions.Options;
 using Newtonsoft.Json;
@@ -16,6 +17,7 @@ namespace Agent.Api.FederatedTasks
     public class EgressReviewClient : IEgressReviewClient
     {
         private const string Endpoint = "/api/DataEgress/AddNewDataEgress/";
+        private const string WithdrawEndpoint = "/api/DataEgress/WithdrawEgress/";
 
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly IOptionsMonitor<FederatedEgressSettings> _keycloak;
@@ -62,14 +64,25 @@ namespace Agent.Api.FederatedTasks
                 Files = new List<EgressFile> { new() { Name = $"{r.TaskId}.json", Status = FileStatus.Undecided } }
             };
 
-            using var request = new HttpRequestMessage(HttpMethod.Post, _endpoints.EgressApiUrl + Endpoint)
+            // The body is BoolReturn; Result = false means the row already exists, which is also success.
+            await PostAsync(Endpoint, submission, ct);
+        }
+
+        public async Task WithdrawAsync(string taskId, string reason, CancellationToken ct)
+        {
+            // Result = false means there is no undecided request for the task, which is also success.
+            await PostAsync(WithdrawEndpoint, new EgressWithdrawal { SubmissionId = taskId, Reason = reason }, ct);
+        }
+
+        private async Task PostAsync(string endpoint, object body, CancellationToken ct)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Post, _endpoints.EgressApiUrl + endpoint)
             {
-                Content = new StringContent(JsonConvert.SerializeObject(submission), Encoding.UTF8, "application/json")
+                Content = new StringContent(JsonConvert.SerializeObject(body), Encoding.UTF8, "application/json")
             };
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await GetCachedTokenAsync());
 
             using var response = await _httpClientFactory.CreateClient().SendAsync(request, ct);
-            // The body is BoolReturn; Result = false means the row already exists, which is also success.
             response.EnsureSuccessStatusCode();
         }
 

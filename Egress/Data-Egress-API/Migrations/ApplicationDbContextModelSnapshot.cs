@@ -105,6 +105,9 @@ namespace Data_Egress_API.Migrations
                     b.Property<string>("SubmissionId")
                         .HasColumnType("text");
 
+                    b.Property<string>("TreClosedReason")
+                        .HasColumnType("text");
+
                     b.Property<uint>("Version")
                         .IsConcurrencyToken()
                         .ValueGeneratedOnAddOrUpdate()

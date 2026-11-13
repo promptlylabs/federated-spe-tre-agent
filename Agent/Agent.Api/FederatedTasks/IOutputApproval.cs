@@ -7,7 +7,8 @@ namespace Agent.Api.FederatedTasks
         NotRegistered,
         ShaMismatch,
         ConflictingDecision,
-        ReasonRequired
+        ReasonRequired,
+        Withdrawn
     }
 
     /// <summary>A reviewer's decision on one result. A rejection must have a reason; for an approval it is an optional comment.</summary>
@@ -31,5 +32,12 @@ namespace Agent.Api.FederatedTasks
 
         Task<OutputReview> RegisterAsync(EgressRegistration r, CancellationToken ct);
         Task<DecisionOutcome> RecordDecisionAsync(string taskId, ReviewDecision d, CancellationToken ct);
+
+        /// <summary>
+        /// The task failed while its review was pending. Marks it so no decision is accepted any more, then asks the
+        /// Egress app to close the request. The mark is what guarantees it; closing the request only clears the
+        /// reviewers' queue, so a failure there is logged and not thrown.
+        /// </summary>
+        Task WithdrawAsync(string taskId, string reason, CancellationToken ct);
     }
 }

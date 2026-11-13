@@ -31,7 +31,20 @@ namespace Data_Egress_API.Services
                 ResultSha256 = row.ResultSha256,
             };
 
-            await tre.CallAPI<EgressReview, Submission>("/api/Submission/EgressResults", review);
+            try
+            {
+                await tre.CallAPI<EgressReview, Submission>("/api/Submission/EgressResults", review);
+            }
+            catch (Exception ex) when (FinalRefusal(ex) is { } status)
+            {
+                // The Agent will never accept this decision (for example the task was withdrawn, or a different
+                // decision is already recorded), so it is closed instead of being sent again every minute.
+                row.TreClosedReason = $"The TRE refused this decision (HTTP {(int)status}). It is not sent again.";
+                await db.SaveChangesAsync();
+                Log.Warning(ex, "{Function} The TRE refused the decision for Submission {SubId} with HTTP {Status}; it is closed",
+                    "DeliverFederatedDecision", row.SubmissionId, (int)status);
+                throw new EgressRefusedException(row.TreClosedReason);
+            }
 
             row.DecisionDelivered = true;
             try
@@ -49,13 +62,31 @@ namespace Data_Egress_API.Services
             return row;
         }
 
+        /// <summary>
+        /// 400, 404 and 409 from the Agent's EgressResults are final: sending the same decision again cannot change
+        /// them. Anything else (network errors, 5xx, 401/403 from a configuration problem) may pass and is retried.
+        /// </summary>
+        private static System.Net.HttpStatusCode? FinalRefusal(Exception ex)
+        {
+            for (var e = ex; e != null; e = e.InnerException)
+            {
+                if (e is AggregateException agg) e = agg.Flatten().GetBaseException();
+                if (e is FiveSafesTes.Core.Services.ApiCallException api &&
+                    api.StatusCode is System.Net.HttpStatusCode.BadRequest or System.Net.HttpStatusCode.NotFound
+                        or System.Net.HttpStatusCode.Conflict)
+                    return api.StatusCode;
+            }
+
+            return null;
+        }
+
         /// <summary>Sends every saved federated decision that has not reached the Agent; returns how many were sent.</summary>
         public static async Task<int> RedeliverPendingAsync(ApplicationDbContext db, ITreClientWithoutTokenHelper tre,
             CancellationToken ct)
         {
             var pending = await db.EgressSubmissions
                 .Where(x => x.Kind == EgressSubmission.FederatedKind && x.Status != EgressStatus.NotCompleted &&
-                            !x.DecisionDelivered)
+                            !x.DecisionDelivered && x.TreClosedReason == null)
                 .OrderBy(x => x.Completed)
                 .ToListAsync(ct);
 
@@ -67,6 +98,10 @@ namespace Data_Egress_API.Services
                 {
                     await DeliverAsync(db, tre, row);
                     sent++;
+                }
+                catch (EgressRefusedException)
+                {
+                    // Refused for good and closed; already logged.
                 }
                 catch (Exception ex)
                 {
