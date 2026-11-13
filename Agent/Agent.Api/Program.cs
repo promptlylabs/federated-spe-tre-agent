@@ -401,6 +401,7 @@ void AddDependencies(WebApplicationBuilder builder, ConfigurationManager configu
     builder.Services.AddScoped<IMinioTreHelper, MinioTreHelper>();
     builder.Services.AddScoped<IDatasetStore, MinioDatasetStore>();
     builder.Services.AddScoped<IDatasetReader, DatasetReader>();
+    builder.Services.AddScoped<IFederatedTaskExecution, OperationExecution>();
     builder.Services.AddScoped<IResultOutputStore, MinioResultOutputStore>();
     builder.Services.AddScoped<IFederatedTokenSource, KeycloakFederatedTokenSource>();
     builder.Services.AddScoped<IFederatedTaskClient, FederatedTaskClient>();
