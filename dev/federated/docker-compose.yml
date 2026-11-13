@@ -270,7 +270,7 @@ services:
           -d grant_type=password -d client_id=Data-Egress-API -d client_secret=dev-data-egress-api-secret \
           -d username=reviewer -d 'password=Reviewer1!' | sed -n 's/.*"access_token":"\([^"]*\)".*/\1/p')
         [ -n "$$token" ] || { echo "no token for reviewer"; exit 1; }
-        # Stored already (a restart): skip, as the upstream UpdateCredentials fails when it replaces a stored login.
+        # Stored already and still usable (a restart): skip. Otherwise UpdateCredentials stores it, replacing an unusable one.
         if curl -sf http://egress-api:8080/api/TreCredentials/CheckCredentialsAreValid -H "Authorization: Bearer $$token" | grep -qi '"result":true'; then
           echo "egress-app login already stored"; exit 0
         fi

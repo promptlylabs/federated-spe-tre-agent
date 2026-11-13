@@ -110,27 +110,7 @@ namespace Data_Egress_API.Controllers
                     return creds;
                 }
 
-                var add = true;
-                var dbcred = _DbContext.KeycloakCredentials.FirstOrDefault(x => x.CredentialType == CredentialType.Egress);
-                if (dbcred != null)
-                {
-                    creds.Id = dbcred.Id;
-                    creds.CredentialType = CredentialType.Egress;
-                    add = false;
-                }
-                creds.CredentialType = CredentialType.Egress;
-                creds.PasswordEnc = _encDecHelper.Encrypt(creds.PasswordEnc);
-                if (add)
-                {
-                    _DbContext.KeycloakCredentials.Add(creds);
-
-                }
-                else
-                {
-                    _DbContext.KeycloakCredentials.Update(creds);
-                }
-
-                await _DbContext.SaveChangesAsync();
+                await SaveCredentialsAsync(creds, CredentialType.Egress);
 
                 Log.Information("{Function} Credentials Successfully update", "EgressUpdateCredentials");
                 return creds;
@@ -140,6 +120,30 @@ namespace Data_Egress_API.Controllers
                 Log.Error(ex, "{Function} Crash", "EgressUpdateCredentials");
                 throw;
             }
+        }
+
+        /// <summary>
+        /// Stores the login of the given type, replacing the stored one if there is one. The stored row is updated
+        /// in place: attaching a second instance with the same key would make EF refuse the save.
+        /// </summary>
+        private async Task SaveCredentialsAsync(KeycloakCredentials creds, CredentialType type)
+        {
+            creds.CredentialType = type;
+            creds.PasswordEnc = _encDecHelper.Encrypt(creds.PasswordEnc);
+
+            var dbcred = _DbContext.KeycloakCredentials.FirstOrDefault(x => x.CredentialType == type);
+            if (dbcred == null)
+            {
+                _DbContext.KeycloakCredentials.Add(creds);
+            }
+            else
+            {
+                dbcred.UserName = creds.UserName;
+                dbcred.PasswordEnc = creds.PasswordEnc;
+                creds.Id = dbcred.Id;
+            }
+
+            await _DbContext.SaveChangesAsync();
         }
 
         [Authorize(Roles = "data-egress-admin")]
@@ -158,27 +162,7 @@ namespace Data_Egress_API.Controllers
                     return creds;
                 }
 
-                var add = true;
-                var dbcred = _DbContext.KeycloakCredentials.FirstOrDefault(x => x.CredentialType == CredentialType.Tre);
-                if (dbcred != null)
-                {
-                    creds.Id = dbcred.Id;
-                    creds.CredentialType = CredentialType.Tre;
-                    add = false;
-                }
-                creds.CredentialType = CredentialType.Tre;
-                creds.PasswordEnc = _encDecHelper.Encrypt(creds.PasswordEnc);
-                if (add)
-                {
-                    _DbContext.KeycloakCredentials.Add(creds);
-
-                }
-                else
-                {
-                    _DbContext.KeycloakCredentials.Update(creds);
-                }
-
-                await _DbContext.SaveChangesAsync();
+                await SaveCredentialsAsync(creds, CredentialType.Tre);
 
                 Log.Information("{Function} Credentials Successfully update", "UpdateCredentials");
                 return creds;
