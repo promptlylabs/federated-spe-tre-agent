@@ -188,7 +188,11 @@ namespace Agent.Api.Controllers
             if (await FederatedEgressDecision.TryHandleAsync(review, User, _outputApproval,
                     taskId => _jobs.Enqueue<IDoFederatedTaskWork>(x => x.ActOnDecision(taskId)),
                     HttpContext.RequestAborted) is int status)
-                return StatusCode(status, new BoolReturn { Result = status == 200 });
+                return StatusCode(status, new FederatedDecisionReply
+                {
+                    Result = status == 200,
+                    Refusal = FederatedDecisionReply.IsFinal(status) ? FederatedDecisionReply.FinalRefusal : null
+                });
 
             try
             {               

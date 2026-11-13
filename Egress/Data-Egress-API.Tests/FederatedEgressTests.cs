@@ -406,6 +406,27 @@ public class FederatedEgressTests
         Assert.Empty(NewController(NewDb()).GetAllEgresses(unprocessedonly: true));
     }
 
+    [Theory]
+    [InlineData(System.Net.HttpStatusCode.NotFound, "<html>404 Not Found</html>")]
+    [InlineData(System.Net.HttpStatusCode.NotFound, "")]
+    [InlineData(System.Net.HttpStatusCode.BadRequest, "{\"result\":false}")]
+    [InlineData(System.Net.HttpStatusCode.Conflict, "{\"result\":false,\"refusal\":\"something else\"}")]
+    public async Task A_refusal_the_agent_did_not_mark_final_keeps_the_decision_for_retry(System.Net.HttpStatusCode status, string body)
+    {
+        var id = await DecidedButUndelivered();
+        _tre.Status = status;
+        _tre.Body = body;
+
+        await FederatedDecisionDelivery.RedeliverPendingAsync(NewDb(), _tre, default);
+        _tre.Status = null;
+        var sent = await FederatedDecisionDelivery.RedeliverPendingAsync(NewDb(), _tre, default);
+
+        Assert.Equal(1, sent);
+        var row = Load(id);
+        Assert.Null(row.TreClosedReason);
+        Assert.True(row.DecisionDelivered);
+    }
+
     [Fact]
     public async Task RedeliverPending_keeps_retrying_after_a_server_error()
     {
@@ -536,6 +557,8 @@ public class FederatedEgressTests
         public bool Throw { get; set; }
         /// <summary>When set, the Agent answers with this status (an ApiCallException, as BaseClientHelper throws).</summary>
         public System.Net.HttpStatusCode? Status { get; set; }
+        /// <summary>The response body sent with <see cref="Status"/>; by default the Agent's marked refusal.</summary>
+        public string Body { get; set; } = "{\"result\":false,\"refusal\":\"final_refusal_by_tre_agent\"}";
         public int Calls { get; private set; }
 
         public Task<TOutput?> CallAPI<TInput, TOutput>(string endPoint, TInput model,
@@ -544,7 +567,7 @@ public class FederatedEgressTests
         {
             Calls++;
             if (Throw) throw new HttpRequestException("TRE Agent unreachable");
-            if (Status is { } status) throw new ApiCallException("API Failure", status, "{\"result\":false}");
+            if (Status is { } status) throw new ApiCallException("API Failure", status, Body);
             if (model is EgressReview review) Sent.Add(review);
             return Task.FromResult<TOutput?>(new TOutput());
         }

@@ -1,5 +1,6 @@
 using Data_Egress_API.Repositories.DbContexts;
 using FiveSafesTes.Core.Models;
+using FiveSafesTes.Core.Models.APISimpleTypeReturns;
 using FiveSafesTes.Core.Models.Enums;
 using FiveSafesTes.Core.Models.ViewModels;
 using Microsoft.EntityFrameworkCore;
@@ -63,21 +64,37 @@ namespace Data_Egress_API.Services
         }
 
         /// <summary>
-        /// 400, 404 and 409 from the Agent's EgressResults are final: sending the same decision again cannot change
-        /// them. Anything else (network errors, 5xx, 401/403 from a configuration problem) may pass and is retried.
+        /// A refusal is final only when the Agent's own EgressResults handler marked it so (400, 404 or 409 with
+        /// <see cref="FederatedDecisionReply.FinalRefusal"/>): sending the same decision again cannot change it.
+        /// The same status from anything else (a proxy, an ingress during a redeploy, a wrong address), network
+        /// errors, 5xx and 401/403 from a configuration problem may pass, and are retried.
         /// </summary>
-        private static System.Net.HttpStatusCode? FinalRefusal(Exception ex)
+        public static System.Net.HttpStatusCode? FinalRefusal(Exception ex)
         {
             for (var e = ex; e != null; e = e.InnerException)
             {
                 if (e is AggregateException agg) e = agg.Flatten().GetBaseException();
                 if (e is FiveSafesTes.Core.Services.ApiCallException api &&
-                    api.StatusCode is System.Net.HttpStatusCode.BadRequest or System.Net.HttpStatusCode.NotFound
-                        or System.Net.HttpStatusCode.Conflict)
+                    FederatedDecisionReply.IsFinal((int)api.StatusCode) && MarkedFinal(api.ResponseBody))
                     return api.StatusCode;
             }
 
             return null;
+        }
+
+        private static bool MarkedFinal(string? body)
+        {
+            if (string.IsNullOrWhiteSpace(body)) return false;
+            try
+            {
+                var json = Newtonsoft.Json.Linq.JObject.Parse(body);
+                var refusal = json.GetValue(nameof(FederatedDecisionReply.Refusal), StringComparison.OrdinalIgnoreCase);
+                return refusal?.ToString() == FederatedDecisionReply.FinalRefusal;
+            }
+            catch (Newtonsoft.Json.JsonException)
+            {
+                return false;
+            }
         }
 
         /// <summary>Sends every saved federated decision that has not reached the Agent; returns how many were sent.</summary>
