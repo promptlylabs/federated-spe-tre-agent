@@ -25,7 +25,15 @@ heading() { printf '\n%s━━ %s ━━%s\n' "$B" "$1" "$X"; }
 say()     { printf '%s\n' "$1"; }
 ok()      { printf '\r\033[K%s✓%s %s %s%s%s\n' "$G" "$X" "$1" "$DIM" "${2:-}" "$X"; }
 stop()    { printf '\r\033[K%s■%s %s %s%s%s\n' "$R" "$X" "$1" "$DIM" "${2:-}" "$X"; }
-waiting() { printf '\r\033[K%s⏳%s %s %s%s%s' "$A" "$X" "$1" "$DIM" "${2:-}" "$X"; }
+# One line, rewritten in place. The hint after the counter is left out when the line would not fit the terminal:
+# a wrapped line cannot be rewritten and would leave a copy on screen at every update.
+COLS=$(stty size </dev/tty 2>/dev/null | cut -d' ' -f2); [ -n "$COLS" ] || COLS=80
+waiting() {
+  local room=$((COLS - ${#1} - 5)) detail=${2:-}
+  [ "${#detail}" -gt "$room" ] && detail=${detail%%  *}
+  [ "${#detail}" -gt "$room" ] && detail=""
+  printf '\r\033[K%s⏳%s %s %s%s%s' "$A" "$X" "$1" "$DIM" "$detail" "$X"
+}
 pause()   { [ "$MODE" = live ] && { printf '\n%sPress Enter %s…%s' "$DIM" "$1" "$X"; read -r _; }; return 0; }
 
 # --- task state -------------------------------------------------------------------------------------------------------
@@ -41,12 +49,13 @@ m = (t.get("logs") or [{}])[0].get("metadata") or {}
 print("|".join([t.get("state") or "UNKNOWN", m.get("step") or "", m.get("error_code") or "", (m.get("error_message") or "").replace("|", "/")]))'
 }
 
-# Polls the task every 2 s while its state is one of the given ones, showing a ticking line. Prints the final view.
+# Polls the task every 2 s while its state is one of the given ones, showing a line whose counter moves every 10 s.
+# Prints the final view.
 # Returns 1 on timeout (0 = no limit).
 wait_while_state() {
   local id=$1 limit=$2 label=$3 hint=$4
   shift 4
-  local start=$SECONDS view state s waiting_now
+  local start=$SECONDS shown=-10 view state s waiting_now
   while :; do
     view=$(task_view "$id"); state=${view%%|*}
     waiting_now=false
@@ -57,7 +66,10 @@ wait_while_state() {
     if [ "$limit" -gt 0 ] && [ $((SECONDS - start)) -ge "$limit" ]; then
       printf '\r\033[K' >&2; echo "$view"; return 1
     fi
-    waiting "$label" "$((SECONDS - start))s  $hint" >&2
+    if [ $((SECONDS - start - shown)) -ge 10 ]; then
+      shown=$(( (SECONDS - start) / 10 * 10 ))
+      waiting "$label" "${shown}s  $hint" >&2
+    fi
     sleep 2
   done
 }
@@ -111,7 +123,7 @@ review() {
     echo "$page"
     return 0
   fi
-  waiting "Waiting for the hospital reviewer…" "$page" >&2
+  waiting "Waiting for the hospital reviewer…" >&2
   sleep 2
   decide "$id" "$status" "$reason" >&2 || { stop "The decision could not be sent" "task $id" >&2; return 1; }
   echo "$page"
@@ -159,7 +171,7 @@ run_case() {
       fi
       # A person decides in live mode: wait longer for them, but not for ever.
       [ "$MODE" = live ] && limit=$REVIEW_TIMEOUT
-      if ! view=$(wait_while_state "$id" "$limit" "Waiting for the hospital reviewer…" "$page" PAUSED); then
+      if ! view=$(wait_while_state "$id" "$limit" "Waiting for the hospital reviewer…" "" PAUSED); then
         stop "No decision reached the hospital in $((limit / 60)) minute(s)" "task $id · check the Egress app and its logs"
         FAILURES=$((FAILURES + 1)); SUMMARY+=("$n|$title|no decision|?"); return
       fi
