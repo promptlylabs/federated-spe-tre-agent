@@ -74,13 +74,6 @@ wait_while_state() {
   done
 }
 
-has_result() {
-  local code
-  code=$(curl -s -o /dev/null -w '%{http_code}' "$SUBMISSION/api/FederatedTask/GetTaskResult?id=$1" \
-    -H "Authorization: Bearer $(token)")
-  [ "$code" = 200 ]
-}
-
 # The released value in plain words, e.g. "40 (from 3 records)".
 result_words() {
   result "$1" 2>/dev/null | python3 -c '
@@ -156,6 +149,10 @@ run_case() {
   elif [ "$state" = QUEUED ] || [ "$state" = UNKNOWN ]; then
     stop "The hospital did not pick the request up in time" "task $id · $state"
     FAILURES=$((FAILURES + 1)); SUMMARY+=("$n|$title|no answer|?"); return
+  elif [ "$state" != RUNNING ] && [ "$state" != PAUSED ]; then
+    # Ended before the analysis started, but not by the input checks (for example a system error).
+    stop "The task ended unexpectedly" "task $id · $state · $step · $code"
+    outcome="$state/$step/$code"; decision="$state"
   else
     ok "Hospital checks passed" "approved code, dataset held by the hospital"
     view=$(wait_while_state "$id" "$PICKUP_TIMEOUT" "Analysis running inside the hospital…" "" RUNNING) || true
@@ -193,9 +190,16 @@ run_case() {
     esac
   fi
 
-  if has_result "$id"; then left="yes (1 file)"; else left="no"; fi
-  # A result is stored only when it was released.
-  if { [ "$outcome" = released ] && [ "$left" = no ]; } || { [ "$outcome" != released ] && [ "$left" != no ]; }; then
+  # Checked in the result store itself. A result is stored only when it was released.
+  case $(stored_result "$id") in
+    yes) left="yes (1 file)" ;;
+    no) left="no" ;;
+    *) left="unknown" ;;
+  esac
+  if [ "$left" = unknown ]; then
+    say "   ${R}✗ could not check the result store ($RESULTS_STORE)${X}"
+    FAILURES=$((FAILURES + 1))
+  elif { [ "$outcome" = released ] && [ "$left" = no ]; } || { [ "$outcome" != released ] && [ "$left" != no ]; }; then
     say "   ${R}✗ result stored: ${left}, but the task ended ${outcome}${X}"
     FAILURES=$((FAILURES + 1))
   elif [ "$outcome" != "$expected" ] && [ "$MODE" = unattended ]; then
@@ -229,7 +233,7 @@ summary() {
   local row n title decision left colour
   for row in "${SUMMARY[@]}"; do
     IFS='|' read -r n title decision left <<<"$row"
-    if [ "$left" = no ]; then colour=$R; else colour=$G; fi
+    case $left in no) colour=$R ;; unknown|\?) colour=$A ;; *) colour=$G ;; esac
     printf '  %-4s %-48s %-28s %s%s%s\n' "$n" "$title" "$decision" "$colour" "$left" "$X"
   done
   echo
@@ -251,16 +255,11 @@ preflight() {
     exit 1
   fi
   # Reachable but not seeded: name the seed step that has not finished.
-  local seed=""
-  curl -s --max-time 10 --aws-sigv4 "aws:amz:us-east-1:s3" -u rustfsadmin:rustfsadmin123 \
-      "http://localhost:9000/federated-datasets?list-type=2&prefix=dataset/cohort_2024/" | grep -q '\.csv</Key>' ||
-    seed="the dataset cohort_2024 is missing (seed step seed-dataset)"
-  [ -z "$seed" ] && { curl -s --max-time 10 "$EGRESS/api/TreCredentials/CheckCredentialsAreValid" \
-      -H "Authorization: Bearer $(egress_token)" | grep -qi '"result":true' ||
-    seed="the Egress app has no usable TRE login, so decisions cannot reach the Agent (seed step seed-egress-creds)"; }
+  local seed
+  seed=$(seed_problem)
   if [ -n "$seed" ]; then
-    printf '%sThe dev stack is not seeded: %s.%s\n' "$R" "$seed" "$X" >&2
-    printf 'Run: docker compose -f dev/federated/docker-compose.yml up %s\n' "$(echo "$seed" | grep -oE 'seed-[a-z-]+')" >&2
+    printf '%sThe dev stack is not seeded: %s.%s\n' "$R" "${seed%|*}" "$X" >&2
+    printf 'Run: docker compose -f dev/federated/docker-compose.yml up %s\n' "${seed#*|}" >&2
     exit 1
   fi
 }

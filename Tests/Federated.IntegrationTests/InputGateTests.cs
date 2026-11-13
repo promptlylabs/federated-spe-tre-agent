@@ -17,12 +17,13 @@ public class InputGateTests
         var queued = await stack.Submission.EnqueueAsync($"missing_{Guid.NewGuid():N}", "count");
         Assert.Equal(200, queued.Status);
 
-        var end = await Await.UntilAsync(stack, queued.Id!, t => t.State != "QUEUED" && t.State != "RUNNING", TimeSpan.FromSeconds(120));
+        var end = await Await.UntilSettledAsync(stack, queued.Id!, TimeSpan.FromSeconds(120));
 
         Assert.Equal("CANCELED", end.State);
         Assert.Equal("rejected_by_input_checks", end.Step);
         Assert.Equal("dataset_not_found", end.ErrorCode);
         Assert.Null(await stack.Submission.GetResultAsync(queued.Id!));
+        Assert.False(await stack.Results.HasResultAsync(queued.Id!));
     }
 
     [SkippableFact]
@@ -37,12 +38,13 @@ public class InputGateTests
             var queued = await stack.Submission.EnqueueAsync(dataset, "count");
             Assert.Equal(200, queued.Status);
 
-            var end = await Await.UntilAsync(stack, queued.Id!, t => t.State is not ("QUEUED" or "RUNNING"), TimeSpan.FromSeconds(120));
+            var end = await Await.UntilSettledAsync(stack, queued.Id!, TimeSpan.FromSeconds(120));
 
             Assert.Equal("CANCELED", end.State);
             Assert.Equal("rejected_by_input_checks", end.Step);
             Assert.Equal("ambiguous_dataset", end.ErrorCode);
             Assert.Null(await stack.Submission.GetResultAsync(queued.Id!));
+            Assert.False(await stack.Results.HasResultAsync(queued.Id!));
         }
         finally
         {

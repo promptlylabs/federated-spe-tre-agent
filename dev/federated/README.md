@@ -127,7 +127,7 @@ In the live run, approve case 1 and reject case 3 (with a reason) in the Egress 
 
 ## Integration tests
 
-`Tests/Federated.IntegrationTests` drives the real loop on this stack (Submission → Agent → Egress app) and checks how each task ends in `GetTask`, and that only a released task has a stored result. It covers the three demo cases and a set of deliberately invalid tasks:
+`Tests/Federated.IntegrationTests` drives the real loop on this stack (Submission → Agent → Egress app) and checks how each task ends in `GetTask`, and that only a released task has a result file in the orchestrator's result store (RustFS on port 9100). It covers the three demo cases and a set of deliberately invalid tasks:
 
 | Gate | Case | Expected end |
 |---|---|---|
@@ -147,7 +147,7 @@ docker run --rm -v "$PWD":/src -w /src -e FEDERATED_STACK_HOST=host.docker.inter
   mcr.microsoft.com/dotnet/sdk:10.0 dotnet test Tests/Federated.IntegrationTests
 ```
 
-(With a local .NET SDK: `dotnet test Tests/Federated.IntegrationTests`.) The tests trigger the Agent's poll through the Hangfire dashboard, so they take seconds, not minutes. Without the stack every test is skipped, with a message saying how to start it. Run them before merging changes to the federated loop.
+(With a local .NET SDK: `dotnet test Tests/Federated.IntegrationTests`.) The tests trigger the Agent's poll through the Hangfire dashboard, so they take seconds, not minutes. When the stack is not running, every stack test is skipped, with a message saying how to start it. When it runs but a service, login or seed step is broken, every stack test fails and says what is wrong. Run them before merging changes to the federated loop.
 
 The tests delete the dataset folders they create, but their tasks and Egress requests stay. Start the demo from a clean stack (see "Before the demo").
 

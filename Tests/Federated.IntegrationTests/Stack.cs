@@ -24,15 +24,20 @@ public sealed class StackSettings
     public Uri Egress => new($"http://{Host}:5279");
     public Uri Keycloak => new($"http://{Host}:8180");
     public string RustFs => $"http://{Host}:9000";
+    public string ResultsStore => $"http://{Host}:9100";
     public const string Tre = "my-tre";
     public const string Image = "5s-tes/federated-ops:1";
 }
 
-/// <summary>Fetches a password-grant token from the dev Keycloak.</summary>
+/// <summary>Fetches a password-grant token from the dev Keycloak, and reuses it until shortly before it expires.</summary>
 internal sealed class TokenSource(HttpClient http, Uri keycloak, string realm, string client, string secret, string user, string password)
 {
+    private string? cached;
+    private DateTime renewAt;
+
     public async Task<string> GetAsync()
     {
+        if (cached != null && DateTime.UtcNow < renewAt) return cached;
         using var response = await http.PostAsync(new Uri(keycloak, $"/realms/{realm}/protocol/openid-connect/token"),
             new FormUrlEncodedContent(new Dictionary<string, string>
             {
@@ -41,7 +46,9 @@ internal sealed class TokenSource(HttpClient http, Uri keycloak, string realm, s
             }));
         response.EnsureSuccessStatusCode();
         var json = JsonNode.Parse(await response.Content.ReadAsStringAsync())!;
-        return json["access_token"]!.GetValue<string>();
+        var lifetime = json["expires_in"]?.GetValue<int>() ?? 60;
+        renewAt = DateTime.UtcNow.AddSeconds(Math.Max(0, lifetime - 30));
+        return cached = json["access_token"]!.GetValue<string>();
     }
 }
 
@@ -80,10 +87,17 @@ public sealed class SubmissionClient
         };
         using var response = await SendAsync(HttpMethod.Post, "/api/FederatedTask/Enqueue",
             new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json"));
-        var json = JsonNode.Parse(await response.Content.ReadAsStringAsync());
+        var json = TryParse(await response.Content.ReadAsStringAsync());
         return response.IsSuccessStatusCode
             ? new EnqueueOutcome((int)response.StatusCode, json?["id"]?.GetValue<string>(), null)
             : new EnqueueOutcome((int)response.StatusCode, null, json?["error_code"]?.GetValue<string>());
+    }
+
+    /// <summary>Null for an empty or non-JSON body (a 401, or a server error page), so the status code is still reported.</summary>
+    internal static JsonNode? TryParse(string body)
+    {
+        try { return JsonNode.Parse(body); }
+        catch (JsonException) { return null; }
     }
 
     public async Task<TaskView> GetTaskAsync(string id)
@@ -246,6 +260,37 @@ public sealed class TreStorage : IDisposable
     public void Dispose() => s3.Dispose();
 }
 
+/// <summary>
+/// The orchestrator's result store, where Submission keeps released results ({tre}/{task}/{sha256}.json). Checked
+/// directly: GetTaskResult answers 404 for every task that is not COMPLETE, whatever is stored.
+/// </summary>
+public sealed class ResultStore : IDisposable
+{
+    private const string Bucket = "federated-results";
+    private readonly AmazonS3Client s3;
+
+    internal ResultStore(StackSettings s) =>
+        s3 = new AmazonS3Client(new BasicAWSCredentials("orchadmin", "orchadmin123"),
+            new AmazonS3Config { ServiceURL = s.ResultsStore, ForcePathStyle = true, AuthenticationRegion = "us-east-1" });
+
+    public Task ListAsync() => s3.ListObjectsV2Async(new ListObjectsV2Request { BucketName = Bucket, MaxKeys = 1 });
+
+    /// <summary>True when any result file of the task is stored.</summary>
+    public async Task<bool> HasResultAsync(string taskId)
+    {
+        var request = new ListObjectsV2Request { BucketName = Bucket };
+        while (true)
+        {
+            var listed = await s3.ListObjectsV2Async(request);
+            if ((listed.S3Objects ?? []).Any(o => o.Key.Contains($"/{taskId}/", StringComparison.OrdinalIgnoreCase))) return true;
+            if (listed.IsTruncated != true) return false;
+            request.ContinuationToken = listed.NextContinuationToken;
+        }
+    }
+
+    public void Dispose() => s3.Dispose();
+}
+
 public static class Await
 {
     private static readonly TimeSpan PollEvery = TimeSpan.FromSeconds(2);
@@ -274,4 +319,8 @@ public static class Await
             await Task.Delay(PollEvery);
         }
     }
+
+    /// <summary>Waits until the Agent is done with the task for now: neither QUEUED nor RUNNING.</summary>
+    public static Task<TaskView> UntilSettledAsync(StackFixture s, string id, TimeSpan timeout) =>
+        UntilAsync(s, id, t => t.State is not ("QUEUED" or "RUNNING"), timeout);
 }

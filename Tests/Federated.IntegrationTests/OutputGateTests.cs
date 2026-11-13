@@ -17,7 +17,7 @@ public class OutputGateTests
     {
         var queued = await stack.Submission.EnqueueAsync("cohort_2024", operation, args);
         Assert.Equal(200, queued.Status);
-        var waiting = await Await.UntilAsync(stack, queued.Id!, t => t.State is not ("QUEUED" or "RUNNING"), Pickup);
+        var waiting = await Await.UntilSettledAsync(stack, queued.Id!, Pickup);
         Assert.Equal("PAUSED", waiting.State);
         Assert.Equal("waiting_for_output_approval", waiting.Step);
         return queued.Id!;
@@ -39,6 +39,7 @@ public class OutputGateTests
         var result = await stack.Submission.GetResultAsync(id);
         Assert.NotNull(result);
         Assert.Equal(end.ResultSha256, result.Sha256);
+        Assert.True(await stack.Results.HasResultAsync(id));
     }
 
     [SkippableFact]
@@ -55,6 +56,7 @@ public class OutputGateTests
         Assert.Equal("rejected_by_reviewer", end.ErrorCode);
         Assert.Equal("small cells", end.ErrorMessage);
         Assert.Null(await stack.Submission.GetResultAsync(id));
+        Assert.False(await stack.Results.HasResultAsync(id));
     }
 
     [SkippableFact]
@@ -71,5 +73,6 @@ public class OutputGateTests
         Assert.Equal("failed", end.Step);
         Assert.Equal("result_changed_after_review", end.ErrorCode);
         Assert.Null(await stack.Submission.GetResultAsync(id));
+        Assert.False(await stack.Results.HasResultAsync(id));
     }
 }

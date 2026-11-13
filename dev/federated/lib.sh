@@ -6,13 +6,33 @@ KEYCLOAK=http://localhost:8180/realms/Dare-Control
 EGRESS=http://localhost:5279
 EGRESS_KEYCLOAK=http://localhost:8180/realms/Data-Egress
 EGRESS_UI=http://localhost:5280
+TRE_STORE=http://localhost:9000       # the TRE's RustFS: datasets
+RESULTS_STORE=http://localhost:9100   # the orchestrator's RustFS: released results
 
-token() {
-  curl -sf "$KEYCLOAK/protocol/openid-connect/token" \
-    -d grant_type=password -d client_id=Dare-Control-API -d client_secret=dev-dare-control-api-secret \
-    -d username=control-admin -d 'password=ControlAdmin1!' |
-    python3 -c 'import sys, json; print(json.load(sys.stdin)["access_token"])'
+# Every call has a time limit, so a service that accepts the connection but never answers cannot hang a script.
+curl() { command curl --connect-timeout 5 --max-time "${CURL_MAX_TIME:-20}" "$@"; }
+
+# Logs in with a password grant and prints "<renew-at epoch>" then the token.
+login() {
+  curl -sf "$1/protocol/openid-connect/token" -d grant_type=password -d "client_id=$2" -d "client_secret=$3" \
+    -d "username=$4" --data-urlencode "password=$5" |
+    python3 -c 'import sys, json, time; t = json.load(sys.stdin); print(int(time.time()) + int(t.get("expires_in", 60)) - 30); print(t["access_token"])'
 }
+
+# Reuses a token until shortly before it expires, so a script that polls every 2 s does not log in every 2 s.
+# The cache lives for one run of the script that sourced this file.
+TOKEN_CACHE=$(mktemp -d "${TMPDIR:-/tmp}/federated-tokens.XXXXXX")
+trap 'rm -rf "$TOKEN_CACHE"' EXIT
+cached_login() {
+  local file=$TOKEN_CACHE/$1 fresh
+  shift
+  if [ -s "$file" ] && [ "$(head -n 1 "$file")" -gt "$(date +%s)" ]; then tail -n 1 "$file"; return 0; fi
+  fresh=$(login "$@") || return 1
+  printf '%s\n' "$fresh" > "$file"
+  tail -n 1 <<<"$fresh"
+}
+
+token() { cached_login submission "$KEYCLOAK" Dare-Control-API dev-dare-control-api-secret control-admin 'ControlAdmin1!'; }
 
 enqueue() {
   local dataset=$1 operation=${2:-count}
@@ -91,12 +111,7 @@ wait_while() {
 }
 
 
-egress_token() {
-  curl -sf "$EGRESS_KEYCLOAK/protocol/openid-connect/token" \
-    -d grant_type=password -d client_id=Data-Egress-API -d client_secret=dev-data-egress-api-secret \
-    -d username=reviewer -d 'password=Reviewer1!' |
-    python3 -c 'import sys, json; print(json.load(sys.stdin)["access_token"])'
-}
+egress_token() { cached_login egress "$EGRESS_KEYCLOAK" Data-Egress-API dev-data-egress-api-secret reviewer 'Reviewer1!'; }
 
 # Prints the id of the task's undecided Egress request, or nothing if there is none (yet).
 egress_row_id() {
@@ -135,3 +150,29 @@ print(json.dumps(e))' "$egress" "$status" "$reason")
   fi
 }
 
+# Lists a bucket in one of the dev RustFS stores: s3_list <store> <user:secret> <bucket> <query>.
+s3_list() {
+  curl -sf --aws-sigv4 "aws:amz:us-east-1:s3" -u "$2" "$1/$3?list-type=2&$4"
+}
+
+# Whether a result file of the task is in the orchestrator's result store: yes, no, or unknown (store not answering).
+# Checked in the store itself: GetTaskResult answers 404 for every task that is not COMPLETE, whatever is stored.
+stored_result() {
+  local tres tre listing
+  tres=$(s3_list "$RESULTS_STORE" orchadmin:orchadmin123 federated-results "delimiter=/") || { echo unknown; return; }
+  # Keys are <tre>/<task>/<sha256>.json; list each TRE's folder for the task.
+  for tre in $(grep -oE '<Prefix>[^<]+/</Prefix>' <<<"$tres" | sed -E 's#</?Prefix>##g'); do
+    listing=$(s3_list "$RESULTS_STORE" orchadmin:orchadmin123 federated-results "prefix=${tre}$1/") || { echo unknown; return; }
+    grep -q '<Key>' <<<"$listing" && { echo yes; return; }
+  done
+  echo no
+}
+
+# Prints what is missing when the seed steps have not finished (and the seed step to run), or nothing when seeded.
+seed_problem() {
+  s3_list "$TRE_STORE" rustfsadmin:rustfsadmin123 federated-datasets "prefix=dataset/cohort_2024/" | grep -q '\.csv</Key>' ||
+    { echo "the dataset cohort_2024 is missing|seed-dataset"; return; }
+  curl -sf "$EGRESS/api/TreCredentials/CheckCredentialsAreValid" -H "Authorization: Bearer $(egress_token)" |
+    python3 -c 'import sys, json; sys.exit(0 if json.load(sys.stdin).get("result") is True else 1)' 2>/dev/null ||
+    echo "the Egress app has no usable TRE login, so decisions cannot reach the Agent|seed-egress-creds"
+}
