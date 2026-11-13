@@ -125,6 +125,32 @@ In the live run, approve case 1 and reject case 3 (with a reason) in the Egress 
 4. Arrange the screen: terminal on one side, that browser on the other; large terminal font.
 5. Start recording, then run `./demo.sh`.
 
+## Integration tests
+
+`Tests/Federated.IntegrationTests` drives the real loop on this stack (Submission → Agent → Egress app) and checks how each task ends in `GetTask`, and that only a released task has a stored result. It covers the three demo cases and a set of deliberately invalid tasks:
+
+| Gate | Case | Expected end |
+|---|---|---|
+| Hospital input checks | dataset the hospital does not hold | `CANCELED`, `rejected_by_input_checks`, `dataset_not_found` |
+| Hospital input checks | a dataset folder with two `.csv` files | `CANCELED`, `rejected_by_input_checks`, `ambiguous_dataset` |
+| Submission's task profile | unknown operation, invalid filter, an image other than `5s-tes/federated-ops:1` | Enqueue refused with 400 (`unknown_operation`, `invalid_filter`, `invalid_task`); no task |
+| Output approval | reviewer approves | `COMPLETE`, `released`, result stored with the reviewed SHA-256 |
+| Output approval | reviewer rejects | `CANCELED`, `rejected_at_output_approval`, `rejected_by_reviewer`, the reason; no result |
+| Output approval | result overwritten after it was registered, then approved | `SYSTEM_ERROR`, `result_changed_after_review`; no result |
+
+"Image not approved" cannot happen on this stack (the profile allows one image, which the Agent approves); unit tests cover it.
+
+With the stack running, from the repo root:
+
+```bash
+docker run --rm -v "$PWD":/src -w /src -e FEDERATED_STACK_HOST=host.docker.internal \
+  mcr.microsoft.com/dotnet/sdk:10.0 dotnet test Tests/Federated.IntegrationTests
+```
+
+(With a local .NET SDK: `dotnet test Tests/Federated.IntegrationTests`.) The tests trigger the Agent's poll through the Hangfire dashboard, so they take seconds, not minutes. Without the stack every test is skipped, with a message saying how to start it. Run them before merging changes to the federated loop.
+
+The tests delete the dataset folders they create, but their tasks and Egress requests stay. Start the demo from a clean stack (see "Before the demo").
+
 ## Checking custodian access (known dev limitation)
 
 Members of the Keycloak group `federated-outputs-read` can read result files through the S3 API with STS. In this stack the tokens say `iss = http://localhost:8180/realms/tre-test`, but RustFS discovers `http://keycloak:8080/realms/tre-test`. STS then fails with "no OIDC provider configured for issuer". To check it anyway, set the issuer by hand. These changes live only in the running Keycloak and are lost when its container is recreated.
