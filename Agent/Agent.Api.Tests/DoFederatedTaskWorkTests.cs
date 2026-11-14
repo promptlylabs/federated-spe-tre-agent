@@ -87,6 +87,13 @@ public class DoFederatedTaskWorkTests
             Released[taskId] = (resultKey, resultSha256);
             return Task.CompletedTask;
         }
+
+        public Task DeleteAsync(string taskId, CancellationToken ct)
+        {
+            Touches++;
+            Files.Remove(taskId);
+            return Task.CompletedTask;
+        }
     }
 
     /// <summary>Output approval stand-in. By default it approves every registration at once.</summary>
@@ -135,8 +142,11 @@ public class DoFederatedTaskWorkTests
 
         public Task<bool> IsWithdrawnAsync(string taskId, CancellationToken ct) => Task.FromResult(Withdrawn.Contains(taskId));
 
+        public int WithdrawCalls { get; private set; }
+
         public Task WithdrawAsync(string taskId, string reason, CancellationToken ct)
         {
+            WithdrawCalls++;
             Withdrawn.Add(taskId);
             return Task.CompletedTask;
         }
@@ -184,6 +194,13 @@ public class DoFederatedTaskWorkTests
     }
 
     private static FakeDatasetStore Store() => new FakeDatasetStore().Add("dataset/cohort_2024/cohort.csv", Csv);
+
+    /// <summary>The task as Submission hands it out after the orchestrator cancelled it.</summary>
+    private static void Canceling(TesTask task)
+    {
+        task.State = TesState.CANCELINGEnum;
+        task.Logs = [new TesTaskLog { Metadata = new Dictionary<string, string> { ["phase"] = "canceling" } }];
+    }
 
     /// <summary>The task as Submission hands it out while its result waits for the hospital reviewer.</summary>
     private static void Waiting(TesTask task)
@@ -866,6 +883,87 @@ public class DoFederatedTaskWorkTests
         Assert.Equal($"Federated task {T1}: mean --column age", r.Name);
         Assert.Equal(Encoding.UTF8.GetString(outputs.Files[T1]), r.ResultContent);
         Assert.Equal(new FederatedTaskSettings().OutputBucket, r.OutputBucket);
+    }
+
+    [Fact]
+    public async Task Canceling_task_with_pending_review_is_withdrawn_deleted_and_reported_canceled()
+    {
+        var client = OneMean();
+        Canceling(client.Pending[0]);
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), registered: true);
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+
+        Assert.Contains(T1, approval.Withdrawn);
+        Assert.Empty(outputs.Files);
+        Assert.Equal([(T1, FederatedTaskPhase.Canceled)], client.ProgressCalls);
+        Assert.Empty(client.Calls);
+    }
+
+    [Fact]
+    public async Task Canceling_task_already_withdrawn_is_not_withdrawn_again()
+    {
+        var client = OneMean();
+        Canceling(client.Pending[0]);
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), registered: true);
+        approval.Withdrawn.Add(T1);
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+
+        Assert.Equal(0, approval.WithdrawCalls);
+        Assert.Empty(outputs.Files);
+        Assert.Equal([(T1, FederatedTaskPhase.Canceled)], client.ProgressCalls);
+    }
+
+    [Fact]
+    public async Task Canceling_task_approved_before_the_cancel_is_never_released()
+    {
+        var client = OneMean();
+        Canceling(client.Pending[0]);
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Approved(ShaOf(outputs.Files[T1])));
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+
+        Assert.Empty(client.Calls);
+        Assert.Equal(0, approval.WithdrawCalls);
+        Assert.Empty(outputs.Files);
+        Assert.Equal([(T1, FederatedTaskPhase.Canceled)], client.ProgressCalls);
+    }
+
+    [Fact]
+    public async Task Canceling_task_without_result_or_review_is_reported_canceled_without_running()
+    {
+        var client = OneMean();
+        Canceling(client.Pending[0]);
+        var outputs = new FakeResultOutputStore();
+        var approval = new FakeOutputApproval { AutoApprove = false };
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+
+        Assert.Equal(0, approval.WithdrawCalls);
+        Assert.Equal(0, approval.RegisterCalls);
+        Assert.Equal([(T1, FederatedTaskPhase.Canceled)], client.ProgressCalls);
+        Assert.Empty(client.Calls);
+    }
+
+    [Fact]
+    public async Task Release_refused_because_the_task_is_canceling_reports_nothing_more()
+    {
+        var client = OneMean();
+        var outputs = Saved();
+        var sha = ShaOf(outputs.Files[T1]);
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Approved(sha));
+        client.Outcomes.Enqueue(new FederatedReportOutcome(409, FederatedTaskErrorCodes.TaskCanceling, "the task is being cancelled", null, null));
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).ActOnDecision(T1);
+
+        var report = Assert.Single(client.Calls).Report;
+        Assert.Equal(TesState.COMPLETEEnum, report.State);
+        Assert.Empty(outputs.Released);
+        Assert.True(outputs.Files.ContainsKey(T1));
     }
 
     [Fact]

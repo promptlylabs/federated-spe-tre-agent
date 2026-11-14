@@ -13,8 +13,9 @@ namespace Submission.Api.Tests
             FederatedTaskPhase.Queued => 0,
             FederatedTaskPhase.Running => 1,
             FederatedTaskPhase.WaitingForOutputApproval => 2,
+            FederatedTaskPhase.Canceling => 3,
             FederatedTaskPhase.Released or FederatedTaskPhase.RejectedByInputChecks
-                or FederatedTaskPhase.RejectedAtOutputApproval or FederatedTaskPhase.Failed => 3,
+                or FederatedTaskPhase.RejectedAtOutputApproval or FederatedTaskPhase.Failed or FederatedTaskPhase.Canceled => 4,
             _ => throw new ArgumentOutOfRangeException(nameof(s), s, "add the new phase to this test")
         };
 
@@ -27,7 +28,7 @@ namespace Submission.Api.Tests
         [MemberData(nameof(AllPairs))]
         public void Check_table(FederatedTaskPhase current, FederatedTaskPhase next)
         {
-            var currentFinal = Rank(current) == 3;
+            var currentFinal = Rank(current) == 4;
             var expected =
                 currentFinal ? (current == next ? FederatedTaskTransition.NoChange : FederatedTaskTransition.AlreadyFinal)
                 : Rank(next) > Rank(current) ? FederatedTaskTransition.Apply
@@ -66,6 +67,8 @@ namespace Submission.Api.Tests
         [InlineData(FederatedTaskPhase.Running, TesState.RUNNINGEnum)]
         [InlineData(FederatedTaskPhase.WaitingForOutputApproval, TesState.RUNNINGEnum)]
         [InlineData(FederatedTaskPhase.Released, TesState.COMPLETEEnum)]
+        [InlineData(FederatedTaskPhase.Canceling, TesState.CANCELINGEnum)]
+        [InlineData(FederatedTaskPhase.Canceled, TesState.CANCELEDEnum)]
         public void MoveTo_sets_tes_state(FederatedTaskPhase phase, TesState expected)
         {
             var task = new FederatedTask();

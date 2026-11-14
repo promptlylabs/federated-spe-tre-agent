@@ -79,9 +79,9 @@ namespace Agent.Api
 
             foreach (var task in pending)
             {
-                // Only QUEUED and RUNNING tasks are handed out. A RUNNING task is either running or waiting for the
-                // hospital's output approval; its phase says which.
-                if (task.State is not (TesState.QUEUEDEnum or TesState.RUNNINGEnum))
+                // Only QUEUED, RUNNING and CANCELING tasks are handed out. A RUNNING task is either running or waiting
+                // for the hospital's output approval; its phase says which.
+                if (task.State is not (TesState.QUEUEDEnum or TesState.RUNNINGEnum or TesState.CANCELINGEnum))
                 {
                     Log.Warning("Federated tasks: task {TaskId} is pending in unexpected state {State}; skipping it", task.Id, task.State);
                     continue;
@@ -135,6 +135,12 @@ namespace Agent.Api
                 return Hold.None;
             }
             var storeKey = guid.ToString("D");
+
+            if (FederatedTaskPhases.PhaseOf(task) == FederatedTaskPhase.Canceling)
+            {
+                await CancelAsync(taskId, storeKey);
+                return Hold.None;
+            }
 
             // The review is read before the result: once a result has been reviewed, it is never computed again.
             var review = await _approval.GetAsync(storeKey, CancellationToken.None);
@@ -356,6 +362,33 @@ namespace Agent.Api
             await HandleOutcomeAsync(taskId, storeKey, sha, bytes, outcome);
         }
 
+        private const string CanceledReason = "The task was cancelled, so it cannot be decided.";
+
+        /// <summary>
+        /// The orchestrator cancelled the task: no decision is accepted any more, the result is removed from the TRE,
+        /// then the cancel is confirmed. Each part is safe to repeat, so a failure is retried at the next poll.
+        /// </summary>
+        private async Task CancelAsync(string taskId, string storeKey)
+        {
+            var review = await _approval.GetAsync(storeKey, CancellationToken.None);
+            if (review is { IsPending: true } && !await _approval.IsWithdrawnAsync(storeKey, CancellationToken.None))
+                await WithdrawPendingReviewAsync(storeKey, CanceledReason);
+
+            await _outputs.DeleteAsync(storeKey, CancellationToken.None);
+            if (await _outputs.TryGetAsync(storeKey, CancellationToken.None) != null)
+            {
+                Log.Warning("Federated tasks: the result of cancelled task {TaskId} could not be removed; the cancel is tried again at the next poll", taskId);
+                return;
+            }
+
+            var outcome = await _client.ReportProgressAsync(taskId, FederatedTaskPhase.Canceled);
+            if (outcome.Accepted)
+                Log.Information("Federated tasks: task {TaskId} cancelled; its review is closed and its result removed from the TRE", taskId);
+            else
+                Log.Warning("Federated tasks: Submission did not accept the cancel confirmation for task {TaskId} (status {Status}, {ErrorCode}); it is tried again at the next poll",
+                    taskId, outcome.StatusCode, outcome.ErrorCode);
+        }
+
         /// <summary>What the reviewer sees in the Egress app: the study, the code that ran and the result itself.</summary>
         private EgressRegistration Registration(TesTask task, string storeKey, byte[] bytes, string sha)
         {
@@ -427,7 +460,11 @@ namespace Agent.Api
         private async Task ReportErrorAsync(FederatedTaskResultReport report)
         {
             var outcome = await _client.ReportAsync(report, null);
-            if (IsAlreadyFinal(outcome))
+            if (IsCanceling(outcome))
+            {
+                Log.Information("Federated tasks: task {TaskId} is being cancelled; the error report was not recorded", report.TaskId);
+            }
+            else if (IsAlreadyFinal(outcome))
             {
                 Log.Warning("Federated tasks: task {TaskId} was already reported to Submission; the error report was not recorded", report.TaskId);
             }
@@ -451,6 +488,12 @@ namespace Agent.Api
             {
                 Log.Warning("Federated tasks: Submission rejected the result for task {TaskId} with {ErrorCode}", taskId, outcome.ErrorCode);
                 await ReportErrorAsync(Error(taskId, outcome.ErrorCode!, outcome.ErrorMessage, DatasetShaFrom(bytes)));
+                return;
+            }
+
+            if (IsCanceling(outcome))
+            {
+                Log.Information("Federated tasks: task {TaskId} is being cancelled; its result is not released and is removed at the next poll", taskId);
                 return;
             }
 
@@ -546,7 +589,9 @@ namespace Agent.Api
             var outcome = await _client.ReportProgressAsync(taskId, FederatedTaskPhase.Running);
             if (outcome.Accepted) return true;
 
-            if (IsAlreadyFinal(outcome))
+            if (IsCanceling(outcome))
+                Log.Information("Federated tasks: task {TaskId} is being cancelled; not running it", taskId);
+            else if (IsAlreadyFinal(outcome))
                 Log.Warning("Federated tasks: task {TaskId} is already past the running phase on Submission ({ErrorCode}); not running it",
                     taskId, outcome.ErrorCode);
             else
@@ -609,7 +654,11 @@ namespace Agent.Api
 
         /// <summary>A 409 that says the task is already final on Submission; task_busy means "send it again".</summary>
         private static bool IsAlreadyFinal(FederatedReportOutcome outcome) =>
-            outcome.StatusCode == 409 && outcome.ErrorCode != FederatedTaskErrorCodes.TaskBusy;
+            outcome.StatusCode == 409 && outcome.ErrorCode is not (FederatedTaskErrorCodes.TaskBusy or FederatedTaskErrorCodes.TaskCanceling);
+
+        /// <summary>The orchestrator cancelled the task; the next poll cleans it up and confirms.</summary>
+        private static bool IsCanceling(FederatedReportOutcome outcome) =>
+            outcome.StatusCode == 409 && outcome.ErrorCode == FederatedTaskErrorCodes.TaskCanceling;
 
         // Task-spec values are echoed into messages; Submission rejects control characters.
         private static string CleanControlChars(string message) =>

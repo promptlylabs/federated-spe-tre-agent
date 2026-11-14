@@ -67,6 +67,7 @@ cd dev/federated
 ./task.sh result <task-id>                      # downloads and prints the result file
 ./task.sh run cohort_2024 count
 ./task.sh reject <task-id> "small cells"        # CANCELED {"phase": "rejected_at_output_approval", "error_code": "rejected_by_reviewer", "error_message": "small cells"}
+./task.sh cancel <task-id>                      # CANCELED {"phase": "canceled", ...}: review closed, result removed from the TRE
 ./task.sh run nope count                        # CANCELED, phase rejected_by_input_checks {"error_code": "dataset_not_found", ...}
 ./task.sh enqueue cohort_2024 median            # rejected: unknown_operation
 ```

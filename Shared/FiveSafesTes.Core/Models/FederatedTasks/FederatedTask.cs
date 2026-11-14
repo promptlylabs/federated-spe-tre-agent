@@ -64,7 +64,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         public virtual List<FederatedTaskPhaseChange> PhaseChanges { get; set; } = [];
 
         /// <summary>
-        /// Moves the task to a phase without an error (queued, running, waiting or released), updating its TES state
+        /// Moves the task to a phase without an error (queued, running, waiting, released, canceling or canceled), updating its TES state
         /// and recording the change. Rejections go through <see cref="Reject"/>, failures through <see cref="Fail"/>.
         /// </summary>
         public void MoveTo(FederatedTaskPhase phase, DateTime atUtc)

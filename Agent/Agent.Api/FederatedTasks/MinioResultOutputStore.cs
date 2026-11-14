@@ -32,6 +32,9 @@ namespace Agent.Api.FederatedTasks
                 () => _helper.CreateBucket(_settings.OutputBucket),
                 _settings.OutputBucket);
 
+        public Task DeleteAsync(string taskId, CancellationToken ct) =>
+            _helper.DeleteObject(_settings.OutputBucket, KeyFor(taskId));
+
         public Task MarkReleasedAsync(string taskId, string resultKey, string resultSha256, CancellationToken ct) =>
             _helper.SetObjectMetadataAsync(
                 _settings.OutputBucket,

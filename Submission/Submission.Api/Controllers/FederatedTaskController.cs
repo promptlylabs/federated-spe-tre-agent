@@ -116,9 +116,12 @@ namespace Submission.Api.Controllers
                 .Include(x => x.PhaseChanges)
                 .Where(x => x.TreId == tre.Id && x.TreName == treName)
                 .Where(FederatedTaskPhases.IsUnfinishedTask)
-                // Running first (the Agent may need to resume it), then queued, then waiting: waiting tasks are
-                // only polled for their approval outcome, so they must not crowd out tasks that need action.
-                .OrderBy(x => x.Phase == FederatedTaskPhase.Running ? 0 : x.Phase == FederatedTaskPhase.Queued ? 1 : 2)
+                // Cancelled first (the hospital cleans up), then running (the Agent may need to resume it), then
+                // queued, then waiting: waiting tasks are only polled for their approval outcome, so they must not
+                // crowd out tasks that need action.
+                .OrderBy(x => x.Phase == FederatedTaskPhase.Canceling ? 0
+                    : x.Phase == FederatedTaskPhase.Running ? 1
+                    : x.Phase == FederatedTaskPhase.Queued ? 2 : 3)
                 .ThenBy(x => x.SubmittedAt)
                 .Take(MaxPendingTasks)
                 .ToListAsync(cancellationToken);
@@ -233,6 +236,12 @@ namespace Submission.Api.Controllers
                 return AlreadyReported(task);
             }
 
+            // Checked before any file is written: a cancelled task never releases a result, whatever was decided.
+            if (task.Phase == FederatedTaskPhase.Canceling)
+            {
+                return TaskCanceling();
+            }
+
             Action<FederatedTask> apply;
             var response = new FederatedReportResponse { Result = true };
             if (state == TesState.COMPLETEEnum)
@@ -341,6 +350,11 @@ namespace Submission.Api.Controllers
                             return AlreadyReported(current);
                         }
 
+                        if (current.Phase == FederatedTaskPhase.Canceling)
+                        {
+                            return TaskCanceling();
+                        }
+
                         // A progress report moved it (e.g. to running): apply this final report on top of that.
                         task = current;
                     }
@@ -377,10 +391,10 @@ namespace Submission.Api.Controllers
             }
 
             if (!FederatedTaskPhases.TryParse(report.Phase, out var phase)
-                || phase is not (FederatedTaskPhase.Running or FederatedTaskPhase.WaitingForOutputApproval))
+                || phase is not (FederatedTaskPhase.Running or FederatedTaskPhase.WaitingForOutputApproval or FederatedTaskPhase.Canceled))
             {
                 return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask,
-                    "Phase must be running or waiting_for_output_approval");
+                    "Phase must be running, waiting_for_output_approval or canceled");
             }
 
             if (!Guid.TryParse(report.TaskId, out var taskId))
@@ -397,6 +411,19 @@ namespace Submission.Api.Controllers
                 if (task == null)
                 {
                     return TaskNotFound();
+                }
+
+                // While cancelling, the only accepted report is the hospital confirming the cancel; and only a
+                // cancelled task can be confirmed.
+                if (task.Phase == FederatedTaskPhase.Canceling && phase != FederatedTaskPhase.Canceled)
+                {
+                    return TaskCanceling();
+                }
+
+                if (phase == FederatedTaskPhase.Canceled && !FederatedTaskPhases.IsFinal(task.Phase) && task.Phase != FederatedTaskPhase.Canceling)
+                {
+                    return Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.InvalidTransition,
+                        $"task is at phase '{FederatedTaskPhases.ToWire(task.Phase)}' and was not cancelled");
                 }
 
                 switch (FederatedTaskPhases.Check(task.Phase, phase))
@@ -420,6 +447,66 @@ namespace Submission.Api.Controllers
                 {
                     // Another report moved the task after it was read here. Drop the stale copy and decide again
                     // against the phase the winner left.
+                    _DbContext.ChangeTracker.Clear();
+                }
+            }
+
+            return Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.TaskBusy,
+                "the task is being updated by other reports, try again");
+        }
+
+        /// <summary>
+        /// Cancels a task. A queued task, which no hospital has picked up, is cancelled at once. A task a hospital has
+        /// picked up waits in canceling until that hospital confirms it withdrew the review and removed the result.
+        /// </summary>
+        [Authorize(Roles = "dare-control-admin")]
+        [HttpPost]
+        [Route("Cancel")]
+        [ValidateModelState]
+        [SwaggerOperation("Cancel")]
+        [SwaggerResponse(statusCode: 200, type: typeof(FederatedProgressResponse), description: "")]
+        [SwaggerResponse(statusCode: 404, type: typeof(FederatedApiError), description: "")]
+        [SwaggerResponse(statusCode: 409, type: typeof(FederatedApiError), description: "")]
+        public virtual async Task<IActionResult> Cancel([FromQuery] string id, CancellationToken cancellationToken = default)
+        {
+            if (!Guid.TryParse(id, out var taskId))
+            {
+                return TaskNotFound();
+            }
+
+            for (var attempt = 0; attempt < MaxReportAttempts; attempt++)
+            {
+                var task = await _DbContext.FederatedTasks
+                    .Include(x => x.PhaseChanges)
+                    .FirstOrDefaultAsync(x => x.TaskId == taskId, cancellationToken);
+                if (task == null)
+                {
+                    return TaskNotFound();
+                }
+
+                if (task.Phase == FederatedTaskPhase.Canceling)
+                {
+                    return Ok(new FederatedProgressResponse { Phase = FederatedTaskPhases.ToWire(task.Phase) });
+                }
+
+                if (FederatedTaskPhases.IsFinal(task.Phase))
+                {
+                    return Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.TaskAlreadyFinished,
+                        $"the task already finished at phase '{FederatedTaskPhases.ToWire(task.Phase)}'");
+                }
+
+                var next = task.Phase == FederatedTaskPhase.Queued ? FederatedTaskPhase.Canceled : FederatedTaskPhase.Canceling;
+                task.MoveTo(next, DateTime.UtcNow);
+                try
+                {
+                    await _DbContext.SaveChangesAsync(cancellationToken);
+                    Log.Information("Federated task {TaskId} cancelled by {User}: now {Phase}", taskId, User.FindFirst("preferred_username")?.Value,
+                        FederatedTaskPhases.ToWire(next));
+                    return Ok(new FederatedProgressResponse { Phase = FederatedTaskPhases.ToWire(next) });
+                }
+                catch (DbUpdateConcurrencyException)
+                {
+                    // An Agent report moved the task after it was read here: decide again against the phase it left.
                     _DbContext.ChangeTracker.Clear();
                 }
             }
@@ -540,6 +627,10 @@ namespace Submission.Api.Controllers
 
         private static ObjectResult TaskNotFound() =>
             Error(StatusCodes.Status404NotFound, FederatedTaskErrorCodes.TaskNotFound, "task not found");
+
+        private static ObjectResult TaskCanceling() =>
+            Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.TaskCanceling,
+                "the task is being cancelled; only the cancel confirmation is accepted");
 
         private static TesState? ParseWireState(string? state) => state switch
         {

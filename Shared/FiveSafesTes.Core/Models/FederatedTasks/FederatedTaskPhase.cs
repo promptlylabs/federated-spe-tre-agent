@@ -12,7 +12,9 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         Released,
         RejectedByInputChecks,
         RejectedAtOutputApproval,
-        Failed
+        Failed,
+        Canceling,
+        Canceled
     }
 
     /// <summary>What a requested phase change would do to a task.</summary>
@@ -32,7 +34,8 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         public static readonly Expression<Func<FederatedTask, bool>> IsUnfinishedTask = x =>
             x.Phase == FederatedTaskPhase.Queued
             || x.Phase == FederatedTaskPhase.Running
-            || x.Phase == FederatedTaskPhase.WaitingForOutputApproval;
+            || x.Phase == FederatedTaskPhase.WaitingForOutputApproval
+            || x.Phase == FederatedTaskPhase.Canceling;
 
         public static string ToWire(FederatedTaskPhase phase) => phase switch
         {
@@ -43,6 +46,8 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             FederatedTaskPhase.RejectedByInputChecks => "rejected_by_input_checks",
             FederatedTaskPhase.RejectedAtOutputApproval => "rejected_at_output_approval",
             FederatedTaskPhase.Failed => "failed",
+            FederatedTaskPhase.Canceling => "canceling",
+            FederatedTaskPhase.Canceled => "canceled",
             _ => throw new ArgumentOutOfRangeException(nameof(phase), phase, null)
         };
 
@@ -67,9 +72,10 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
 
         public static bool IsFinal(FederatedTaskPhase phase) => phase switch
         {
-            FederatedTaskPhase.Queued or FederatedTaskPhase.Running or FederatedTaskPhase.WaitingForOutputApproval => false,
+            FederatedTaskPhase.Queued or FederatedTaskPhase.Running or FederatedTaskPhase.WaitingForOutputApproval
+                or FederatedTaskPhase.Canceling => false,
             FederatedTaskPhase.Released or FederatedTaskPhase.RejectedByInputChecks
-                or FederatedTaskPhase.RejectedAtOutputApproval or FederatedTaskPhase.Failed => true,
+                or FederatedTaskPhase.RejectedAtOutputApproval or FederatedTaskPhase.Failed or FederatedTaskPhase.Canceled => true,
             _ => throw new ArgumentOutOfRangeException(nameof(phase), phase, null)
         };
 
@@ -96,6 +102,8 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             FederatedTaskPhase.WaitingForOutputApproval => TesState.RUNNINGEnum,
             FederatedTaskPhase.Released => TesState.COMPLETEEnum,
             FederatedTaskPhase.RejectedByInputChecks or FederatedTaskPhase.RejectedAtOutputApproval => TesState.CANCELEDEnum,
+            FederatedTaskPhase.Canceling => TesState.CANCELINGEnum,
+            FederatedTaskPhase.Canceled => TesState.CANCELEDEnum,
             _ => throw new ArgumentOutOfRangeException(nameof(phase), phase, "a failed phase has no fixed TES state")
         };
 
@@ -104,8 +112,9 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             FederatedTaskPhase.Queued => 0,
             FederatedTaskPhase.Running => 1,
             FederatedTaskPhase.WaitingForOutputApproval => 2,
+            FederatedTaskPhase.Canceling => 3,
             FederatedTaskPhase.Released or FederatedTaskPhase.RejectedByInputChecks
-                or FederatedTaskPhase.RejectedAtOutputApproval or FederatedTaskPhase.Failed => 3,
+                or FederatedTaskPhase.RejectedAtOutputApproval or FederatedTaskPhase.Failed or FederatedTaskPhase.Canceled => 4,
             _ => throw new ArgumentOutOfRangeException(nameof(phase), phase, null)
         };
     }

@@ -14,5 +14,8 @@ namespace Agent.Api.FederatedTasks
 
         /// <summary>Records on the stored file where it was released to and its hash.</summary>
         Task MarkReleasedAsync(string taskId, string resultKey, string resultSha256, CancellationToken ct);
+
+        /// <summary>Deletes the stored result file for the task, if there is one.</summary>
+        Task DeleteAsync(string taskId, CancellationToken ct);
     }
 }
