@@ -62,12 +62,12 @@ The `uploader` login through the RustFS console's "TRE Keycloak" button loops. T
 
 ```bash
 cd dev/federated
-./task.sh run cohort_2024 mean --column age     # PAUSED {"step": "waiting_for_output_approval", ...}, then prints the approve/reject commands
-./task.sh approve <task-id>                     # COMPLETE {"step": "released", "result_key": "<treId>/<taskId>/<sha256>.json", "result_sha256": ...}
+./task.sh run cohort_2024 mean --column age     # RUNNING {"phase": "waiting_for_output_approval", ...}, then prints the approve/reject commands
+./task.sh approve <task-id>                     # COMPLETE {"phase": "released", "result_key": "<treId>/<taskId>/<sha256>.json", "result_sha256": ...}
 ./task.sh result <task-id>                      # downloads and prints the result file
 ./task.sh run cohort_2024 count
-./task.sh reject <task-id> "small cells"        # CANCELED {"step": "rejected_at_output_approval", "error_code": "rejected_by_reviewer", "error_message": "small cells"}
-./task.sh run nope count                        # CANCELED, step rejected_by_input_checks {"error_code": "dataset_not_found", ...}
+./task.sh reject <task-id> "small cells"        # CANCELED {"phase": "rejected_at_output_approval", "error_code": "rejected_by_reviewer", "error_message": "small cells"}
+./task.sh run nope count                        # CANCELED, phase rejected_by_input_checks {"error_code": "dataset_not_found", ...}
 ./task.sh enqueue cohort_2024 median            # rejected: unknown_operation
 ```
 

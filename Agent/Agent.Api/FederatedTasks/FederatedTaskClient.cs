@@ -90,9 +90,9 @@ namespace Agent.Api.FederatedTasks
             return ErrorOutcome(status, body);
         }
 
-        public async Task<FederatedReportOutcome> ReportProgressAsync(string taskId, FederatedTaskStep step)
+        public async Task<FederatedReportOutcome> ReportProgressAsync(string taskId, FederatedTaskPhase phase)
         {
-            var payload = new FederatedTaskProgressReport { TaskId = taskId, Step = FederatedTaskSteps.ToWire(step) };
+            var payload = new FederatedTaskProgressReport { TaskId = taskId, Phase = FederatedTaskPhases.ToWire(phase) };
             using var request = new HttpRequestMessage(HttpMethod.Post, Url("/api/FederatedTask/ReportProgress"))
             {
                 Content = new StringContent(JsonConvert.SerializeObject(payload), System.Text.Encoding.UTF8, "application/json")

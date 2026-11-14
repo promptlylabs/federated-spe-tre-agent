@@ -12,7 +12,7 @@ namespace Agent.Api.FederatedTasks
         /// <summary>A check failed; the task is reported as rejected by the input checks.</summary>
         Rejected,
 
-        /// <summary>The TRE cannot judge the task now; it keeps its step and is checked again at the next poll.</summary>
+        /// <summary>The TRE cannot judge the task now; it keeps its phase and is checked again at the next poll.</summary>
         Held
     }
 

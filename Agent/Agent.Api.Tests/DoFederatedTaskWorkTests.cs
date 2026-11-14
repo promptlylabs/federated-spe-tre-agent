@@ -26,7 +26,7 @@ public class DoFederatedTaskWorkTests
         public Queue<FederatedReportOutcome> Outcomes { get; } = new();
         public bool ThrowOnReport { get; set; }
         public int GetPendingCalls { get; private set; }
-        public List<(string TaskId, FederatedTaskStep Step)> ProgressCalls { get; } = new();
+        public List<(string TaskId, FederatedTaskPhase Phase)> ProgressCalls { get; } = new();
         public Queue<FederatedReportOutcome> ProgressOutcomes { get; } = new();
         public bool ThrowOnProgress { get; set; }
         public List<string> Order { get; } = new();
@@ -39,11 +39,11 @@ public class DoFederatedTaskWorkTests
             return Task.FromResult(Pending);
         }
 
-        public Task<FederatedReportOutcome> ReportProgressAsync(string taskId, FederatedTaskStep step)
+        public Task<FederatedReportOutcome> ReportProgressAsync(string taskId, FederatedTaskPhase phase)
         {
             if (ThrowOnProgress) throw new HttpRequestException("network down");
-            ProgressCalls.Add((taskId, step));
-            Order.Add("progress:" + FederatedTaskSteps.ToWire(step));
+            ProgressCalls.Add((taskId, phase));
+            Order.Add("progress:" + FederatedTaskPhases.ToWire(phase));
             return Task.FromResult(ProgressOutcomes.Count > 0 ? ProgressOutcomes.Dequeue() : new FederatedReportOutcome(200, null, null, null, null));
         }
 
@@ -185,6 +185,13 @@ public class DoFederatedTaskWorkTests
 
     private static FakeDatasetStore Store() => new FakeDatasetStore().Add("dataset/cohort_2024/cohort.csv", Csv);
 
+    /// <summary>The task as Submission hands it out while its result waits for the hospital reviewer.</summary>
+    private static void Waiting(TesTask task)
+    {
+        task.State = TesState.RUNNINGEnum;
+        task.Logs = [new TesTaskLog { Metadata = new Dictionary<string, string> { ["phase"] = "waiting_for_output_approval" } }];
+    }
+
     private static TesTask PendingTask(string id, string dataset, string operation, string? column, params TaskFilter[] filters)
     {
         var task = FederatedTesProfile.Build(new FederatedTaskSpec(operation, dataset, column, filters, "study-1", "tre-a"));
@@ -321,7 +328,7 @@ public class DoFederatedTaskWorkTests
         Assert.Equal(TesState.CANCELEDEnum, report.State);
         Assert.Equal("input_checks", report.RejectedAt);
         Assert.Equal("dataset_not_found", report.ErrorCode);
-        // Rejected before it was marked running: the history has no running step.
+        // Rejected before it was marked running: the history has no running phase.
         Assert.Empty(client.ProgressCalls);
         Assert.False(string.IsNullOrWhiteSpace(report.ErrorMessage));
     }
@@ -414,7 +421,7 @@ public class DoFederatedTaskWorkTests
 
         await Work(client, store).Execute();
 
-        // t1 keeps its step on the server; t2 still runs.
+        // t1 keeps its phase on the server; t2 still runs.
         var report = Assert.Single(client.Reports);
         Assert.Equal(T2, report.TaskId);
         Assert.Equal(TesState.COMPLETEEnum, report.State);
@@ -794,7 +801,7 @@ public class DoFederatedTaskWorkTests
         await Work(client, Store()).Execute();
 
         var progress = Assert.Single(client.ProgressCalls);
-        Assert.Equal((T1, FederatedTaskStep.Running), progress);
+        Assert.Equal((T1, FederatedTaskPhase.Running), progress);
         Assert.Equal(new[] { "progress:running", "report:COMPLETEEnum" }, client.Order);
     }
 
@@ -837,7 +844,7 @@ public class DoFederatedTaskWorkTests
 
         await Work(client, Reader(), outputs: outputs, approval: approval).Execute();
 
-        Assert.Equal((T1, FederatedTaskStep.WaitingForOutputApproval), client.ProgressCalls[^1]);
+        Assert.Equal((T1, FederatedTaskPhase.WaitingForOutputApproval), client.ProgressCalls[^1]);
         Assert.DoesNotContain(client.Reports, r => r.State == TesState.COMPLETEEnum);
         Assert.Empty(client.Calls);
         Assert.Equal(ShaOf(outputs.Files[T1]), approval.Registered[T1].ResultSha256);
@@ -862,10 +869,10 @@ public class DoFederatedTaskWorkTests
     }
 
     [Fact]
-    public async Task Paused_task_without_decision_reports_nothing()
+    public async Task Waiting_task_without_decision_reports_nothing()
     {
         var client = OneMean();
-        client.Pending[0].State = TesState.PAUSEDEnum;
+        Waiting(client.Pending[0]);
         var outputs = Saved();
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), registered: true);
 
@@ -877,10 +884,10 @@ public class DoFederatedTaskWorkTests
     }
 
     [Fact]
-    public async Task Paused_task_without_file_or_record_is_skipped_without_computing()
+    public async Task Waiting_task_without_file_or_record_is_skipped_without_computing()
     {
         var client = OneMean();
-        client.Pending[0].State = TesState.PAUSEDEnum;
+        Waiting(client.Pending[0]);
         var outputs = new FakeResultOutputStore();
         var approval = new FakeOutputApproval { AutoApprove = false };
 
@@ -893,10 +900,10 @@ public class DoFederatedTaskWorkTests
     }
 
     [Fact]
-    public async Task Paused_approved_task_is_released_with_the_reviewed_sha()
+    public async Task Waiting_approved_task_is_released_with_the_reviewed_sha()
     {
         var client = OneMean();
-        client.Pending[0].State = TesState.PAUSEDEnum;
+        Waiting(client.Pending[0]);
         var outputs = Saved();
         var sha = ShaOf(outputs.Files[T1]);
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Approved(sha));
@@ -917,7 +924,7 @@ public class DoFederatedTaskWorkTests
     public async Task Approved_task_whose_file_changed_is_failed_and_not_uploaded()
     {
         var client = OneMean();
-        client.Pending[0].State = TesState.PAUSEDEnum;
+        Waiting(client.Pending[0]);
         var outputs = Saved();
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Approved(ShaOf(outputs.Files[T1])));
         outputs.Files[T1] = Encoding.UTF8.GetBytes("{\"schemaVersion\":2}");
@@ -960,7 +967,7 @@ public class DoFederatedTaskWorkTests
     public async Task Pending_task_whose_file_is_gone_is_withdrawn_and_failed()
     {
         var client = OneMean();
-        client.Pending[0].State = TesState.PAUSEDEnum;
+        Waiting(client.Pending[0]);
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(new string('c', 64)), true);
 
         await Work(client, new ThrowingReader(), approval: approval).Execute();
@@ -994,7 +1001,7 @@ public class DoFederatedTaskWorkTests
     public async Task Rejected_task_reports_rejection_at_output_approval_with_reason()
     {
         var client = OneMean();
-        client.Pending[0].State = TesState.PAUSEDEnum;
+        Waiting(client.Pending[0]);
         var outputs = Saved();
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Rejected(ShaOf(outputs.Files[T1]), "small cells"));
 
@@ -1013,7 +1020,7 @@ public class DoFederatedTaskWorkTests
     public async Task Rejected_task_whose_file_is_gone_still_reports_the_rejection()
     {
         var client = OneMean();
-        client.Pending[0].State = TesState.PAUSEDEnum;
+        Waiting(client.Pending[0]);
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Rejected(new string('c', 64), "small cells"));
 
         await Work(client, new ThrowingReader(), approval: approval).Execute();
@@ -1099,7 +1106,7 @@ public class DoFederatedTaskWorkTests
     public async Task Rejection_reason_is_cleaned_and_truncated()
     {
         var client = OneMean();
-        client.Pending[0].State = TesState.PAUSEDEnum;
+        Waiting(client.Pending[0]);
         var outputs = Saved();
         var reason = "small\ncells\t" + new string('r', 2000);
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Rejected(ShaOf(outputs.Files[T1]), reason));
@@ -1125,7 +1132,7 @@ public class DoFederatedTaskWorkTests
 
         Assert.Equal(sha, approval.Registered[T1].ResultSha256);
         Assert.Contains(T1, approval.Marked);
-        Assert.Equal((T1, FederatedTaskStep.WaitingForOutputApproval), Assert.Single(client.ProgressCalls));
+        Assert.Equal((T1, FederatedTaskPhase.WaitingForOutputApproval), Assert.Single(client.ProgressCalls));
         Assert.Empty(client.Calls);
     }
 
@@ -1140,7 +1147,7 @@ public class DoFederatedTaskWorkTests
         await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
 
         Assert.Equal(0, approval.RegisterCalls);
-        Assert.Equal((T1, FederatedTaskStep.WaitingForOutputApproval), Assert.Single(client.ProgressCalls));
+        Assert.Equal((T1, FederatedTaskPhase.WaitingForOutputApproval), Assert.Single(client.ProgressCalls));
         Assert.Empty(client.Calls);
     }
 
@@ -1154,7 +1161,7 @@ public class DoFederatedTaskWorkTests
         await Work(client, Reader(), outputs: outputs, approval: approval, egress: new FakeEgressClient { IsConfigured = false }).Execute();
 
         Assert.Empty(client.Calls);
-        Assert.DoesNotContain(client.ProgressCalls, p => p.Step == FederatedTaskStep.WaitingForOutputApproval);
+        Assert.DoesNotContain(client.ProgressCalls, p => p.Phase == FederatedTaskPhase.WaitingForOutputApproval);
         Assert.True(outputs.Files.ContainsKey(T1));
         Assert.Equal(0, approval.RegisterCalls);
     }
@@ -1168,7 +1175,7 @@ public class DoFederatedTaskWorkTests
 
         await Work(client, Reader(), outputs: outputs, approval: approval).Execute();
 
-        Assert.Equal((T1, FederatedTaskStep.Running), Assert.Single(client.ProgressCalls));
+        Assert.Equal((T1, FederatedTaskPhase.Running), Assert.Single(client.ProgressCalls));
         Assert.Empty(client.Calls);
         Assert.True(outputs.Files.ContainsKey(T1));
     }

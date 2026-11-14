@@ -8,21 +8,21 @@ To try the flow locally, see [dev/federated](../dev/federated/README.md). It is 
 
 ## Flow
 
-1. A `dare-control-admin` user calls `POST /api/FederatedTask/Enqueue` with a TES task. Submission validates it against the federated profile. The task is stored at the step `queued`. The response holds the task id.
+1. A `dare-control-admin` user calls `POST /api/FederatedTask/Enqueue` with a TES task. Submission validates it against the federated profile. The task is stored at the phase `queued`. The response holds the task id.
 2. The Agent job `Run Federated Tasks` (`JobSettings:FederatedTaskJobName`) runs every `JobSettings:federatedTaskSchedule` minutes. It calls `GET /api/FederatedTask/GetPendingTasksForTre`. The TRE is taken from the token.
-3. The Agent checks the task against the profile, then runs the hospital's input checks in this order: the executor image is in `ApprovedImages` (see "Approved images"), and the one `.csv` under `dataset/<name>/` is in the dataset bucket. It reads no data values yet. If a check fails, or there is no file or more than one, the task is rejected (`rejected_by_input_checks`). If `ApprovedImages` is not set, the task still gets the profile check, but the hospital's checks do not run. The task is not run or reported, and keeps its step. A `queued` task rejected here never reaches `running`. A resumed `running` task is checked again, so if its dataset was removed in the meantime it is rejected with a `running_at` in its history. If the dataset bucket cannot be listed, the task keeps its step and is tried again at the next poll, until `DatasetUnreachableGiveUpMinutes` (default 60) have passed since it was queued, or since the Agent started if that is later. A task that waited while the Agent was down, or while `ApprovedImages` was not set, so gets the full time. Each restart of the Agent gives pending tasks the full time again. After that it fails with `SYSTEM_ERROR` and `internal_error`, so a bucket that is wrongly configured or denied does not leave tasks queued for good.
-4. For a `queued` task, the Agent calls `POST /api/FederatedTask/ReportProgress` with the step `running`. Submission moves the task to `running`. Then the Agent reads the file. If the bucket fails during the read, the task stays `running` and is resumed at the next poll, with the same `DatasetUnreachableGiveUpMinutes` limit as a failed listing. A file that is not valid CSV is reported at once (`invalid_dataset`).
+3. The Agent checks the task against the profile, then runs the hospital's input checks in this order: the executor image is in `ApprovedImages` (see "Approved images"), and the one `.csv` under `dataset/<name>/` is in the dataset bucket. It reads no data values yet. If a check fails, or there is no file or more than one, the task is rejected (`rejected_by_input_checks`). If `ApprovedImages` is not set, the task still gets the profile check, but the hospital's checks do not run. The task is not run or reported, and keeps its phase. A `queued` task rejected here never reaches `running`. A resumed `running` task is checked again, so if its dataset was removed in the meantime it is rejected with a `running_at` in its history. If the dataset bucket cannot be listed, the task keeps its phase and is tried again at the next poll, until `DatasetUnreachableGiveUpMinutes` (default 60) have passed since it was queued, or since the Agent started if that is later. A task that waited while the Agent was down, or while `ApprovedImages` was not set, so gets the full time. Each restart of the Agent gives pending tasks the full time again. After that it fails with `SYSTEM_ERROR` and `internal_error`, so a bucket that is wrongly configured or denied does not leave tasks queued for good.
+4. For a `queued` task, the Agent calls `POST /api/FederatedTask/ReportProgress` with the phase `running`. Submission moves the task to `running`. Then the Agent reads the file. If the bucket fails during the read, the task stays `running` and is resumed at the next poll, with the same `DatasetUnreachableGiveUpMinutes` limit as a failed listing. A file that is not valid CSV is reported at once (`invalid_dataset`).
 5. The Agent runs the operation in-process. It does not start a container. The result is a JSON file (see "Task state and result").
 6. The Agent saves the file in the TRE bucket `federated-outputs` as `<taskId>.json`. If the file is already there from an earlier poll, the Agent reuses it and does not compute again.
-7. The Agent registers the result with the Data Egress app, then calls `ReportProgress` with the step `waiting_for_output_approval`. The task is `PAUSED`. Nothing has left the TRE. See "Output approval".
+7. The Agent registers the result with the Data Egress app, then calls `ReportProgress` with the phase `waiting_for_output_approval`. The task stays `RUNNING`. Nothing has left the TRE. See "Output approval".
 8. A hospital reviewer opens the request in the Egress app. The page shows the study ID, the code that ran (image and command) and the result in full, with its SHA-256. The reviewer approves, or rejects with a reason. The Egress app sends the decision to the Agent, which records it in `federated-outputs/<taskId>.review.json`.
 9. Right after recording the decision, the Agent acts on it in a background job. The poll acts on a recorded decision too, in case the job could not. On approval it hashes the saved file again. If the hash equals the reviewed SHA-256, it releases the file: `POST /api/FederatedTask/ReportResult` with the file as an upload. Submission checks the caller and the file, and stores it in the orchestrator bucket `federated-results`. The task moves to `released`. On rejection the Agent reports `CANCELED` with `RejectedAt` `output_approval`, the code `rejected_by_reviewer` and the reviewer's reason as the message, and no file. If the saved file no longer matches the reviewed one, or is gone, the Agent reports `SYSTEM_ERROR` with `result_changed_after_review` and no file.
 10. After a release, the Agent compares the SHA-256 that Submission stored with the SHA-256 of its own copy. If they match, it adds the metadata `released-key` and `released-sha256` to the TRE copy.
-11. A `dare-control-admin` user calls `GET /api/FederatedTask/GetTask?id=<taskId>` for the step, the state and where the result is stored, and `GET /api/FederatedTask/GetTaskResult?id=<taskId>` for the file.
+11. A `dare-control-admin` user calls `GET /api/FederatedTask/GetTask?id=<taskId>` for the phase, the state and where the result is stored, and `GET /api/FederatedTask/GetTaskResult?id=<taskId>` for the file.
 
 If the Agent cannot save the file, or the registration with the Egress app fails, or the release fails (network error, 5xx, or a 4xx that is not listed under "Reporting a result"), the task stays `running` and the Agent tries again at the next poll. A task that fails before there is a file (for example `dataset_not_found`) is reported as a rejection or a failure, with no file, and does not go through save and release.
 
-`GetPendingTasksForTre` returns the tasks that are not finished: `running` first, then `queued`, then `waiting_for_output_approval`, oldest first inside each group. For a `waiting_for_output_approval` task the Agent reads the review record and acts on the decision, if there is one (see "Output approval"). A `running` task was marked by an earlier poll that did not finish. The Agent resumes it, and does not report `running` again. If the result file from the earlier poll is in the TRE bucket, the Agent reuses it. Otherwise it runs the task again from the start, so every step the Agent does before it reports must be safe to do twice. The Agent skips, and logs, a pending task in any state other than `QUEUED`, `RUNNING` or `PAUSED`.
+`GetPendingTasksForTre` returns the tasks that are not finished: `running` first, then `queued`, then `waiting_for_output_approval`, oldest first inside each group. For a `waiting_for_output_approval` task the Agent reads the review record and acts on the decision, if there is one (see "Output approval"). A `running` task was marked by an earlier poll that did not finish. The Agent resumes it, and does not report `running` again. If the result file from the earlier poll is in the TRE bucket, the Agent reuses it. Otherwise it runs the task again from the start, so every step the Agent does before it reports must be safe to do twice. The Agent skips, and logs, a pending task in any state other than `QUEUED` or `RUNNING`. A `RUNNING` task is either `running` or `waiting_for_output_approval`; the Agent reads the phase to tell which.
 
 `GetPendingTasksForTre`, `ReportProgress` and `ReportResult` accept only the TRE Agent's service account (role `dare-tre-admin`). See "Reporting a result". `Enqueue`, `GetTask` and `GetTaskResult` need `dare-control-admin`.
 
@@ -40,7 +40,7 @@ sequenceDiagram
     end
 
     Admin->>Sub: POST Enqueue (TES task)
-    Sub-->>Admin: task id (step queued)
+    Sub-->>Admin: task id (phase queued)
     loop every federatedTaskSchedule minutes
         Agent->>Sub: GET GetPendingTasksForTre (TRE from token)
         Sub-->>Agent: running, queued and waiting tasks for this TRE
@@ -51,7 +51,7 @@ sequenceDiagram
         Agent->>Sub: POST ReportResult (CANCELED, RejectedAt input_checks, code + message)
         Note over Agent,Sub: rejected_by_input_checks; a queued task never reaches running
     end
-    Agent->>Sub: POST ReportProgress (step running), only for a queued task
+    Agent->>Sub: POST ReportProgress (phase running), only for a queued task
     Sub-->>Agent: 200, task is running (409 if the task is past running)
     Agent->>TS: read dataset CSV
     Agent->>Agent: compute result, build result JSON
@@ -60,7 +60,7 @@ sequenceDiagram
         Agent->>TS: save taskId.review.json (pending, result sha256)
         Agent->>Egress: POST AddNewDataEgress (study, code, result bytes, sha256)
         Agent->>TS: save taskId.registered (empty marker)
-        Agent->>Sub: POST ReportProgress (step waiting_for_output_approval)
+        Agent->>Sub: POST ReportProgress (phase waiting_for_output_approval)
         Reviewer->>Egress: approve, or reject with a reason
         Egress->>Agent: POST EgressResults (decision, reviewer, time, reason, sha256)
         Agent->>TS: save decision in taskId.review.json
@@ -82,23 +82,23 @@ sequenceDiagram
             Agent->>TS: tag TRE copy with released-key / released-sha256
         else storage write fails
             Sub->>OS: put treId/taskId/sha256.json
-            Sub-->>Agent: 503 storage_unavailable, task keeps its step, retried next poll
+            Sub-->>Agent: 503 storage_unavailable, task keeps its phase, retried next poll
         else stored
             Sub->>OS: put treId/taskId/sha256.json
-            Sub->>Sub: save step released + bucket/key/sha256
+            Sub->>Sub: save phase released + bucket/key/sha256
             Sub-->>Agent: 200 + result_key/result_sha256
             Agent->>Agent: check result_sha256 equals own sha256
             Agent->>TS: tag TRE copy with released-key / released-sha256
         end
     else input check fails (e.g. dataset_not_found)
         Agent->>Sub: POST ReportResult (CANCELED, RejectedAt input_checks, error_code, error_message, no file)
-        Sub-->>Agent: 200, step rejected_by_input_checks, no file written
+        Sub-->>Agent: 200, phase rejected_by_input_checks, no file written
     else task fails (e.g. column_not_found)
         Agent->>Sub: POST ReportResult (EXECUTOR_ERROR or SYSTEM_ERROR, error_code, no file)
-        Sub-->>Agent: 200, step failed, no file written
+        Sub-->>Agent: 200, phase failed, no file written
     end
     Admin->>Sub: GET GetTask
-    Sub-->>Admin: state + step + step times + result_bucket/result_key/result_sha256
+    Sub-->>Admin: state + phase + phase times + result_bucket/result_key/result_sha256
     Admin->>Sub: GET GetTaskResult
     Sub->>OS: get object
     Sub->>Sub: verify sha256
@@ -121,10 +121,10 @@ Every 4xx from these endpoints has the same JSON body. Its keys are the same as 
 | 404 | `task_not_found` | No such task. `ReportProgress` and `ReportResult` also return this for a task that belongs to another TRE. |
 | 404 | `result_not_found` | `GetTaskResult`: the task is not `released`. |
 | 409 | `task_already_reported` | `ReportResult` or `ReportProgress` for a task that is already final. When the task is `released`, the body also has `result_sha256` and `result_key`. |
-| 409 | `invalid_transition` | `ReportProgress` asks to go back to an earlier step. |
+| 409 | `invalid_transition` | `ReportProgress` asks to go back to an earlier phase. |
 | 409 | `task_busy` | `ReportProgress` or `ReportResult` lost a race with other reports for the same task three times in a row. Nothing was recorded. Send the report again. |
 | 500 | `internal_error` | `GetTaskResult`: the stored file does not match its SHA-256. The file is not returned. |
-| 503 | `storage_unavailable` | The orchestrator bucket cannot be reached, or `ReportResult` lost a race and could not read the task again. For `ReportResult` the task keeps its step and the Agent sends the report again at the next poll. |
+| 503 | `storage_unavailable` | The orchestrator bucket cannot be reached, or `ReportResult` lost a race and could not read the task again. For `ReportResult` the task keeps its phase and the Agent sends the report again at the next poll. |
 
 `result_not_found` and `storage_unavailable` are returned by the API only. An Agent never reports them as a task result.
 
@@ -137,14 +137,14 @@ A `ReportResult` with state `EXECUTOR_ERROR`, `SYSTEM_ERROR` or `CANCELED` must 
 `POST /api/FederatedTask/ReportProgress` takes a JSON body:
 
 ```json
-{ "task_id": "0b9a3c4e-6f1d-4c1e-9a52-3d7b8e2f1a10", "step": "running" }
+{ "task_id": "0b9a3c4e-6f1d-4c1e-9a52-3d7b8e2f1a10", "phase": "running" }
 ```
 
-`step` is `running` or `waiting_for_output_approval`. Any other value, or a `task_id` that is not a GUID, gets 400 `invalid_task`. A 200 response is `{ "step": "<the step the task is at now>" }`.
+`phase` is `running` or `waiting_for_output_approval`. Any other value, or a `task_id` that is not a GUID, gets 400 `invalid_task`. A 200 response is `{ "phase": "<the phase the task is at now>" }`.
 
-- The task is at an earlier step: it moves to the new step and the time is recorded.
-- The task is already at that step: 200, nothing changes. The Agent can send the same report again.
-- The task is at a later step: 409 `invalid_transition`.
+- The task is at an earlier phase: it moves to the new phase and the time is recorded.
+- The task is already at that phase: 200, nothing changes. The Agent can send the same report again.
+- The task is at a later phase: 409 `invalid_transition`.
 - The task is final: 409 `task_already_reported`.
 - Other reports for the same task won the race three times in a row: 409 `task_busy`. Nothing changed. Send the report again.
 - The task belongs to another TRE, or does not exist: 404 `task_not_found`.
@@ -164,7 +164,7 @@ The Agent sends `running` when it picks a `queued` task up, and `waiting_for_out
 | `DatasetSha256` | Error states and `CANCELED`. 64 lowercase hex characters. On `COMPLETE` Submission takes it from the result file. |
 | `result` (file) | Required for `COMPLETE`. Not allowed for `CANCELED` or an error state. One file only. |
 
-A report is accepted from any step that is not final, so a `queued`, `running` or `waiting_for_output_approval` task can be finished. `COMPLETE` moves the task to `released`. `CANCELED` moves it to `rejected_by_input_checks` or `rejected_at_output_approval`, as `RejectedAt` says. `EXECUTOR_ERROR` and `SYSTEM_ERROR` move it to `failed`.
+A report is accepted from any phase that is not final, so a `queued`, `running` or `waiting_for_output_approval` task can be finished. `COMPLETE` moves the task to `released`. `CANCELED` moves it to `rejected_by_input_checks` or `rejected_at_output_approval`, as `RejectedAt` says. `EXECUTOR_ERROR` and `SYSTEM_ERROR` move it to `failed`.
 
 Submission checks the caller first. Only the Agent service account of a TRE is accepted: the token `azp` is the TRE's Keycloak client id, and `preferred_username` is `service-account-<clientId>`, with role `dare-tre-admin`. Anyone else gets 403, whatever the request holds. The TRE comes from the token, never from the form or the file. A request over 73728 bytes is rejected by the framework with 400 `invalid_task`, before this check.
 
@@ -176,7 +176,7 @@ The `result` file:
 
 A 200 response has `result`, `result_bucket`, `result_key` and `result_sha256`. The last three are only for `COMPLETE`.
 
-If Submission cannot write the file, it answers 503 `storage_unavailable` and the task keeps its step. If the Agent gets 400 `invalid_result` or `result_too_large`, it sends a follow-up `EXECUTOR_ERROR` report with the same code. A 409 for a `released` task carries `result_sha256` and `result_key`, because the Agent cannot call `GetTask`. The Agent compares the sha256 with its own copy and, if they are equal, tags the TRE copy with the key. The Agent only gets this 409 when two reports for the same task race. It does not ask again later.
+If Submission cannot write the file, it answers 503 `storage_unavailable` and the task keeps its phase. If the Agent gets 400 `invalid_result` or `result_too_large`, it sends a follow-up `EXECUTOR_ERROR` report with the same code. A 409 for a `released` task carries `result_sha256` and `result_key`, because the Agent cannot call `GetTask`. The Agent compares the sha256 with its own copy and, if they are equal, tags the TRE copy with the key. The Agent only gets this 409 when two reports for the same task race. It does not ask again later.
 
 The tag can be missing on a released file. This happens when the Agent does not get the 200 (a timeout after Submission saved the result, or an Agent restart), or when tagging fails. Submission then has the task as `released` and never gives it to the Agent again, so nothing adds the tag later. A missing tag does not mean the file was not released. To check, compare the TRE copy's SHA-256 with `result_sha256` from `GetTask`.
 
@@ -186,9 +186,9 @@ TODO: re-tag released TRE copies that have no `released-key` (follow-up ticket).
 
 Every computed result is reviewed at the hospital before it leaves the TRE. The review happens in the Data Egress app (`Egress/`, forked from Swansea's DARE-Control). Native 5S-TES outputs are reviewed in the same app.
 
-Registering. After the Agent saves the result, it writes the review record (below) as pending, then calls the Egress API's `POST /api/DataEgress/AddNewDataEgress` with the task ID as `SubmissionId`, the kind `federated`, the study ID, the image and command, the result bytes and their SHA-256. The Egress app keeps its own copy of the bytes, so the reviewer reads exactly what was registered, and the Egress app needs no access to `federated-outputs`. It refuses the registration (400) if the SHA-256 is not the hash of that UTF-8 text. A second registration of the same task is accepted as already done. Then the Agent writes the registration marker (below) and reports `waiting_for_output_approval`. If a step fails, the task keeps its step and the next poll goes on from where it stopped. If the registration keeps failing (the Egress app is down, unreachable or refuses it) for `EgressUnreachableGiveUpMinutes` (default 1440, one day) since the result was first sent for review, or since the Agent started if that is later, the task fails with `SYSTEM_ERROR` and `internal_error`. Its review is withdrawn first (see "Withdrawing"), because the Egress app may have saved the request even though the call failed. Each poll fetches one token for all its registrations.
+Registering. After the Agent saves the result, it writes the review record (below) as pending, then calls the Egress API's `POST /api/DataEgress/AddNewDataEgress` with the task ID as `SubmissionId`, the kind `federated`, the study ID, the image and command, the result bytes and their SHA-256. The Egress app keeps its own copy of the bytes, so the reviewer reads exactly what was registered, and the Egress app needs no access to `federated-outputs`. It refuses the registration (400) if the SHA-256 is not the hash of that UTF-8 text. A second registration of the same task is accepted as already done. Then the Agent writes the registration marker (below) and reports `waiting_for_output_approval`. If one of these fails, the task keeps its phase and the next poll goes on from where it stopped. If the registration keeps failing (the Egress app is down, unreachable or refuses it) for `EgressUnreachableGiveUpMinutes` (default 1440, one day) since the result was first sent for review, or since the Agent started if that is later, the task fails with `SYSTEM_ERROR` and `internal_error`. Its review is withdrawn first (see "Withdrawing"), because the Egress app may have saved the request even though the call failed. Each poll fetches one token for all its registrations.
 
-The Agent calls the Egress API with a client-credentials token of its own Keycloak client in the Egress realm (`FederatedEgressSettings:BaseUrl`, `ClientId` and `ClientSecret`; the service account has the role `dare-tre-admin`), at `ApiEndpoints:EgressApiUrl`. This section is separate from `DataEgressKeyCloakSettings`, which native egress uses, and has no defaults. If any of the three is not set, the Agent does not register the result. It logs an error once per poll and the task keeps its step.
+The Agent calls the Egress API with a client-credentials token of its own Keycloak client in the Egress realm (`FederatedEgressSettings:BaseUrl`, `ClientId` and `ClientSecret`; the service account has the role `dare-tre-admin`), at `ApiEndpoints:EgressApiUrl`. This section is separate from `DataEgressKeyCloakSettings`, which native egress uses, and has no defaults. If any of the three is not set, the Agent does not register the result. It logs an error once per poll and the task keeps its phase.
 
 Deciding. The reviewer sees the study ID, the code and the result with its SHA-256. The study details and the data permit are not provided yet; they come with the 5S-Crate (task 4.1). A rejection needs a reason. The Egress app saves the decision first, then calls the Agent's `POST /api/Submission/EgressResults` with the reviewer, the decision time, the reason and the SHA-256 of the bytes the reviewer saw. If that call fails, the Egress API sends the stored decision again once a minute until the Agent takes it, and the request stays in the "Unprocessed" list until then. The reviewer who made it can also send it again with Complete & Close. A saved decision cannot be changed: if the form differs from it, the Egress app refuses and names the stored decision. A 400, 404 or 409 from the Agent's own `EgressResults` handler is final: its body carries `"refusal": "final_refusal_by_tre_agent"`, and the Egress app then closes the request with "The TRE refused this decision", shows that on its page and stops sending it. The same status without that marker (from a proxy, an ingress or a wrong `TreAPISettings:Address`), network errors and other answers are retried. Only one decision per request is saved: the request rows carry Postgres's `xmin` row version, so if two reviewers complete the same request at once, the later save fails and that reviewer gets "This request was just decided by someone else". A stored decision that has not reached the Agent yet can be sent again only by the reviewer who made it.
 
@@ -266,35 +266,35 @@ Example: the mean of `age` on dataset `cohort_2024`, for rows where `sex` is `F`
 }
 ```
 
-### Task steps and state
+### Task phases and state
 
-A task has a step. It says where the task is, from intake to release. `GetTask` returns a valid TES task, so `state` is always a standard TES state. The step is in the metadata.
+A task has a phase. It says where the task is, from intake to release. `GetTask` returns a valid TES task, so `state` is always a standard TES state. The phase is in the metadata.
 
-| Step | TES `state` | When |
+| Phase | TES `state` | When |
 |---|---|---|
 | `queued` | `QUEUED` | The task is enqueued. |
 | `running` | `RUNNING` | The Agent has picked the task up. |
-| `waiting_for_output_approval` | `PAUSED` | The result is saved in the TRE and waits for a reviewer's decision in the Egress app. Set by the Agent. |
+| `waiting_for_output_approval` | `RUNNING` | The result is saved in the TRE and waits for a reviewer's decision in the Egress app. Set by the Agent. |
 | `released` | `COMPLETE` | The result file is stored in the orchestrator. |
 | `rejected_by_input_checks` | `CANCELED` | The task was refused before it ran. The error code is one of `invalid_task`, `unknown_operation`, `invalid_filter`, `image_not_approved`, `invalid_dataset_name`, `dataset_not_found` or `ambiguous_dataset`. |
 | `rejected_at_output_approval` | `CANCELED` | A reviewer refused the result. The error code is `rejected_by_reviewer` and the message is the reviewer's reason. |
 | `failed` | `EXECUTOR_ERROR` or `SYSTEM_ERROR` | Any other error. The Agent sends the state. `SYSTEM_ERROR` is for `internal_error`, `tre_renamed` and `result_changed_after_review`. `EXECUTOR_ERROR` is for the other codes. |
 
-A task only moves forward: `queued`, `running`, `waiting_for_output_approval`, then one final step (`released`, a `rejected_*` step or `failed`). A final step never changes. The Agent decides between a rejection and a failure by the error code.
+A task only moves forward: `queued`, `running`, `waiting_for_output_approval`, then one final phase (`released`, a `rejected_*` phase or `failed`). A final phase never changes. The Agent decides between a rejection and a failure by the error code.
 
 The result is in `logs[0].metadata`. Every key and value is a string.
 
-- `step`: the current step, as in the table.
-- `<step>_at` for each step the task has reached, for example `queued_at` and `running_at`. The value is a UTC time in ISO 8601 form (`O` format). A task rejected before it ran has no `running_at`. `logs[0].start_time` is `running_at`. `logs[0].end_time` is the time of the final step.
+- `phase`: the current phase, as in the table.
+- `<phase>_at` for each phase the task has reached, for example `queued_at` and `running_at`. The value is a UTC time in ISO 8601 form (`O` format). A task rejected before it ran has no `running_at`. `logs[0].start_time` is `running_at`. `logs[0].end_time` is the time of the final phase.
 - On `released`: `result_bucket`, `result_key` and `result_sha256` (where the result file is stored in the orchestrator, and its SHA-256). On a rejection or a failure: `error_code` and `error_message`.
 
 - The computed values (count, mean) are in the result file, not in the metadata.
 - `dataset_sha256` is added whenever the Agent read the dataset file, on success and on errors raised after the read (including `invalid_dataset`). It is the lowercase hex SHA-256 of the exact bytes of the CSV. It is absent when the file was not read: every input-check rejection (`invalid_task`, `unknown_operation`, `invalid_filter`, `image_not_approved`, `invalid_dataset_name`, `dataset_not_found`, `ambiguous_dataset`), `tre_renamed`, and `internal_error` before the read. An empty file gives `invalid_dataset` with the hash.
 
-### How the steps fit the standards
+### How the phases fit the standards
 
-- **GA4GH TES.** `GetTask` always returns a valid TES task with a standard TES `state`. The step, `error_code` and `error_message` are in `logs[0].metadata`, which TES leaves free-form. TES defines no error codes, so ours clash with nothing. `PAUSED` for `waiting_for_output_approval` fits: in TES a task can be paused, and support for it is optional.
-- **`CANCELED` for a rejection is a stretch.** TES says `CANCELED` means the user canceled the task. A hospital that refuses a task is not that, but TES has no "rejected" state. `SYSTEM_ERROR` and `EXECUTOR_ERROR` say that something broke, and a refusal is a decision, not a fault. `CANCELED` is the closest: the task stopped on purpose, the state is final, and TES clients don't retry it. A generic TES client that reads only `state` can tell the researcher that they canceled the task. A client that reads the metadata sees the real step and reason. DAAMS should read the status from the metadata (task 4.3).
+- **GA4GH TES.** `GetTask` always returns a valid TES task with a standard TES `state`. The phase, `error_code` and `error_message` are in `logs[0].metadata`, which TES leaves free-form. TES defines no error codes, so ours clash with nothing. `RUNNING` for `waiting_for_output_approval` means the task is still in progress, which is what a TES client needs to know. TES `PAUSED` would mean someone has to resume the task, and TES has no resume call. The phase tells `running` and `waiting_for_output_approval` apart, so the Agent and DAAMS read the phase, not the state.
+- **`CANCELED` for a rejection is a stretch.** TES says `CANCELED` means the user canceled the task. A hospital that refuses a task is not that, but TES has no "rejected" state. `SYSTEM_ERROR` and `EXECUTOR_ERROR` say that something broke, and a refusal is a decision, not a fault. `CANCELED` is the closest: the task stopped on purpose, the state is final, and TES clients don't retry it. A generic TES client that reads only `state` can tell the researcher that they canceled the task. A client that reads the metadata sees the real phase and reason. DAAMS should read the status from the metadata (task 4.3).
 - **Upstream 5S-TES** has its own status list. Only `CancelTask` sets `CANCELED`, so there is no rejection mapping to follow.
 - **Five Safes RO-Crate (TRE-FX).** The profile records checks, such as validation and sign-off, as actions in the crate. When the crate becomes the audit trail, map the input-check and output-approval rejections to those actions instead of a separate naming. Confirm the profile's exact terms before that work.
 
@@ -346,9 +346,9 @@ TODO: researcher access scoped by study once study_id → project mapping exists
 | `non_numeric_value` | `mean` found a value that is not a number. |
 | `internal_error` | An unexpected failure, for example storage is unreachable. The message is generic, so that bucket names and hosts do not leave the TRE. The details are in the Agent log. |
 | `tre_renamed` | The TRE was renamed in Submission before the task finished. Set by Submission, not the Agent. Enqueue the task again under the new name. |
-| `rejected_by_reviewer` | A hospital reviewer rejected the result in the Egress app (step `rejected_at_output_approval`, state `CANCELED`). The message is the reviewer's reason, at most 512 characters, with control characters removed. No file is released. |
+| `rejected_by_reviewer` | A hospital reviewer rejected the result in the Egress app (phase `rejected_at_output_approval`, state `CANCELED`). The message is the reviewer's reason, at most 512 characters, with control characters removed. No file is released. |
 | `result_changed_after_review` | The result was approved, but the saved file in `federated-outputs` no longer has the SHA-256 the reviewer saw, or is gone (state `SYSTEM_ERROR`). Nothing is released. |
-| `invalid_transition` | API only (`ReportProgress`). The report asks for an earlier step. |
+| `invalid_transition` | API only (`ReportProgress`). The report asks for an earlier phase. |
 | `task_busy` | API only (`ReportProgress`, `ReportResult`). The report lost a race with other reports three times in a row. Send it again. |
 | `invalid_result` | Submission refused the result file. The Agent sends it as the code of a follow-up `EXECUTOR_ERROR`. The message names the field. |
 | `result_too_large` | The result file is over 65536 bytes. Set by the Agent's follow-up report after a 400 from Submission. |
@@ -363,7 +363,7 @@ Set `TreName` in the Agent's settings to the name of the TRE as registered in Su
 
 The Agent does not run a task whose `fed.sites` is not its own `TreName`. It logs an error, does not read the dataset, and does not report, so the task stays as it is and runs once `TreName` is fixed. If `TreName` is empty, the Agent logs an error and runs no task.
 
-If a TRE is renamed in Submission, its unfinished tasks (`queued`, `running` or `waiting_for_output_approval`) that were enqueued under the old name fail at once with the step `failed`, `SYSTEM_ERROR` and `tre_renamed`. Enqueue them again under the new name. A change of case only (`My-TRE` to `my-tre`) is not a rename. If the name is changed directly in the database instead, the old tasks are not failed, but they are no longer sent to the Agent.
+If a TRE is renamed in Submission, its unfinished tasks (`queued`, `running` or `waiting_for_output_approval`) that were enqueued under the old name fail at once with the phase `failed`, `SYSTEM_ERROR` and `tre_renamed`. Enqueue them again under the new name. A change of case only (`My-TRE` to `my-tre`) is not a rename. If the name is changed directly in the database instead, the old tasks are not failed, but they are no longer sent to the Agent.
 
 A TRE that has federated tasks cannot be deleted. The tasks are the record of which results left the TRE.
 
@@ -371,7 +371,7 @@ A TRE that has federated tasks cannot be deleted. The tasks are the record of wh
 
 Set `FederatedTaskSettings:ApprovedImages` to the executor images that this TRE accepts. For example, as an environment variable: `FederatedTaskSettings__ApprovedImages__0=5s-tes/federated-ops:1`. A single value also works, with images separated by commas: `FederatedTaskSettings__ApprovedImages=5s-tes/federated-ops:1`. A single value replaces any indexed entries, for example those in `appsettings`. Matching is exact and case-sensitive. Entries are trimmed, and blank entries are ignored.
 
-There is no default, because the site approves the images. Only `appsettings.Development*.json` lists `5s-tes/federated-ops:1`. If the list is not set, the Agent logs an error. A task that fails the profile is still rejected. Other new tasks are not run or reported. They keep their step and run when the list is set. A task whose result file is already saved still goes on to output approval. Every federated task uses `5s-tes/federated-ops:1` today, so a list without it rejects every federated task at this TRE with `image_not_approved`. The Agent cannot tell a deliberate refusal from a typo or a registry prefix, so at startup it logs an error when the list is set but does not include that image.
+There is no default, because the site approves the images. Only `appsettings.Development*.json` lists `5s-tes/federated-ops:1`. If the list is not set, the Agent logs an error. A task that fails the profile is still rejected. Other new tasks are not run or reported. They keep their phase and run when the list is set. A task whose result file is already saved still goes on to output approval. Every federated task uses `5s-tes/federated-ops:1` today, so a list without it rejects every federated task at this TRE with `image_not_approved`. The Agent cannot tell a deliberate refusal from a typo or a registry prefix, so at startup it logs an error when the list is set but does not include that image.
 
 The input checks run on every poll until the task's result file is saved, so a resumed `running` task is checked again. After the file is saved, the input checks don't run again: whether the result leaves is the decision of output approval, not of the input checks. If its image was removed from the list in the meantime, the Agent logs a warning and the result still goes on to output approval.
 
@@ -485,7 +485,7 @@ Submission.Api keeps result files in its own RustFS, not in the TRE and not in t
 
 Upgrading from inline results: the migration `FederatedResultFiles` drops the old `ResultValue` and `ResultRowCount` columns. A task that was COMPLETE before the migration keeps its state but has no result file, so `GetTaskResult` returns 404 `result_not_found` for it. The values cannot be recovered, not even by a rollback. Deploy Agent.Api and Submission.Api together.
 
-Upgrading to task steps: deploy Submission.Api before (or together with) the Agent. A new Agent gets 404 from an old Submission's `ReportProgress` and does not run tasks. The migration `AddFederatedTaskSteps` fills in the step of existing rows from their TES state. Input-check errors reported before this change stay `failed`.
+Upgrading to task phases: deploy Submission.Api before (or together with) the Agent. A new Agent gets 404 from an old Submission's `ReportProgress` and does not run tasks. The migration `AddFederatedTaskPhases` fills in the phase of existing rows from their TES state. Input-check errors reported before this change stay `failed`.
 
 TODO: store results in the project's output bucket once study_id → project mapping exists
 
@@ -517,7 +517,7 @@ Known risks:
 - Error reports are not reviewed. Error reports (`EXECUTOR_ERROR`, `SYSTEM_ERROR`, input-check rejections) leave without review. Today that is safe: the Agent runs fixed operations and writes every error message itself, echoing only what the researcher sent (for example a column name). It stops being safe with arbitrary Python, where a script can put data in an exception or in its output. The rule for the arbitrary-Python slice: never forward text the script produced. The orchestrator gets a fixed code and message, and the details stay in the TRE logs.
 - Orchestrator admins are trusted not to change stored results or hashes, until signed results are added.
 - Any `dare-control-admin` user can read the results of every study.
-- Orphan files. Submission writes the file before it saves the `released` step. If the row save fails, or a concurrent report wins, the file stays in the orchestrator bucket with no row that points to it. The key holds the SHA-256, so it never overwrites another result. No API call can reach an orphan. An orchestrator admin can find and delete orphans in the bucket.
+- Orphan files. Submission writes the file before it saves the `released` phase. If the row save fails, or a concurrent report wins, the file stays in the orchestrator bucket with no row that points to it. The key holds the SHA-256, so it never overwrites another result. No API call can reach an orphan. An orchestrator admin can find and delete orphans in the bucket.
 
 TODO: researcher access scoped by study once study_id → project mapping exists
 

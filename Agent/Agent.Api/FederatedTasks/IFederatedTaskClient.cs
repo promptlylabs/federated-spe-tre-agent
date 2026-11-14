@@ -22,9 +22,9 @@ namespace Agent.Api.FederatedTasks
         Task<FederatedReportOutcome> ReportAsync(FederatedTaskResultReport report, byte[]? resultFile);
 
         /// <summary>
-        /// Tells Submission the task reached a step. Parses the answer like <see cref="ReportAsync"/>;
+        /// Tells Submission the task reached a phase. Parses the answer like <see cref="ReportAsync"/>;
         /// throws only on a network or token failure.
         /// </summary>
-        Task<FederatedReportOutcome> ReportProgressAsync(string taskId, FederatedTaskStep step);
+        Task<FederatedReportOutcome> ReportProgressAsync(string taskId, FederatedTaskPhase phase);
     }
 }

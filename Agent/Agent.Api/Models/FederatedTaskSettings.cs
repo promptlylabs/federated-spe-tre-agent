@@ -57,7 +57,7 @@ namespace Agent.Api.Models
         /// How long, in minutes, the Agent keeps trying to register a saved result with the Egress app when the
         /// registration fails (the Egress app is down, unreachable or refuses it). The time counts from when the
         /// result was first sent for review, or from when the Agent started if that is later. Until then the task
-        /// keeps its step and is tried again at the next poll; after it, the task fails with internal_error, so a
+        /// keeps its phase and is tried again at the next poll; after it, the task fails with internal_error, so a
         /// broken Egress connection does not leave finished tasks running for good. The default, one day, lets an
         /// Egress outage pass without failing finished work. 0 or less gives up at the first failure.
         /// </summary>

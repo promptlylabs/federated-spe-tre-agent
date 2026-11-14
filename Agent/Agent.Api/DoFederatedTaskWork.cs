@@ -79,9 +79,9 @@ namespace Agent.Api
 
             foreach (var task in pending)
             {
-                // QUEUED and RUNNING tasks are run; PAUSED ones wait for the hospital's output approval. Any other
-                // state here is unexpected.
-                if (task.State is not (TesState.QUEUEDEnum or TesState.RUNNINGEnum or TesState.PAUSEDEnum))
+                // Only QUEUED and RUNNING tasks are handed out. A RUNNING task is either running or waiting for the
+                // hospital's output approval; its phase says which.
+                if (task.State is not (TesState.QUEUEDEnum or TesState.RUNNINGEnum))
                 {
                     Log.Warning("Federated tasks: task {TaskId} is pending in unexpected state {State}; skipping it", task.Id, task.State);
                     continue;
@@ -97,14 +97,14 @@ namespace Agent.Api
                 }
                 catch (Exception ex)
                 {
-                    // A task whose save or report failed keeps its step on the server and is retried on the next poll.
-                    Log.Error(ex, "Federated tasks: task {TaskId} could not be completed this poll; it keeps its step", task.Id);
+                    // A task whose save or report failed keeps its phase on the server and is retried on the next poll.
+                    Log.Error(ex, "Federated tasks: task {TaskId} could not be completed this poll; it keeps its phase", task.Id);
                 }
             }
 
             // One line per poll, not per task, so a backlog does not flood the log.
             if (held > 0)
-                Log.Error("Federated tasks: FederatedTaskSettings:ApprovedImages is not configured; {Count} task(s) were not checked or run and keep their step",
+                Log.Error("Federated tasks: FederatedTaskSettings:ApprovedImages is not configured; {Count} task(s) were not checked or run and keep their phase",
                     held);
             if (heldForEgress > 0)
                 Log.Error("Federated tasks: FederatedEgressSettings BaseUrl/ClientId/ClientSecret are not configured; {Count} result(s) are held for output approval and not released",
@@ -157,7 +157,8 @@ namespace Agent.Api
                 return Hold.None;
             }
 
-            if (bytes == null && task.State == TesState.PAUSEDEnum)
+            var waiting = FederatedTaskPhases.PhaseOf(task) == FederatedTaskPhase.WaitingForOutputApproval;
+            if (bytes == null && waiting)
             {
                 Log.Warning("Federated tasks: task {TaskId} is waiting for output approval, but the TRE has no saved result and no review for it; skipping it",
                     taskId);
@@ -175,7 +176,7 @@ namespace Agent.Api
                 }
 
                 // The hospital's input checks run before the task is marked running and before any data is read.
-                // A task that fails one is rejected; one the TRE cannot judge now keeps its step.
+                // A task that fails one is rejected; one the TRE cannot judge now keeps its phase.
                 InputCheckOutcome checkOutcome;
                 try
                 {
@@ -277,7 +278,7 @@ namespace Agent.Api
                 {
                     if (!HasWaitedTooLong(firstSentAt, _settings.EgressUnreachableGiveUpMinutes))
                     {
-                        Log.Warning(ex, "Federated tasks: the result of task {TaskId} could not be registered with the Egress app; it keeps its step and is tried again at the next poll",
+                        Log.Warning(ex, "Federated tasks: the result of task {TaskId} could not be registered with the Egress app; it keeps its phase and is tried again at the next poll",
                             taskId);
                         return Hold.None;
                     }
@@ -293,8 +294,7 @@ namespace Agent.Api
 
             if (review.IsPending)
             {
-                // Submission shows the task as waiting (PAUSED) until the reviewer decides.
-                if (task.State != TesState.PAUSEDEnum) await ReportWaitingAsync(taskId);
+                if (!waiting) await ReportWaitingAsync(taskId);
                 return Hold.None;
             }
 
@@ -379,7 +379,7 @@ namespace Agent.Api
         /// <summary>Tells Submission the result is waiting for output approval; logs when it is not accepted.</summary>
         private async Task ReportWaitingAsync(string taskId)
         {
-            var outcome = await _client.ReportProgressAsync(taskId, FederatedTaskStep.WaitingForOutputApproval);
+            var outcome = await _client.ReportProgressAsync(taskId, FederatedTaskPhase.WaitingForOutputApproval);
             if (!outcome.Accepted)
                 Log.Warning("Federated tasks: Submission did not accept the waiting-for-output-approval report for task {TaskId} (status {Status}, {ErrorCode}); it is sent again at the next poll",
                     taskId, outcome.StatusCode, outcome.ErrorCode);
@@ -433,7 +433,7 @@ namespace Agent.Api
             }
             else if (!outcome.Accepted)
             {
-                Log.Warning("Federated tasks: Submission did not accept the error report for task {TaskId} (status {Status}, {ErrorCode}); it keeps its step",
+                Log.Warning("Federated tasks: Submission did not accept the error report for task {TaskId} (status {Status}, {ErrorCode}); it keeps its phase",
                     report.TaskId, outcome.StatusCode, outcome.ErrorCode);
             }
         }
@@ -461,7 +461,7 @@ namespace Agent.Api
                 return;
             }
 
-            Log.Warning("Federated tasks: Submission did not accept the result for task {TaskId} (status {Status}, {ErrorCode}); it keeps its step",
+            Log.Warning("Federated tasks: Submission did not accept the result for task {TaskId} (status {Status}, {ErrorCode}); it keeps its phase",
                 taskId, outcome.StatusCode, outcome.ErrorCode);
         }
 
@@ -539,15 +539,15 @@ namespace Agent.Api
 
         /// <summary>
         /// Tells Submission the task is running. Returns false when the task must not run now: Submission says it
-        /// is already past that step or did not accept the report. Throws on transport failure.
+        /// is already past that phase or did not accept the report. Throws on transport failure.
         /// </summary>
         private async Task<bool> ReportRunningAsync(string taskId)
         {
-            var outcome = await _client.ReportProgressAsync(taskId, FederatedTaskStep.Running);
+            var outcome = await _client.ReportProgressAsync(taskId, FederatedTaskPhase.Running);
             if (outcome.Accepted) return true;
 
             if (IsAlreadyFinal(outcome))
-                Log.Warning("Federated tasks: task {TaskId} is already past the running step on Submission ({ErrorCode}); not running it",
+                Log.Warning("Federated tasks: task {TaskId} is already past the running phase on Submission ({ErrorCode}); not running it",
                     taskId, outcome.ErrorCode);
             else
                 Log.Warning("Federated tasks: Submission did not accept the running report for task {TaskId} (status {Status}, {ErrorCode}); it will be retried on the next poll",
@@ -563,7 +563,7 @@ namespace Agent.Api
         {
             if (!HasWaitedTooLong(task))
             {
-                Log.Warning(ex, "Federated tasks: the dataset bucket could not be {Action} for task {TaskId}; it keeps its step and is tried again at the next poll",
+                Log.Warning(ex, "Federated tasks: the dataset bucket could not be {Action} for task {TaskId}; it keeps its phase and is tried again at the next poll",
                     action, taskId);
                 return;
             }

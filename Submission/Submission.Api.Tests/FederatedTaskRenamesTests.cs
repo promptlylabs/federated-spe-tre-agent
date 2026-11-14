@@ -26,7 +26,7 @@ namespace Submission.Api.Tests
             {
                 TaskId = Guid.NewGuid(), TreId = treId, TreName = treName, StudyId = "s", Operation = "count",
                 Dataset = "d", TesTaskJson = "{}", State = state, SubmittedAt = DateTime.UtcNow,
-                Step = state == TesState.COMPLETEEnum ? FederatedTaskStep.Released : FederatedTaskStep.Queued
+                Phase = state == TesState.COMPLETEEnum ? FederatedTaskPhase.Released : FederatedTaskPhase.Queued
             };
             db.FederatedTasks.Add(task);
             db.SaveChanges();
@@ -63,26 +63,26 @@ namespace Submission.Api.Tests
         }
 
         [Theory]
-        [InlineData(FederatedTaskStep.Running)]
-        [InlineData(FederatedTaskStep.WaitingForOutputApproval)]
-        public void Rename_fails_running_and_waiting_tasks_under_old_name(FederatedTaskStep step)
+        [InlineData(FederatedTaskPhase.Running)]
+        [InlineData(FederatedTaskPhase.WaitingForOutputApproval)]
+        public void Rename_fails_running_and_waiting_tasks_under_old_name(FederatedTaskPhase phase)
         {
             using var db = NewDb();
             var task = Seed(db, 1, "tre-a", TesState.QUEUEDEnum);
-            task.MoveTo(FederatedTaskStep.Queued, DateTime.UtcNow);
-            task.MoveTo(step, DateTime.UtcNow);
+            task.MoveTo(FederatedTaskPhase.Queued, DateTime.UtcNow);
+            task.MoveTo(phase, DateTime.UtcNow);
             db.SaveChanges();
 
             var failed = FederatedTaskRenames.FailUnfinishedUnderOtherNames(db, 1, "tre-a-2");
             db.SaveChanges();
 
             Assert.Equal(1, failed);
-            var row = db.FederatedTasks.AsNoTracking().Include(x => x.StepChanges).Single();
-            Assert.Equal(FederatedTaskStep.Failed, row.Step);
+            var row = db.FederatedTasks.AsNoTracking().Include(x => x.PhaseChanges).Single();
+            Assert.Equal(FederatedTaskPhase.Failed, row.Phase);
             Assert.Equal(TesState.SYSTEMERROREnum, row.State);
             Assert.Equal(FederatedTaskErrorCodes.TreRenamed, row.ErrorCode);
-            var last = row.StepChanges.OrderBy(c => c.Id).Last();
-            Assert.Equal(FederatedTaskStep.Failed, last.Step);
+            var last = row.PhaseChanges.OrderBy(c => c.Id).Last();
+            Assert.Equal(FederatedTaskPhase.Failed, last.Phase);
             Assert.Equal(FederatedTaskErrorCodes.TreRenamed, last.ErrorCode);
         }
 
@@ -111,19 +111,19 @@ namespace Submission.Api.Tests
             {
                 TaskId = Guid.NewGuid(), TreId = 1, TreName = "tre-a", StudyId = "s", Operation = "count",
                 Dataset = "d", TesTaskJson = "{}", State = TesState.QUEUEDEnum, SubmittedAt = DateTime.UtcNow,
-                Step = FederatedTaskStep.Queued
+                Phase = FederatedTaskPhase.Queued
             };
-            task.MoveTo(FederatedTaskStep.Running, DateTime.UtcNow);
+            task.MoveTo(FederatedTaskPhase.Running, DateTime.UtcNow);
             db.FederatedTasks.Add(task);
             db.SaveChanges();
             return (name, task.TaskId);
         }
 
         /// <summary>An Agent report in a second context, just before the rename's first save.</summary>
-        private static BeforeFirstSave AgentReports(string dbName, Guid taskId, FederatedTaskStep step) => new(() =>
+        private static BeforeFirstSave AgentReports(string dbName, Guid taskId, FederatedTaskPhase phase) => new(() =>
         {
             using var other = OpenDb(dbName);
-            other.FederatedTasks.Single(x => x.TaskId == taskId).MoveTo(step, DateTime.UtcNow);
+            other.FederatedTasks.Single(x => x.TaskId == taskId).MoveTo(phase, DateTime.UtcNow);
             other.SaveChanges();
         });
 
@@ -133,7 +133,7 @@ namespace Submission.Api.Tests
         public async Task SaveWithSweep_report_racing_the_sweep_is_redone_and_the_task_still_fails()
         {
             var (name, taskId) = SeedRunningUnderOldName();
-            await using var db = OpenDb(name, AgentReports(name, taskId, FederatedTaskStep.WaitingForOutputApproval));
+            await using var db = OpenDb(name, AgentReports(name, taskId, FederatedTaskPhase.WaitingForOutputApproval));
             Rename(db, "tre-a-2");
 
             var failed = await FederatedTaskRenames.SaveWithSweepAsync(db, 1, "tre-a-2");
@@ -141,21 +141,21 @@ namespace Submission.Api.Tests
             Assert.Equal(1, failed);
             await using var check = OpenDb(name);
             Assert.Equal("tre-a-2", check.Tres.Single().Name);
-            var row = check.FederatedTasks.Include(x => x.StepChanges).Single();
-            Assert.Equal(FederatedTaskStep.Failed, row.Step);
+            var row = check.FederatedTasks.Include(x => x.PhaseChanges).Single();
+            Assert.Equal(FederatedTaskPhase.Failed, row.Phase);
             Assert.Equal(FederatedTaskErrorCodes.TreRenamed, row.ErrorCode);
             // The Agent's report is kept in the history, then the rename's failure. Only the order is checked: the
             // in-memory provider does not roll back the failed first save, Postgres does (one transaction per save).
-            var steps = row.StepChanges.OrderBy(c => c.Id).Select(c => c.Step).ToList();
-            Assert.Equal([FederatedTaskStep.Running, FederatedTaskStep.WaitingForOutputApproval], steps.Take(2));
-            Assert.Equal(FederatedTaskStep.Failed, steps.Last());
+            var phases = row.PhaseChanges.OrderBy(c => c.Id).Select(c => c.Phase).ToList();
+            Assert.Equal([FederatedTaskPhase.Running, FederatedTaskPhase.WaitingForOutputApproval], phases.Take(2));
+            Assert.Equal(FederatedTaskPhase.Failed, phases.Last());
         }
 
         [Fact]
         public async Task SaveWithSweep_task_released_during_the_sweep_stays_released()
         {
             var (name, taskId) = SeedRunningUnderOldName();
-            await using var db = OpenDb(name, AgentReports(name, taskId, FederatedTaskStep.Released));
+            await using var db = OpenDb(name, AgentReports(name, taskId, FederatedTaskPhase.Released));
             Rename(db, "tre-a-2");
 
             var failed = await FederatedTaskRenames.SaveWithSweepAsync(db, 1, "tre-a-2");
@@ -164,7 +164,7 @@ namespace Submission.Api.Tests
             await using var check = OpenDb(name);
             Assert.Equal("tre-a-2", check.Tres.Single().Name);
             var row = check.FederatedTasks.Single();
-            Assert.Equal(FederatedTaskStep.Released, row.Step);
+            Assert.Equal(FederatedTaskPhase.Released, row.Phase);
             Assert.Null(row.ErrorCode);
         }
 

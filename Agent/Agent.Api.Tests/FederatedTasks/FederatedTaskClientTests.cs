@@ -254,13 +254,13 @@ public class FederatedTaskClientTests
     {
         var handler = new StubHandler(HttpStatusCode.Conflict, "{\"error_code\":\"invalid_transition\",\"error_message\":\"m\"}");
 
-        var outcome = await Client(handler).ReportProgressAsync("11111111-1111-1111-1111-111111111111", FederatedTaskStep.Running);
+        var outcome = await Client(handler).ReportProgressAsync("11111111-1111-1111-1111-111111111111", FederatedTaskPhase.Running);
 
         Assert.Equal(HttpMethod.Post, handler.Request!.Method);
         Assert.Equal("http://submission/api/FederatedTask/ReportProgress", handler.Request.RequestUri!.ToString());
         Assert.Equal("fake-token", handler.Request.Headers.Authorization!.Parameter);
         Assert.Equal("application/json", handler.Request.Content!.Headers.ContentType!.MediaType);
-        Assert.Equal("{\"task_id\":\"11111111-1111-1111-1111-111111111111\",\"step\":\"running\"}", handler.Body);
+        Assert.Equal("{\"task_id\":\"11111111-1111-1111-1111-111111111111\",\"phase\":\"running\"}", handler.Body);
         Assert.Equal(409, outcome.StatusCode);
         Assert.Equal("invalid_transition", outcome.ErrorCode);
         Assert.False(outcome.Accepted);
@@ -269,9 +269,9 @@ public class FederatedTaskClientTests
     [Fact]
     public async Task ReportProgressAsync_200_is_accepted()
     {
-        var handler = new StubHandler(HttpStatusCode.OK, "{\"step\":\"running\"}");
+        var handler = new StubHandler(HttpStatusCode.OK, "{\"phase\":\"running\"}");
 
-        var outcome = await Client(handler).ReportProgressAsync("t", FederatedTaskStep.Running);
+        var outcome = await Client(handler).ReportProgressAsync("t", FederatedTaskPhase.Running);
 
         Assert.True(outcome.Accepted);
     }
