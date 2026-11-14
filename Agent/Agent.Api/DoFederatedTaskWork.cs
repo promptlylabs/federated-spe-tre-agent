@@ -365,7 +365,7 @@ namespace Agent.Api
             // A saved result passed the profile when it was computed; fall back to the raw tag only in defence.
             var studyId = parsed.IsSuccess
                 ? parsed.Spec!.StudyId
-                : task.Tags?.GetValueOrDefault(FederatedTesProfile.StudyIdTag) ?? string.Empty;
+                : task.Tags?.GetValueOrDefault("study_id") ?? string.Empty;
             return new EgressRegistration(
                 storeKey,
                 $"Federated task {storeKey}: {command}",

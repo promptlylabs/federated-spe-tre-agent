@@ -43,7 +43,7 @@ enqueue() {
   body=$(cat <<EOF
 {"executors":[{"image":"5s-tes/federated-ops:1","command":$command}],
  "inputs":[{"url":"dataset://$dataset","path":"/data/$dataset","type":"DIRECTORY"}],
- "outputs":[],"tags":{"fed.sites":"my-tre","fed.study_id":"study-001"}}
+ "outputs":[],"tags":{"tres":"my-tre","study_id":"study-001"}}
 EOF
 )
   local response code

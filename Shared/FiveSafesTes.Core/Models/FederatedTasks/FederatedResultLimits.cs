@@ -14,7 +14,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
 
         /// <summary>
         /// Longest string field in a result document. Enqueue applies it to the tags copied into the document
-        /// (fed.sites, fed.study_id), so a task that could never be reported is never queued.
+        /// (tres, study_id), so a task that could never be reported is never queued.
         /// </summary>
         public const int MaxStringLength = 1024;
 
