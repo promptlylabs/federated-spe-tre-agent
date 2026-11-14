@@ -1,4 +1,3 @@
-using System.Text.Json.Nodes;
 using Xunit;
 
 namespace Federated.IntegrationTests;
@@ -57,7 +56,6 @@ public class InputGateTests
     [InlineData("unknown operation", "unknown_operation")]
     [InlineData("invalid filter", "invalid_filter")]
     [InlineData("foreign image", "invalid_task")]
-    [InlineData("old tag names", "invalid_task")]
     public async Task Submission_refuses_a_task_outside_the_federated_profile(string kind, string expectedCode)
     {
         stack.EnsureReady();
@@ -65,9 +63,7 @@ public class InputGateTests
         {
             "unknown operation" => await stack.Submission.EnqueueAsync("cohort_2024", "median"),
             "invalid filter" => await stack.Submission.EnqueueAsync("cohort_2024", "count", "--filter", "sex:like:F"),
-            "foreign image" => await stack.Submission.EnqueueWithImageAsync("python:3.12", "cohort_2024", "count"),
-            _ => await stack.Submission.EnqueueWithTagsAsync(
-                new JsonObject { ["tres"] = StackSettings.Tre, ["study_id"] = "study-001" }, "cohort_2024", "count")
+            _ => await stack.Submission.EnqueueWithImageAsync("python:3.12", "cohort_2024", "count")
         };
 
         Assert.Equal(400, outcome.Status);

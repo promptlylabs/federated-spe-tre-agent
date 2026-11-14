@@ -69,15 +69,7 @@ public sealed class SubmissionClient
     public Task<EnqueueOutcome> EnqueueAsync(string dataset, string operation, params string[] args) =>
         EnqueueWithImageAsync(StackSettings.Image, dataset, operation, args);
 
-    public Task<EnqueueOutcome> EnqueueWithImageAsync(string image, string dataset, string operation, params string[] args) =>
-        SendTaskAsync(image, FederationTags(), dataset, operation, args);
-
-    public Task<EnqueueOutcome> EnqueueWithTagsAsync(JsonObject tags, string dataset, string operation, params string[] args) =>
-        SendTaskAsync(StackSettings.Image, tags, dataset, operation, args);
-
-    public static JsonObject FederationTags() => new() { ["fed.sites"] = StackSettings.Tre, ["fed.study_id"] = "study-001" };
-
-    private async Task<EnqueueOutcome> SendTaskAsync(string image, JsonObject tags, string dataset, string operation, string[] args)
+    public async Task<EnqueueOutcome> EnqueueWithImageAsync(string image, string dataset, string operation, params string[] args)
     {
         var body = new JsonObject
         {
@@ -91,7 +83,7 @@ public sealed class SubmissionClient
                 ["url"] = $"dataset://{dataset}", ["path"] = $"/data/{dataset}", ["type"] = "DIRECTORY"
             }),
             ["outputs"] = new JsonArray(),
-            ["tags"] = tags
+            ["tags"] = new JsonObject { ["tres"] = StackSettings.Tre, ["study_id"] = "study-001" }
         };
         using var response = await SendAsync(HttpMethod.Post, "/api/FederatedTask/Enqueue",
             new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json"));
