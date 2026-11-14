@@ -88,9 +88,12 @@ public class DoFederatedTaskWorkTests
             return Task.CompletedTask;
         }
 
+        public bool FailDelete { get; set; }
+
         public Task DeleteAsync(string taskId, CancellationToken ct)
         {
             Touches++;
+            if (FailDelete) throw new IOException("delete failed");
             Files.Remove(taskId);
             return Task.CompletedTask;
         }
@@ -947,6 +950,22 @@ public class DoFederatedTaskWorkTests
         Assert.Equal(0, approval.RegisterCalls);
         Assert.Equal([(T1, FederatedTaskPhase.Canceled)], client.ProgressCalls);
         Assert.Empty(client.Calls);
+    }
+
+    [Fact]
+    public async Task Canceling_task_whose_result_cannot_be_deleted_is_not_confirmed()
+    {
+        var client = OneMean();
+        Canceling(client.Pending[0]);
+        var outputs = Saved();
+        outputs.FailDelete = true;
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), registered: true);
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+
+        Assert.Contains(T1, approval.Withdrawn);
+        Assert.True(outputs.Files.ContainsKey(T1));
+        Assert.Empty(client.ProgressCalls);
     }
 
     [Fact]

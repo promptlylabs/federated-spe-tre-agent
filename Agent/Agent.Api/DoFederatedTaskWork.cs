@@ -374,12 +374,8 @@ namespace Agent.Api
             if (review is { IsPending: true } && !await _approval.IsWithdrawnAsync(storeKey, CancellationToken.None))
                 await WithdrawPendingReviewAsync(storeKey, CanceledReason);
 
+            // A store error is thrown: the task keeps its phase and the cancel is tried again at the next poll.
             await _outputs.DeleteAsync(storeKey, CancellationToken.None);
-            if (await _outputs.TryGetAsync(storeKey, CancellationToken.None) != null)
-            {
-                Log.Warning("Federated tasks: the result of cancelled task {TaskId} could not be removed; the cancel is tried again at the next poll", taskId);
-                return;
-            }
 
             var outcome = await _client.ReportProgressAsync(taskId, FederatedTaskPhase.Canceled);
             if (outcome.Accepted)

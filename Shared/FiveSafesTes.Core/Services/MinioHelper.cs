@@ -339,18 +339,11 @@ namespace FiveSafesTes.Core.Services
             }
         }
 
+        /// <summary>Deletes the object; deleting one that does not exist succeeds. A store error is thrown, not hidden.</summary>
         public async Task DeleteObject(string bucketName, string objectKey)
         {
             var amazonS3Client = GenerateAmazonS3Client();
-
-            try
-            {
-                await amazonS3Client.DeleteObjectAsync(bucketName, objectKey);
-            }
-            catch (AmazonS3Exception ex)
-            {
-                Log.Error(ex.ToString());
-            }
+            await amazonS3Client.DeleteObjectAsync(bucketName, objectKey);
         }
 
         /// <summary>

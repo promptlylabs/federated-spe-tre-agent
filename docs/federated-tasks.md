@@ -168,7 +168,7 @@ While a task is `canceling`, Submission refuses every `ReportResult` (an approve
 On a `canceling` task, the Agent:
 
 1. withdraws the review if it is still pending, so no decision is accepted any more, and the Egress app closes the request;
-2. deletes the saved result from `federated-outputs`, and checks it is gone;
+2. deletes the saved result from `federated-outputs` (a store error stops here, and the next poll tries again);
 3. reports `ReportProgress` with `canceled`.
 
 Each part is safe to repeat, so if one fails the next poll does them again. The review record and its withdrawn marker stay in the TRE as the audit of what was reviewed; they hold no data. The standard TES cancel (`POST /tasks/{id}:cancel`, for DAAMS) comes with the TES API and uses the same rules.
