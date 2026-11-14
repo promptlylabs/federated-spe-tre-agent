@@ -21,8 +21,8 @@ namespace Submission.Api.Services
             var current = treName.Trim().ToLower();
             var orphaned = db.FederatedTasks
                 .Where(x => x.TreId == treId && x.TreName != current)
-                .Where(FederatedTaskSteps.IsUnfinishedTask)
-                .Include(x => x.StepChanges)
+                .Where(FederatedTaskPhases.IsUnfinishedTask)
+                .Include(x => x.PhaseChanges)
                 .ToList();
 
             var now = DateTime.UtcNow;
@@ -40,7 +40,7 @@ namespace Submission.Api.Services
 
         /// <summary>
         /// Runs <see cref="FailUnfinishedUnderOtherNames"/> and saves it together with the caller's other tracked
-        /// changes (the rename). An Agent report can change a swept task between the read and the save. Step is a
+        /// changes (the rename). An Agent report can change a swept task between the read and the save. Phase is a
         /// concurrency token, so that save fails; the swept tasks are then read again and the sweep is redone. A
         /// task the report finished is left as it is.
         /// </summary>
@@ -59,7 +59,7 @@ namespace Submission.Api.Services
                 {
                     // Forget the sweep's stale tasks and history; the rename itself stays tracked for the next save.
                     foreach (var entry in db.ChangeTracker.Entries()
-                                 .Where(e => e.Entity is FederatedTask or FederatedTaskStepChange).ToList())
+                                 .Where(e => e.Entity is FederatedTask or FederatedTaskPhaseChange).ToList())
                     {
                         entry.State = EntityState.Detached;
                     }

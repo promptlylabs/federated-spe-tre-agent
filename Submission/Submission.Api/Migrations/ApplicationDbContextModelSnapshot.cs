@@ -105,6 +105,11 @@ namespace Submission.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<string>("Phase")
+                        .IsConcurrencyToken()
+                        .IsRequired()
+                        .HasColumnType("text");
+
                     b.Property<string>("ResultBucket")
                         .HasMaxLength(63)
                         .HasColumnType("character varying(63)");
@@ -125,11 +130,6 @@ namespace Submission.Api.Migrations
 
                     b.Property<int>("State")
                         .HasColumnType("integer");
-
-                    b.Property<string>("Step")
-                        .IsConcurrencyToken()
-                        .IsRequired()
-                        .HasColumnType("text");
 
                     b.Property<string>("StudyId")
                         .IsRequired()
@@ -157,12 +157,12 @@ namespace Submission.Api.Migrations
                     b.HasIndex("TaskId")
                         .IsUnique();
 
-                    b.HasIndex("TreId", "Step");
+                    b.HasIndex("TreId", "Phase");
 
                     b.ToTable("FederatedTasks");
                 });
 
-            modelBuilder.Entity("FiveSafesTes.Core.Models.FederatedTasks.FederatedTaskStepChange", b =>
+            modelBuilder.Entity("FiveSafesTes.Core.Models.FederatedTasks.FederatedTaskPhaseChange", b =>
                 {
                     b.Property<int>("Id")
                         .ValueGeneratedOnAdd()
@@ -182,7 +182,7 @@ namespace Submission.Api.Migrations
                     b.Property<int>("FederatedTaskId")
                         .HasColumnType("integer");
 
-                    b.Property<string>("Step")
+                    b.Property<string>("Phase")
                         .IsRequired()
                         .HasColumnType("text");
 
@@ -190,7 +190,7 @@ namespace Submission.Api.Migrations
 
                     b.HasIndex("FederatedTaskId");
 
-                    b.ToTable("FederatedTaskStepChanges", (string)null);
+                    b.ToTable("FederatedTaskPhaseChanges", (string)null);
                 });
 
             modelBuilder.Entity("FiveSafesTes.Core.Models.HistoricStatus", b =>
@@ -605,10 +605,10 @@ namespace Submission.Api.Migrations
                     b.Navigation("Tre");
                 });
 
-            modelBuilder.Entity("FiveSafesTes.Core.Models.FederatedTasks.FederatedTaskStepChange", b =>
+            modelBuilder.Entity("FiveSafesTes.Core.Models.FederatedTasks.FederatedTaskPhaseChange", b =>
                 {
                     b.HasOne("FiveSafesTes.Core.Models.FederatedTasks.FederatedTask", null)
-                        .WithMany("StepChanges")
+                        .WithMany("PhaseChanges")
                         .HasForeignKey("FederatedTaskId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
@@ -735,7 +735,7 @@ namespace Submission.Api.Migrations
 
             modelBuilder.Entity("FiveSafesTes.Core.Models.FederatedTasks.FederatedTask", b =>
                 {
-                    b.Navigation("StepChanges");
+                    b.Navigation("PhaseChanges");
                 });
 
             modelBuilder.Entity("FiveSafesTes.Core.Models.Project", b =>

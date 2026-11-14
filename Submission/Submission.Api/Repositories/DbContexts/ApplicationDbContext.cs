@@ -41,18 +41,18 @@ namespace Submission.Api.Repositories.DbContexts
             modelBuilder.Entity<FederatedTask>(b =>
             {
                 b.HasIndex(x => x.TaskId).IsUnique();
-                b.HasIndex(x => new { x.TreId, x.Step });
-                b.Property(x => x.Step).HasConversion<string>();
-                // Every step change is guarded by the current step; the token makes a stale or concurrent change fail.
-                b.Property(x => x.Step).IsConcurrencyToken();
-                b.HasMany(x => x.StepChanges).WithOne().HasForeignKey(x => x.FederatedTaskId).OnDelete(DeleteBehavior.Cascade);
+                b.HasIndex(x => new { x.TreId, x.Phase });
+                b.Property(x => x.Phase).HasConversion<string>();
+                // Every phase change is guarded by the current phase; the token makes a stale or concurrent change fail.
+                b.Property(x => x.Phase).IsConcurrencyToken();
+                b.HasMany(x => x.PhaseChanges).WithOne().HasForeignKey(x => x.FederatedTaskId).OnDelete(DeleteBehavior.Cascade);
                 // Task history is the audit record of released results; deleting a TRE must not erase it.
                 b.HasOne(x => x.Tre).WithMany().HasForeignKey(x => x.TreId).OnDelete(DeleteBehavior.Restrict);
             });
-            modelBuilder.Entity<FederatedTaskStepChange>(b =>
+            modelBuilder.Entity<FederatedTaskPhaseChange>(b =>
             {
-                b.ToTable("FederatedTaskStepChanges");
-                b.Property(x => x.Step).HasConversion<string>();
+                b.ToTable("FederatedTaskPhaseChanges");
+                b.Property(x => x.Phase).HasConversion<string>();
                 b.HasIndex(x => x.FederatedTaskId);
             });
         }

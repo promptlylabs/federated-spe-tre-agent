@@ -12,7 +12,7 @@ using Amazon.S3.Model;
 namespace Federated.IntegrationTests;
 
 public record EnqueueOutcome(int Status, string? Id, string? ErrorCode);
-public record TaskView(string State, string? Step, string? ErrorCode, string? ErrorMessage, string? ResultSha256);
+public record TaskView(string State, string? Phase, string? ErrorCode, string? ErrorMessage, string? ResultSha256);
 public record ResultView(byte[] Bytes, string Sha256);
 
 /// <summary>Addresses and dev logins of the stack in dev/federated (see its README). The host can be overridden.</summary>
@@ -115,7 +115,7 @@ public sealed class SubmissionClient
         var task = JsonNode.Parse(await response.Content.ReadAsStringAsync())!;
         var meta = task["logs"]?.AsArray().FirstOrDefault()?["metadata"];
         string? Meta(string key) => meta?[key]?.GetValue<string>();
-        return new TaskView(task["state"]!.GetValue<string>(), Meta("step"), Meta("error_code"), Meta("error_message"), Meta("result_sha256"));
+        return new TaskView(task["state"]!.GetValue<string>(), Meta("phase"), Meta("error_code"), Meta("error_message"), Meta("result_sha256"));
     }
 
     /// <summary>The stored result, or null when Submission has none for the task.</summary>
@@ -305,7 +305,7 @@ public static class Await
     private static readonly TimeSpan TriggerEvery = TimeSpan.FromSeconds(15);
 
     /// <summary>
-    /// Polls GetTask until done(task) or the timeout. While the task waits for the Agent (step queued or running),
+    /// Polls GetTask until done(task) or the timeout. While the task waits for the Agent (phase queued or running),
     /// triggers the Agent's poll at the start and every 15 s.
     /// </summary>
     public static async Task<TaskView> UntilAsync(StackFixture s, string id, Func<TaskView, bool> done, TimeSpan timeout)
@@ -318,8 +318,8 @@ public static class Await
             view = await s.Submission.GetTaskAsync(id);
             if (done(view)) return view;
             if (DateTime.UtcNow > until)
-                throw new TimeoutException($"task {id}: still {view.State}/{view.Step} after {timeout}");
-            if (view.Step is "queued" or "running" && DateTime.UtcNow >= nextTrigger)
+                throw new TimeoutException($"task {id}: still {view.State}/{view.Phase} after {timeout}");
+            if (view.Phase is "queued" or "running" && DateTime.UtcNow >= nextTrigger)
             {
                 await s.Agent.TriggerAsync();
                 nextTrigger = DateTime.UtcNow + TriggerEvery;
@@ -328,7 +328,7 @@ public static class Await
         }
     }
 
-    /// <summary>Waits until the Agent is done with the task for now: its step is neither queued nor running.</summary>
+    /// <summary>Waits until the Agent is done with the task for now: its phase is neither queued nor running.</summary>
     public static Task<TaskView> UntilSettledAsync(StackFixture s, string id, TimeSpan timeout) =>
-        UntilAsync(s, id, t => t.Step is not ("queued" or "running"), timeout);
+        UntilAsync(s, id, t => t.Phase is not ("queued" or "running"), timeout);
 }

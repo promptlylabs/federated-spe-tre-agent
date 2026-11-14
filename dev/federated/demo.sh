@@ -37,7 +37,7 @@ waiting() {
 pause()   { [ "$MODE" = live ] && { printf '\n%sPress Enter %s…%s' "$DIM" "$1" "$X"; read -r _; }; return 0; }
 
 # --- task state -------------------------------------------------------------------------------------------------------
-# Prints "STATE|step|error_code|error_message" for a task, or "UNKNOWN|||" if it cannot be read.
+# Prints "STATE|phase|error_code|error_message" for a task, or "UNKNOWN|||" if it cannot be read.
 task_view() {
   task_json "$1" 2>/dev/null | python3 -c '
 import sys, json
@@ -46,21 +46,21 @@ try:
 except Exception:
     print("UNKNOWN|||"); sys.exit()
 m = (t.get("logs") or [{}])[0].get("metadata") or {}
-print("|".join([t.get("state") or "UNKNOWN", m.get("step") or "", m.get("error_code") or "", (m.get("error_message") or "").replace("|", "/")]))'
+print("|".join([t.get("state") or "UNKNOWN", m.get("phase") or "", m.get("error_code") or "", (m.get("error_message") or "").replace("|", "/")]))'
 }
 
-# Polls the task every 2 s while its step is one of the given ones, showing a line whose counter moves every 10 s.
-# The step, not the TES state, tells running from waiting for review: both are RUNNING. Prints the final view.
+# Polls the task every 2 s while its phase is one of the given ones, showing a line whose counter moves every 10 s.
+# The phase, not the TES state, tells running from waiting for review: both are RUNNING. Prints the final view.
 # Returns 1 on timeout (0 = no limit).
-wait_while_step() {
+wait_while_phase() {
   local id=$1 limit=$2 label=$3 hint=$4
   shift 4
-  local start=$SECONDS shown=-10 view state step s waiting_now
+  local start=$SECONDS shown=-10 view state phase s waiting_now
   while :; do
-    view=$(task_view "$id"); IFS='|' read -r state step _ <<<"$view"
+    view=$(task_view "$id"); IFS='|' read -r state phase _ <<<"$view"
     waiting_now=false
-    for s in "$@"; do [ "$step" = "$s" ] && waiting_now=true; done
-    if [ "$waiting_now" = false ] && [ -n "$step" ]; then
+    for s in "$@"; do [ "$phase" = "$s" ] && waiting_now=true; done
+    if [ "$waiting_now" = false ] && [ -n "$phase" ]; then
       printf '\r\033[K' >&2; echo "$view"; return 0
     fi
     if [ "$limit" -gt 0 ] && [ $((SECONDS - start)) -ge "$limit" ]; then
@@ -97,7 +97,7 @@ plain_reason() {
   esac
 }
 
-# --- the review step --------------------------------------------------------------------------------------------------
+# --- the review phase --------------------------------------------------------------------------------------------------
 # Waits for the task's review request. Live: opens it in the browser for the reviewer. Unattended: decides through
 # the Egress API as reviewer ($2: 1 approve, 2 reject; $3: reason). Prints the review page URL.
 review() {
@@ -127,7 +127,7 @@ review() {
 run_case() {
   local n=$1 title=$2 ask=$3 expected=$4
   shift 4
-  local id view state step code message outcome left decision
+  local id view state phase code message outcome left decision
   pause "to start case $n"
   heading "Case $n of 3 · $title"
   say "${DIM}${ask}${X}"
@@ -138,26 +138,26 @@ run_case() {
   fi
   ok "Request received by the hospital" "task ${id:0:8}"
 
-  view=$(wait_while_step "$id" "$PICKUP_TIMEOUT" "Waiting for the hospital to pick it up…" \
+  view=$(wait_while_phase "$id" "$PICKUP_TIMEOUT" "Waiting for the hospital to pick it up…" \
     "the hospital checks for new requests once a minute" queued) || true
-  IFS='|' read -r state step code message <<<"$view"
+  IFS='|' read -r state phase code message <<<"$view"
 
-  if [ "$step" = rejected_by_input_checks ]; then
-    stop "Stopped by the hospital's checks: $(plain_reason "$code" "$message")" "$state · $step · $code"
+  if [ "$phase" = rejected_by_input_checks ]; then
+    stop "Stopped by the hospital's checks: $(plain_reason "$code" "$message")" "$state · $phase · $code"
     stop "Nothing ran, nothing left the hospital"
     outcome=$code; decision="stopped by the checks"
-  elif [ "$step" = queued ] || [ -z "$step" ]; then
+  elif [ "$phase" = queued ] || [ -z "$phase" ]; then
     stop "The hospital did not pick the request up in time" "task $id · $state"
     FAILURES=$((FAILURES + 1)); SUMMARY+=("$n|$title|no answer|?"); return
-  elif [ "$step" != running ] && [ "$step" != waiting_for_output_approval ]; then
+  elif [ "$phase" != running ] && [ "$phase" != waiting_for_output_approval ]; then
     # Ended before the analysis started, but not by the input checks (for example a system error).
-    stop "The task ended unexpectedly" "task $id · $state · $step · $code"
-    outcome="$state/$step/$code"; decision="$state"
+    stop "The task ended unexpectedly" "task $id · $state · $phase · $code"
+    outcome="$state/$phase/$code"; decision="$state"
   else
     ok "Hospital checks passed" "approved code, dataset held by the hospital"
-    view=$(wait_while_step "$id" "$PICKUP_TIMEOUT" "Analysis running inside the hospital…" "" running) || true
-    IFS='|' read -r state step code message <<<"$view"
-    if [ "$step" = waiting_for_output_approval ]; then
+    view=$(wait_while_phase "$id" "$PICKUP_TIMEOUT" "Analysis running inside the hospital…" "" running) || true
+    IFS='|' read -r state phase code message <<<"$view"
+    if [ "$phase" = waiting_for_output_approval ]; then
       ok "Analysis ran inside the hospital" "the researcher sees nothing yet"
       local page limit=$ACT_TIMEOUT
       local reviewed=true
@@ -168,25 +168,25 @@ run_case() {
       fi
       # A person decides in live mode: wait longer for them, but not for ever.
       [ "$MODE" = live ] && limit=$REVIEW_TIMEOUT
-      if ! view=$(wait_while_step "$id" "$limit" "Waiting for the hospital reviewer…" "" waiting_for_output_approval); then
+      if ! view=$(wait_while_phase "$id" "$limit" "Waiting for the hospital reviewer…" "" waiting_for_output_approval); then
         stop "No decision reached the hospital in $((limit / 60)) minute(s)" "task $id · check the Egress app and its logs"
         FAILURES=$((FAILURES + 1)); SUMMARY+=("$n|$title|no decision|?"); return
       fi
-      IFS='|' read -r state step code message <<<"$view"
+      IFS='|' read -r state phase code message <<<"$view"
     fi
-    case "$step" in
+    case "$phase" in
       released)
         ok "Approved by the hospital reviewer"
-        ok "Result released to the researcher" "$state · $step"
+        ok "Result released to the researcher" "$state · $phase"
         say "   ${C}${B}Answer: $(result_words "$id")${X}"
         outcome=released; decision="approved by the reviewer" ;;
       rejected_at_output_approval)
-        stop "Rejected by the hospital reviewer: ${message}" "$state · $step · $code"
+        stop "Rejected by the hospital reviewer: ${message}" "$state · $phase · $code"
         stop "Nothing left the hospital"
         outcome=$code; decision="rejected: ${message}" ;;
       *)
-        stop "The task ended unexpectedly" "task $id · $state · $step · $code"
-        outcome="$state/$step/$code"; decision="$state" ;;
+        stop "The task ended unexpectedly" "task $id · $state · $phase · $code"
+        outcome="$state/$phase/$code"; decision="$state" ;;
     esac
   fi
 

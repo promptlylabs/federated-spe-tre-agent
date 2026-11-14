@@ -84,7 +84,7 @@ namespace Submission.Api.Controllers
                 TesTaskJson = JsonConvert.SerializeObject(task),
                 SubmittedAt = DateTime.UtcNow
             };
-            entity.MoveTo(FederatedTaskStep.Queued, entity.SubmittedAt);
+            entity.MoveTo(FederatedTaskPhase.Queued, entity.SubmittedAt);
             _DbContext.FederatedTasks.Add(entity);
             await _DbContext.SaveChangesAsync(cancellationToken);
 
@@ -113,12 +113,12 @@ namespace Submission.Api.Controllers
             // ToTesTask reads the history. Without the Include, lazy loading would run one query per task.
             var tasks = await _DbContext.FederatedTasks
                 .AsNoTracking()
-                .Include(x => x.StepChanges)
+                .Include(x => x.PhaseChanges)
                 .Where(x => x.TreId == tre.Id && x.TreName == treName)
-                .Where(FederatedTaskSteps.IsUnfinishedTask)
+                .Where(FederatedTaskPhases.IsUnfinishedTask)
                 // Running first (the Agent may need to resume it), then queued, then waiting: waiting tasks are
                 // only polled for their approval outcome, so they must not crowd out tasks that need action.
-                .OrderBy(x => x.Step == FederatedTaskStep.Running ? 0 : x.Step == FederatedTaskStep.Queued ? 1 : 2)
+                .OrderBy(x => x.Phase == FederatedTaskPhase.Running ? 0 : x.Phase == FederatedTaskPhase.Queued ? 1 : 2)
                 .ThenBy(x => x.SubmittedAt)
                 .Take(MaxPendingTasks)
                 .ToListAsync(cancellationToken);
@@ -161,7 +161,7 @@ namespace Submission.Api.Controllers
             }
 
             var files = Request.Form.Files;
-            FederatedTaskStep? rejectedStep = null;
+            FederatedTaskPhase? rejectedPhase = null;
 
             if (state != TesState.COMPLETEEnum)
             {
@@ -179,13 +179,13 @@ namespace Submission.Api.Controllers
 
                 if (state == TesState.CANCELEDEnum)
                 {
-                    rejectedStep = form.RejectedAt switch
+                    rejectedPhase = form.RejectedAt switch
                     {
-                        FederatedRejectedAt.InputChecks => FederatedTaskStep.RejectedByInputChecks,
-                        FederatedRejectedAt.OutputApproval => FederatedTaskStep.RejectedAtOutputApproval,
+                        FederatedRejectedAt.InputChecks => FederatedTaskPhase.RejectedByInputChecks,
+                        FederatedRejectedAt.OutputApproval => FederatedTaskPhase.RejectedAtOutputApproval,
                         _ => null
                     };
-                    if (rejectedStep == null)
+                    if (rejectedPhase == null)
                     {
                         return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask,
                             $"RejectedAt must be {FederatedRejectedAt.InputChecks} or {FederatedRejectedAt.OutputApproval} for a CANCELED report");
@@ -221,14 +221,14 @@ namespace Submission.Api.Controllers
 
             // A task that belongs to another TRE is indistinguishable from one that doesn't exist.
             var task = await _DbContext.FederatedTasks
-                .Include(x => x.StepChanges)
+                .Include(x => x.PhaseChanges)
                 .FirstOrDefaultAsync(x => x.TaskId == taskId && x.TreId == tre.Id, cancellationToken);
             if (task == null)
             {
                 return TaskNotFound();
             }
 
-            if (FederatedTaskSteps.IsFinal(task.Step))
+            if (FederatedTaskPhases.IsFinal(task.Phase))
             {
                 return AlreadyReported(task);
             }
@@ -283,7 +283,7 @@ namespace Submission.Api.Controllers
                 var datasetSha = validation.Document!.DatasetSha256;
                 apply = t =>
                 {
-                    t.MoveTo(FederatedTaskStep.Released, DateTime.UtcNow);
+                    t.MoveTo(FederatedTaskPhase.Released, DateTime.UtcNow);
                     t.ResultBucket = bucket;
                     t.ResultKey = key;
                     t.ResultSha256 = sha;
@@ -300,7 +300,7 @@ namespace Submission.Api.Controllers
             {
                 // ErrorCode was checked above; ErrorMessage was checked for a rejection.
                 var errorCode = form.ErrorCode!;
-                apply = rejectedStep is { } rejected
+                apply = rejectedPhase is { } rejected
                     ? t =>
                     {
                         t.Reject(rejected, DateTime.UtcNow, errorCode, form.ErrorMessage!);
@@ -329,14 +329,14 @@ namespace Submission.Api.Controllers
                     try
                     {
                         var current = await _DbContext.FederatedTasks
-                            .Include(x => x.StepChanges)
+                            .Include(x => x.PhaseChanges)
                             .FirstOrDefaultAsync(x => x.TaskId == taskId && x.TreId == tre.Id, cancellationToken);
                         if (current == null)
                         {
                             return TaskNotFound();
                         }
 
-                        if (FederatedTaskSteps.IsFinal(current.Step))
+                        if (FederatedTaskPhases.IsFinal(current.Phase))
                         {
                             return AlreadyReported(current);
                         }
@@ -376,11 +376,11 @@ namespace Submission.Api.Controllers
                 return Forbid();
             }
 
-            if (!FederatedTaskSteps.TryParse(report.Step, out var step)
-                || step is not (FederatedTaskStep.Running or FederatedTaskStep.WaitingForOutputApproval))
+            if (!FederatedTaskPhases.TryParse(report.Phase, out var phase)
+                || phase is not (FederatedTaskPhase.Running or FederatedTaskPhase.WaitingForOutputApproval))
             {
                 return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask,
-                    "Step must be running or waiting_for_output_approval");
+                    "Phase must be running or waiting_for_output_approval");
             }
 
             if (!Guid.TryParse(report.TaskId, out var taskId))
@@ -392,34 +392,34 @@ namespace Submission.Api.Controllers
             {
                 // A task that belongs to another TRE is indistinguishable from one that doesn't exist.
                 var task = await _DbContext.FederatedTasks
-                    .Include(x => x.StepChanges)
+                    .Include(x => x.PhaseChanges)
                     .FirstOrDefaultAsync(x => x.TaskId == taskId && x.TreId == tre.Id, cancellationToken);
                 if (task == null)
                 {
                     return TaskNotFound();
                 }
 
-                switch (FederatedTaskSteps.Check(task.Step, step))
+                switch (FederatedTaskPhases.Check(task.Phase, phase))
                 {
                     case FederatedTaskTransition.NoChange:
-                        return Ok(new FederatedProgressResponse { Step = FederatedTaskSteps.ToWire(task.Step) });
+                        return Ok(new FederatedProgressResponse { Phase = FederatedTaskPhases.ToWire(task.Phase) });
                     case FederatedTaskTransition.Backwards:
                         return Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.InvalidTransition,
-                            $"task is at step '{FederatedTaskSteps.ToWire(task.Step)}' and cannot go back to '{FederatedTaskSteps.ToWire(step)}'");
+                            $"task is at phase '{FederatedTaskPhases.ToWire(task.Phase)}' and cannot go back to '{FederatedTaskPhases.ToWire(phase)}'");
                     case FederatedTaskTransition.AlreadyFinal:
                         return AlreadyReported(task);
                 }
 
-                task.MoveTo(step, DateTime.UtcNow);
+                task.MoveTo(phase, DateTime.UtcNow);
                 try
                 {
                     await _DbContext.SaveChangesAsync(cancellationToken);
-                    return Ok(new FederatedProgressResponse { Step = FederatedTaskSteps.ToWire(step) });
+                    return Ok(new FederatedProgressResponse { Phase = FederatedTaskPhases.ToWire(phase) });
                 }
                 catch (DbUpdateConcurrencyException)
                 {
                     // Another report moved the task after it was read here. Drop the stale copy and decide again
-                    // against the step the winner left.
+                    // against the phase the winner left.
                     _DbContext.ChangeTracker.Clear();
                 }
             }
@@ -444,7 +444,7 @@ namespace Submission.Api.Controllers
 
             var task = await _DbContext.FederatedTasks
                 .AsNoTracking()
-                .Include(x => x.StepChanges)
+                .Include(x => x.PhaseChanges)
                 .FirstOrDefaultAsync(x => x.TaskId == taskId, cancellationToken);
             if (task == null)
             {

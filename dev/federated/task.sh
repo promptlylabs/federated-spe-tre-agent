@@ -2,17 +2,17 @@
 # Helper for the local federated stack (dev/federated/docker-compose.yml).
 #
 #   ./task.sh enqueue <dataset> [operation] [extra args...]   queue a task, prints its id
-#   ./task.sh get <task-id>                                   show state, step, step times and result location
+#   ./task.sh get <task-id>                                   show state, phase, phase times and result location
 #   ./task.sh result <task-id>                                download and print the result file
 #   ./task.sh run <dataset> [operation] [extra args...]       enqueue, wait until the result waits for output approval
 #   ./task.sh approve <task-id>                               approve the result in the Egress app, wait for the release
 #   ./task.sh reject <task-id> "<reason>"                     reject the result in the Egress app, wait for the report
 #
 # Examples:
-#   ./task.sh run cohort_2024 mean --column age --filter sex:eq:F    -> RUNNING, step waiting_for_output_approval
-#   ./task.sh approve <task-id>                                      -> COMPLETE, step released, result_key <treId>/<taskId>/<sha256>.json
-#   ./task.sh reject <task-id> "small cells"                         -> CANCELED, step rejected_at_output_approval, rejected_by_reviewer
-#   ./task.sh run nope count                                         -> CANCELED, step rejected_by_input_checks, dataset_not_found
+#   ./task.sh run cohort_2024 mean --column age --filter sex:eq:F    -> RUNNING, phase waiting_for_output_approval
+#   ./task.sh approve <task-id>                                      -> COMPLETE, phase released, result_key <treId>/<taskId>/<sha256>.json
+#   ./task.sh reject <task-id> "small cells"                         -> CANCELED, phase rejected_at_output_approval, rejected_by_reviewer
+#   ./task.sh run nope count                                         -> CANCELED, phase rejected_by_input_checks, dataset_not_found
 set -euo pipefail
 
 . "$(dirname "$0")/lib.sh"

@@ -100,11 +100,11 @@ namespace Submission.Api.Tests
                 Dataset = "cohort_2024",
                 TesTaskJson = JsonConvert.SerializeObject(task ?? MeanTask()),
                 State = state,
-                Step = state switch
+                Phase = state switch
                 {
-                    TesState.COMPLETEEnum => FederatedTaskStep.Released,
-                    TesState.EXECUTORERROREnum or TesState.SYSTEMERROREnum => FederatedTaskStep.Failed,
-                    _ => FederatedTaskStep.Queued
+                    TesState.COMPLETEEnum => FederatedTaskPhase.Released,
+                    TesState.EXECUTORERROREnum or TesState.SYSTEMERROREnum => FederatedTaskPhase.Failed,
+                    _ => FederatedTaskPhase.Queued
                 },
                 SubmittedAt = DateTime.UtcNow
             };
@@ -131,20 +131,20 @@ namespace Submission.Api.Tests
         }
 
         [Fact]
-        public async Task Enqueue_records_queued_step()
+        public async Task Enqueue_records_queued_phase()
         {
             using var db = NewDb();
             await ControllerFor(db, "dare-admin").Enqueue(MeanTask());
 
-            var row = db.FederatedTasks.Include(x => x.StepChanges).Single();
-            Assert.Equal(FederatedTaskStep.Queued, row.Step);
-            var change = Assert.Single(row.StepChanges);
-            Assert.Equal(FederatedTaskStep.Queued, change.Step);
+            var row = db.FederatedTasks.Include(x => x.PhaseChanges).Single();
+            Assert.Equal(FederatedTaskPhase.Queued, row.Phase);
+            var change = Assert.Single(row.PhaseChanges);
+            Assert.Equal(FederatedTaskPhase.Queued, change.Phase);
             Assert.Equal(row.SubmittedAt, change.At);
         }
 
         [Fact]
-        public async Task GetTask_queued_task_shows_step_and_queued_at()
+        public async Task GetTask_queued_task_shows_phase_and_queued_at()
         {
             using var db = NewDb();
             await ControllerFor(db, "dare-admin").Enqueue(MeanTask());
@@ -154,7 +154,7 @@ namespace Submission.Api.Tests
 
             Assert.Equal(TesState.QUEUEDEnum, task.State);
             var metadata = Assert.Single(task.Logs).Metadata;
-            Assert.Equal("queued", metadata["step"]);
+            Assert.Equal("queued", metadata["phase"]);
             Assert.True(metadata.ContainsKey("queued_at"));
         }
 
@@ -179,9 +179,9 @@ namespace Submission.Api.Tests
             var seeded = SeedTask(db, 1, TesState.COMPLETEEnum);
             var queuedAt = new DateTime(2026, 11, 1, 10, 0, 0, DateTimeKind.Utc);
             var releasedAt = queuedAt.AddMinutes(5);
-            seeded.Step = FederatedTaskStep.Released;
-            seeded.StepChanges.Add(new FederatedTaskStepChange { Step = FederatedTaskStep.Queued, At = queuedAt });
-            seeded.StepChanges.Add(new FederatedTaskStepChange { Step = FederatedTaskStep.Released, At = releasedAt });
+            seeded.Phase = FederatedTaskPhase.Released;
+            seeded.PhaseChanges.Add(new FederatedTaskPhaseChange { Phase = FederatedTaskPhase.Queued, At = queuedAt });
+            seeded.PhaseChanges.Add(new FederatedTaskPhaseChange { Phase = FederatedTaskPhase.Released, At = releasedAt });
             db.SaveChanges();
 
             var task = await GetTask(db, seeded.TaskId);
@@ -300,7 +300,7 @@ namespace Submission.Api.Tests
             var returned = Assert.Single(Assert.IsType<List<TesTask>>(pending.Value));
             var metadata = Assert.Single(returned.Logs!).Metadata;
             Assert.DoesNotContain("value", metadata.Keys);
-            Assert.Equal("queued", metadata["step"]);
+            Assert.Equal("queued", metadata["phase"]);
             Assert.Equal(TesState.QUEUEDEnum, returned.State);
             Assert.NotEqual("spoofed", returned.Id);
         }
@@ -1038,53 +1038,53 @@ namespace Submission.Api.Tests
             Assert.Equal("{\"error_code\":\"task_not_found\",\"error_message\":\"task not found\"}", json);
         }
 
-        private static FederatedTask SeedAtStep(ApplicationDbContext db, FederatedTaskStep step, int treId = 1, DateTime? submittedAt = null)
+        private static FederatedTask SeedAtPhase(ApplicationDbContext db, FederatedTaskPhase phase, int treId = 1, DateTime? submittedAt = null)
         {
             var task = SeedTask(db, treId, TesState.QUEUEDEnum);
             task.SubmittedAt = submittedAt ?? task.SubmittedAt;
-            task.MoveTo(FederatedTaskStep.Queued, task.SubmittedAt);
-            if (step != FederatedTaskStep.Queued)
+            task.MoveTo(FederatedTaskPhase.Queued, task.SubmittedAt);
+            if (phase != FederatedTaskPhase.Queued)
             {
-                task.MoveTo(step, task.SubmittedAt.AddSeconds(1));
+                task.MoveTo(phase, task.SubmittedAt.AddSeconds(1));
             }
             db.SaveChanges();
             return task;
         }
 
         private static FederatedTask Reload(ApplicationDbContext db, Guid id) =>
-            db.FederatedTasks.AsNoTracking().Include(x => x.StepChanges).Single(x => x.TaskId == id);
+            db.FederatedTasks.AsNoTracking().Include(x => x.PhaseChanges).Single(x => x.TaskId == id);
 
         private static void AssertUnchanged(ApplicationDbContext db, FederatedTask seeded)
         {
             var row = Reload(db, seeded.TaskId);
-            Assert.Equal(seeded.Step, row.Step);
+            Assert.Equal(seeded.Phase, row.Phase);
             Assert.Equal(seeded.State, row.State);
-            Assert.Equal(seeded.StepChanges.Count, row.StepChanges.Count);
+            Assert.Equal(seeded.PhaseChanges.Count, row.PhaseChanges.Count);
         }
 
         [Theory]
-        [InlineData(FederatedTaskStep.Running)]
-        [InlineData(FederatedTaskStep.WaitingForOutputApproval)]
-        public async Task ReportResult_complete_from_unfinished_step_is_released(FederatedTaskStep from)
+        [InlineData(FederatedTaskPhase.Running)]
+        [InlineData(FederatedTaskPhase.WaitingForOutputApproval)]
+        public async Task ReportResult_complete_from_unfinished_phase_is_released(FederatedTaskPhase from)
         {
             using var db = NewDb();
-            var seeded = SeedAtStep(db, from);
+            var seeded = SeedAtPhase(db, from);
 
             var result = await ReportComplete(AgentControllerFor(db, "tre-a-client", new FakeResultStore()), seeded);
 
             Assert.IsType<OkObjectResult>(result);
             var row = Reload(db, seeded.TaskId);
-            Assert.Equal(FederatedTaskStep.Released, row.Step);
+            Assert.Equal(FederatedTaskPhase.Released, row.Phase);
             Assert.Equal(TesState.COMPLETEEnum, row.State);
         }
 
         [Theory]
-        [InlineData("input_checks", FederatedTaskStep.RejectedByInputChecks, "invalid_filter")]
-        [InlineData("output_approval", FederatedTaskStep.RejectedAtOutputApproval, "output_rejected")]
-        public async Task ReportResult_canceled_is_rejected_with_reason(string rejectedAt, FederatedTaskStep expected, string code)
+        [InlineData("input_checks", FederatedTaskPhase.RejectedByInputChecks, "invalid_filter")]
+        [InlineData("output_approval", FederatedTaskPhase.RejectedAtOutputApproval, "output_rejected")]
+        public async Task ReportResult_canceled_is_rejected_with_reason(string rejectedAt, FederatedTaskPhase expected, string code)
         {
             using var db = NewDb();
-            var seeded = SeedAtStep(db, FederatedTaskStep.Running);
+            var seeded = SeedAtPhase(db, FederatedTaskPhase.Running);
             var fields = Fields(seeded.TaskId, "CANCELED", code, "not allowed");
             fields[FederatedReportFields.RejectedAt] = rejectedAt;
 
@@ -1092,12 +1092,12 @@ namespace Submission.Api.Tests
 
             Assert.IsType<OkObjectResult>(result);
             var row = Reload(db, seeded.TaskId);
-            Assert.Equal(expected, row.Step);
+            Assert.Equal(expected, row.Phase);
             Assert.Equal(TesState.CANCELEDEnum, row.State);
             Assert.Equal(code, row.ErrorCode);
             Assert.Equal("not allowed", row.ResultErrorMessage);
-            var last = row.StepChanges.OrderBy(c => c.Id).Last();
-            Assert.Equal(expected, last.Step);
+            var last = row.PhaseChanges.OrderBy(c => c.Id).Last();
+            Assert.Equal(expected, last.Phase);
             Assert.Equal(code, last.ErrorCode);
             Assert.Equal("not allowed", last.ErrorMessage);
         }
@@ -1106,7 +1106,7 @@ namespace Submission.Api.Tests
         public async Task ReportResult_rejected_at_with_complete_is_400()
         {
             using var db = NewDb();
-            var seeded = SeedAtStep(db, FederatedTaskStep.Running);
+            var seeded = SeedAtPhase(db, FederatedTaskPhase.Running);
             var fields = Fields(seeded.TaskId, "COMPLETE");
             fields[FederatedReportFields.RejectedAt] = "input_checks";
 
@@ -1121,7 +1121,7 @@ namespace Submission.Api.Tests
         public async Task ReportResult_rejected_at_with_error_state_is_400()
         {
             using var db = NewDb();
-            var seeded = SeedAtStep(db, FederatedTaskStep.Running);
+            var seeded = SeedAtPhase(db, FederatedTaskPhase.Running);
             var fields = Fields(seeded.TaskId, "SYSTEM_ERROR", "boom", "x");
             fields[FederatedReportFields.RejectedAt] = "input_checks";
 
@@ -1139,7 +1139,7 @@ namespace Submission.Api.Tests
         public async Task ReportResult_canceled_with_bad_fields_is_400(string? rejectedAt, string code, string? message)
         {
             using var db = NewDb();
-            var seeded = SeedAtStep(db, FederatedTaskStep.Running);
+            var seeded = SeedAtPhase(db, FederatedTaskPhase.Running);
             var fields = Fields(seeded.TaskId, "CANCELED", code, message);
             if (rejectedAt != null) fields[FederatedReportFields.RejectedAt] = rejectedAt;
 
@@ -1153,7 +1153,7 @@ namespace Submission.Api.Tests
         public async Task ReportResult_canceled_with_file_is_400()
         {
             using var db = NewDb();
-            var seeded = SeedAtStep(db, FederatedTaskStep.Running);
+            var seeded = SeedAtPhase(db, FederatedTaskPhase.Running);
             var fields = Fields(seeded.TaskId, "CANCELED", "invalid_filter", "msg");
             fields[FederatedReportFields.RejectedAt] = "input_checks";
 
@@ -1168,28 +1168,28 @@ namespace Submission.Api.Tests
         public async Task GetPending_returns_running_and_waiting_tasks()
         {
             using var db = NewDb();
-            SeedAtStep(db, FederatedTaskStep.Running);
-            SeedAtStep(db, FederatedTaskStep.WaitingForOutputApproval);
-            SeedAtStep(db, FederatedTaskStep.Released);
+            SeedAtPhase(db, FederatedTaskPhase.Running);
+            SeedAtPhase(db, FederatedTaskPhase.WaitingForOutputApproval);
+            SeedAtPhase(db, FederatedTaskPhase.Released);
 
             var result = await AgentControllerFor(db, "tre-a-client").GetPendingTasksForTre();
 
             var tasks = Assert.IsType<List<TesTask>>(Assert.IsType<OkObjectResult>(result).Value);
             Assert.Equal(new[] { TesState.RUNNINGEnum, TesState.RUNNINGEnum }, tasks.Select(t => t.State).ToArray());
-            Assert.Equal(new FederatedTaskStep?[] { FederatedTaskStep.Running, FederatedTaskStep.WaitingForOutputApproval },
-                tasks.Select(FederatedTaskSteps.StepOf).ToArray());
+            Assert.Equal(new FederatedTaskPhase?[] { FederatedTaskPhase.Running, FederatedTaskPhase.WaitingForOutputApproval },
+                tasks.Select(FederatedTaskPhases.PhaseOf).ToArray());
         }
 
         [Fact]
         public async Task GetPending_loads_each_tasks_history_with_the_tasks()
         {
-            // The test provider has no lazy loading, so the step times are there only if the query includes them.
+            // The test provider has no lazy loading, so the phase times are there only if the query includes them.
             var name = Guid.NewGuid().ToString();
             using (var setup = OpenDb(name))
             {
                 setup.Tres.Add(NewTre(1, "tre-a", "tre-a-admin", "tre-a-client"));
                 setup.SaveChanges();
-                SeedAtStep(setup, FederatedTaskStep.Running);
+                SeedAtPhase(setup, FederatedTaskPhase.Running);
             }
 
             using var db = OpenDb(name);
@@ -1208,10 +1208,10 @@ namespace Submission.Api.Tests
             var start = DateTime.UtcNow.AddHours(-2);
             for (var i = 0; i < 50; i++)
             {
-                SeedAtStep(db, FederatedTaskStep.WaitingForOutputApproval, submittedAt: start.AddSeconds(i));
+                SeedAtPhase(db, FederatedTaskPhase.WaitingForOutputApproval, submittedAt: start.AddSeconds(i));
             }
-            var queued = SeedAtStep(db, FederatedTaskStep.Queued, submittedAt: start.AddMinutes(10));
-            var running = SeedAtStep(db, FederatedTaskStep.Running, submittedAt: start.AddMinutes(20));
+            var queued = SeedAtPhase(db, FederatedTaskPhase.Queued, submittedAt: start.AddMinutes(10));
+            var running = SeedAtPhase(db, FederatedTaskPhase.Running, submittedAt: start.AddMinutes(20));
 
             var result = await AgentControllerFor(db, "tre-a-client").GetPendingTasksForTre();
 
@@ -1247,15 +1247,15 @@ namespace Submission.Api.Tests
             using var setup = OpenDb(name);
             setup.Tres.Add(NewTre(1, "tre-a", "tre-a-admin", "tre-a-client"));
             setup.SaveChanges();
-            var seeded = SeedAtStep(setup, FederatedTaskStep.Queued);
+            var seeded = SeedAtPhase(setup, FederatedTaskPhase.Queued);
 
             // The competing progress report is saved after ReportResult has loaded the task and before its first save,
-            // so that save hits the Step concurrency token and the retry has to apply on top of 'running'.
+            // so that save hits the Phase concurrency token and the retry has to apply on top of 'running'.
             var interceptor = new BeforeFirstSave(() =>
             {
                 using var other = OpenDb(name);
-                var t = other.FederatedTasks.Include(x => x.StepChanges).Single();
-                t.MoveTo(FederatedTaskStep.Running, DateTime.UtcNow);
+                var t = other.FederatedTasks.Include(x => x.PhaseChanges).Single();
+                t.MoveTo(FederatedTaskPhase.Running, DateTime.UtcNow);
                 other.SaveChanges();
             });
             using var dbA = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
@@ -1266,18 +1266,18 @@ namespace Submission.Api.Tests
             Assert.IsType<OkObjectResult>(result);
             using var check = OpenDb(name);
             var row = Reload(check, seeded.TaskId);
-            Assert.Equal(FederatedTaskStep.Released, row.Step);
+            Assert.Equal(FederatedTaskPhase.Released, row.Phase);
             Assert.Equal(TesState.COMPLETEEnum, row.State);
             // The in-memory provider has no transactions, so the history row added by the conflicted first save can
             // survive as a duplicate 'released' row; a relational provider rolls the whole save back. Distinct order is
             // asserted, which still proves the retry applied on top of 'running'.
             Assert.Equal(
-                new[] { FederatedTaskStep.Queued, FederatedTaskStep.Running, FederatedTaskStep.Released },
-                row.StepChanges.OrderBy(c => c.Id).Select(c => c.Step).Distinct().ToArray());
+                new[] { FederatedTaskPhase.Queued, FederatedTaskPhase.Running, FederatedTaskPhase.Released },
+                row.PhaseChanges.OrderBy(c => c.Id).Select(c => c.Phase).Distinct().ToArray());
         }
 
-        private static Task<IActionResult> Progress(FederatedTaskController controller, Guid taskId, string? step) =>
-            controller.ReportProgress(new FederatedTaskProgressReport { TaskId = taskId.ToString(), Step = step });
+        private static Task<IActionResult> Progress(FederatedTaskController controller, Guid taskId, string? phase) =>
+            controller.ReportProgress(new FederatedTaskProgressReport { TaskId = taskId.ToString(), Phase = phase });
 
         [Fact]
         public async Task ReportProgress_queued_to_running_records_history()
@@ -1288,11 +1288,11 @@ namespace Submission.Api.Tests
             var result = await Progress(AgentControllerFor(db, "tre-a-client"), seeded.TaskId, "running");
 
             var ok = Assert.IsType<OkObjectResult>(result);
-            Assert.Equal("running", Assert.IsType<FederatedProgressResponse>(ok.Value).Step);
-            var row = db.FederatedTasks.AsNoTracking().Include(x => x.StepChanges).Single();
-            Assert.Equal(FederatedTaskStep.Running, row.Step);
+            Assert.Equal("running", Assert.IsType<FederatedProgressResponse>(ok.Value).Phase);
+            var row = db.FederatedTasks.AsNoTracking().Include(x => x.PhaseChanges).Single();
+            Assert.Equal(FederatedTaskPhase.Running, row.Phase);
             Assert.Equal(TesState.RUNNINGEnum, row.State);
-            Assert.Contains(row.StepChanges, c => c.Step == FederatedTaskStep.Running);
+            Assert.Contains(row.PhaseChanges, c => c.Phase == FederatedTaskPhase.Running);
         }
 
         [Fact]
@@ -1306,9 +1306,9 @@ namespace Submission.Api.Tests
             var result = await Progress(controller, seeded.TaskId, "running");
 
             var ok = Assert.IsType<OkObjectResult>(result);
-            Assert.Equal("running", Assert.IsType<FederatedProgressResponse>(ok.Value).Step);
-            var row = db.FederatedTasks.AsNoTracking().Include(x => x.StepChanges).Single();
-            Assert.Single(row.StepChanges, c => c.Step == FederatedTaskStep.Running);
+            Assert.Equal("running", Assert.IsType<FederatedProgressResponse>(ok.Value).Phase);
+            var row = db.FederatedTasks.AsNoTracking().Include(x => x.PhaseChanges).Single();
+            Assert.Single(row.PhaseChanges, c => c.Phase == FederatedTaskPhase.Running);
         }
 
         [Fact]
@@ -1322,7 +1322,7 @@ namespace Submission.Api.Tests
             var result = await Progress(controller, seeded.TaskId, "running");
 
             AssertError(result, 409, FederatedTaskErrorCodes.InvalidTransition);
-            Assert.Equal(FederatedTaskStep.WaitingForOutputApproval, db.FederatedTasks.AsNoTracking().Single().Step);
+            Assert.Equal(FederatedTaskPhase.WaitingForOutputApproval, db.FederatedTasks.AsNoTracking().Single().Phase);
         }
 
         [Fact]
@@ -1346,15 +1346,15 @@ namespace Submission.Api.Tests
         [InlineData("queued")]
         [InlineData("bogus")]
         [InlineData(null)]
-        public async Task ReportProgress_final_step_name_is_400(string? step)
+        public async Task ReportProgress_final_phase_name_is_400(string? phase)
         {
             using var db = NewDb();
             var seeded = SeededTask(db);
 
-            var result = await Progress(AgentControllerFor(db, "tre-a-client"), seeded.TaskId, step);
+            var result = await Progress(AgentControllerFor(db, "tre-a-client"), seeded.TaskId, phase);
 
             AssertError(result, 400, FederatedTaskErrorCodes.InvalidTask);
-            Assert.Equal(FederatedTaskStep.Queued, db.FederatedTasks.AsNoTracking().Single().Step);
+            Assert.Equal(FederatedTaskPhase.Queued, db.FederatedTasks.AsNoTracking().Single().Phase);
         }
 
         [Fact]
@@ -1363,7 +1363,7 @@ namespace Submission.Api.Tests
             using var db = NewDb();
 
             var result = await AgentControllerFor(db, "tre-a-client")
-                .ReportProgress(new FederatedTaskProgressReport { TaskId = "nope", Step = "running" });
+                .ReportProgress(new FederatedTaskProgressReport { TaskId = "nope", Phase = "running" });
 
             AssertError(result, 400, FederatedTaskErrorCodes.InvalidTask);
         }
@@ -1377,7 +1377,7 @@ namespace Submission.Api.Tests
             var result = await Progress(AgentControllerFor(db, "tre-b-client"), seeded.TaskId, "running");
 
             AssertError(result, 404, FederatedTaskErrorCodes.TaskNotFound);
-            Assert.Equal(FederatedTaskStep.Queued, db.FederatedTasks.AsNoTracking().Single().Step);
+            Assert.Equal(FederatedTaskPhase.Queued, db.FederatedTasks.AsNoTracking().Single().Phase);
         }
 
         [Fact]
@@ -1403,7 +1403,7 @@ namespace Submission.Api.Tests
             // Context A has read the task as queued before the final report is saved through context B.
             using var dbA = OpenDb(name);
             using var dbB = OpenDb(name);
-            dbA.FederatedTasks.Include(x => x.StepChanges).Single();
+            dbA.FederatedTasks.Include(x => x.PhaseChanges).Single();
             var bytes = ValidResult(seeded);
             Assert.IsType<OkObjectResult>(await ReportComplete(AgentControllerFor(dbB, "tre-a-client"), seeded, bytes));
 
@@ -1412,11 +1412,11 @@ namespace Submission.Api.Tests
             var error = AssertError(result, 409, FederatedTaskErrorCodes.TaskAlreadyReported);
             Assert.Equal(FederatedResultDocumentJson.Sha256Hex(bytes), error.ResultSha256);
             using var check = OpenDb(name);
-            var row = check.FederatedTasks.Include(x => x.StepChanges).Single();
-            Assert.Equal(FederatedTaskStep.Released, row.Step);
+            var row = check.FederatedTasks.Include(x => x.PhaseChanges).Single();
+            Assert.Equal(FederatedTaskPhase.Released, row.Phase);
             Assert.Equal(TesState.COMPLETEEnum, row.State);
             // The in-memory provider has no transactions, so a running history row added in the failed save can
-            // survive here; a relational provider rolls the whole save back. Step and State are the guarantee tested.
+            // survive here; a relational provider rolls the whole save back. Phase and State are the guarantee tested.
         }
 
         /// <summary>Before every save, flips the task between queued and running so the save always loses the race.</summary>
@@ -1428,7 +1428,7 @@ namespace Submission.Api.Tests
             {
                 using var other = OpenDb(dbName);
                 var t = other.FederatedTasks.Single();
-                t.Step = t.Step == FederatedTaskStep.Queued ? FederatedTaskStep.Running : FederatedTaskStep.Queued;
+                t.Phase = t.Phase == FederatedTaskPhase.Queued ? FederatedTaskPhase.Running : FederatedTaskPhase.Queued;
                 other.SaveChanges();
                 return ValueTask.FromResult(result);
             }
@@ -1441,7 +1441,7 @@ namespace Submission.Api.Tests
             {
                 setup.Tres.Add(NewTre(1, "tre-a", "tre-a-admin", "tre-a-client"));
                 setup.SaveChanges();
-                var seeded = SeedAtStep(setup, FederatedTaskStep.Queued);
+                var seeded = SeedAtPhase(setup, FederatedTaskPhase.Queued);
                 var racing = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
                     .UseInMemoryDatabase(name).AddInterceptors(new BeforeEverySave(name)).Options);
                 return (name, seeded, racing);
@@ -1458,7 +1458,7 @@ namespace Submission.Api.Tests
 
             AssertError(result, 409, FederatedTaskErrorCodes.TaskBusy);
             using var check = OpenDb(name);
-            Assert.NotEqual(FederatedTaskStep.WaitingForOutputApproval, Reload(check, seeded.TaskId).Step);
+            Assert.NotEqual(FederatedTaskPhase.WaitingForOutputApproval, Reload(check, seeded.TaskId).Phase);
         }
 
         [Fact]
@@ -1472,7 +1472,7 @@ namespace Submission.Api.Tests
             AssertError(result, 409, FederatedTaskErrorCodes.TaskBusy);
             using var check = OpenDb(name);
             var row = Reload(check, seeded.TaskId);
-            Assert.False(FederatedTaskSteps.IsFinal(row.Step));
+            Assert.False(FederatedTaskPhases.IsFinal(row.Phase));
             Assert.Equal(TesState.QUEUEDEnum, row.State);
         }
 
@@ -1493,8 +1493,8 @@ namespace Submission.Api.Tests
                 {
                     _raced = true;
                     using var other = OpenDb(dbName, root);
-                    var t = other.FederatedTasks.Include(x => x.StepChanges).Single();
-                    t.MoveTo(FederatedTaskStep.Running, DateTime.UtcNow);
+                    var t = other.FederatedTasks.Include(x => x.PhaseChanges).Single();
+                    t.MoveTo(FederatedTaskPhase.Running, DateTime.UtcNow);
                     other.SaveChanges();
                 }
 
@@ -1513,7 +1513,7 @@ namespace Submission.Api.Tests
             using var setup = OpenDb(name, root);
             setup.Tres.Add(NewTre(1, "tre-a", "tre-a-admin", "tre-a-client"));
             setup.SaveChanges();
-            var seeded = SeedAtStep(setup, FederatedTaskStep.Queued);
+            var seeded = SeedAtPhase(setup, FederatedTaskPhase.Queued);
             using var racing = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
                 .UseInMemoryDatabase(name, root).AddInterceptors(new LoseRaceThenFailReread(name, root)).Options);
 
@@ -1522,7 +1522,7 @@ namespace Submission.Api.Tests
             AssertError(result, 503, FederatedTaskErrorCodes.StorageUnavailable);
             using var check = OpenDb(name, root);
             var row = Reload(check, seeded.TaskId);
-            Assert.Equal(FederatedTaskStep.Running, row.Step);
+            Assert.Equal(FederatedTaskPhase.Running, row.Phase);
             Assert.Equal(TesState.RUNNINGEnum, row.State);
         }
     }

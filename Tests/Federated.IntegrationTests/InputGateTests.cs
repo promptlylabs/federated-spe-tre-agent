@@ -21,7 +21,7 @@ public class InputGateTests
         var end = await Await.UntilSettledAsync(stack, queued.Id!, TimeSpan.FromSeconds(120));
 
         Assert.Equal("CANCELED", end.State);
-        Assert.Equal("rejected_by_input_checks", end.Step);
+        Assert.Equal("rejected_by_input_checks", end.Phase);
         Assert.Equal("dataset_not_found", end.ErrorCode);
         Assert.Null(await stack.Submission.GetResultAsync(queued.Id!));
         Assert.False(await stack.Results.HasResultAsync(queued.Id!));
@@ -42,7 +42,7 @@ public class InputGateTests
             var end = await Await.UntilSettledAsync(stack, queued.Id!, TimeSpan.FromSeconds(120));
 
             Assert.Equal("CANCELED", end.State);
-            Assert.Equal("rejected_by_input_checks", end.Step);
+            Assert.Equal("rejected_by_input_checks", end.Phase);
             Assert.Equal("ambiguous_dataset", end.ErrorCode);
             Assert.Null(await stack.Submission.GetResultAsync(queued.Id!));
             Assert.False(await stack.Results.HasResultAsync(queued.Id!));

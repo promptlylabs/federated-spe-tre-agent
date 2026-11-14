@@ -59,33 +59,33 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         /// <summary>Reserved for DAAMS.</summary>
         public string? ApprovalReference { get; set; }
 
-        public FederatedTaskStep Step { get; set; } = FederatedTaskStep.Queued;
+        public FederatedTaskPhase Phase { get; set; } = FederatedTaskPhase.Queued;
 
-        public virtual List<FederatedTaskStepChange> StepChanges { get; set; } = [];
+        public virtual List<FederatedTaskPhaseChange> PhaseChanges { get; set; } = [];
 
         /// <summary>
-        /// Moves the task to a step without an error (queued, running, waiting or released), updating its TES state
+        /// Moves the task to a phase without an error (queued, running, waiting or released), updating its TES state
         /// and recording the change. Rejections go through <see cref="Reject"/>, failures through <see cref="Fail"/>.
         /// </summary>
-        public void MoveTo(FederatedTaskStep step, DateTime atUtc)
+        public void MoveTo(FederatedTaskPhase phase, DateTime atUtc)
         {
-            if (step == FederatedTaskStep.Failed || FederatedTaskSteps.IsRejection(step))
+            if (phase == FederatedTaskPhase.Failed || FederatedTaskPhases.IsRejection(phase))
             {
-                throw new ArgumentException($"use {nameof(Reject)} or {nameof(Fail)} for step {step}", nameof(step));
+                throw new ArgumentException($"use {nameof(Reject)} or {nameof(Fail)} for phase {phase}", nameof(phase));
             }
 
-            Record(step, FederatedTaskSteps.ToTesState(step), atUtc, null, null);
+            Record(phase, FederatedTaskPhases.ToTesState(phase), atUtc, null, null);
         }
 
-        /// <summary>Moves the task to a rejected step (TES CANCELED) with the reason.</summary>
-        public void Reject(FederatedTaskStep step, DateTime atUtc, string errorCode, string errorMessage)
+        /// <summary>Moves the task to a rejected phase (TES CANCELED) with the reason.</summary>
+        public void Reject(FederatedTaskPhase phase, DateTime atUtc, string errorCode, string errorMessage)
         {
-            if (!FederatedTaskSteps.IsRejection(step))
+            if (!FederatedTaskPhases.IsRejection(phase))
             {
-                throw new ArgumentException($"{step} is not a rejection", nameof(step));
+                throw new ArgumentException($"{phase} is not a rejection", nameof(phase));
             }
 
-            Record(step, FederatedTaskSteps.ToTesState(step), atUtc, errorCode, errorMessage);
+            Record(phase, FederatedTaskPhases.ToTesState(phase), atUtc, errorCode, errorMessage);
         }
 
         /// <summary>Moves the task to failed with <paramref name="state"/> (EXECUTOR_ERROR or SYSTEM_ERROR) and the reason.</summary>
@@ -96,23 +96,23 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
                 throw new ArgumentException("a failed task must be EXECUTOR_ERROR or SYSTEM_ERROR", nameof(state));
             }
 
-            Record(FederatedTaskStep.Failed, state, atUtc, errorCode, errorMessage);
+            Record(FederatedTaskPhase.Failed, state, atUtc, errorCode, errorMessage);
         }
 
-        private void Record(FederatedTaskStep step, TesState state, DateTime atUtc, string? errorCode, string? errorMessage)
+        private void Record(FederatedTaskPhase phase, TesState state, DateTime atUtc, string? errorCode, string? errorMessage)
         {
-            Step = step;
+            Phase = phase;
             State = state;
-            if (FederatedTaskSteps.IsFinal(step))
+            if (FederatedTaskPhases.IsFinal(phase))
             {
                 CompletedAt = atUtc;
             }
 
             ErrorCode = errorCode;
             ResultErrorMessage = errorMessage;
-            StepChanges.Add(new FederatedTaskStepChange
+            PhaseChanges.Add(new FederatedTaskPhaseChange
             {
-                Step = step,
+                Phase = phase,
                 At = atUtc,
                 ErrorCode = errorCode,
                 ErrorMessage = errorMessage
@@ -126,38 +126,38 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             task.State = State;
             task.CreationTime = AsUtc(SubmittedAt);
 
-            var metadata = new Dictionary<string, string> { ["step"] = FederatedTaskSteps.ToWire(Step) };
+            var metadata = new Dictionary<string, string> { ["phase"] = FederatedTaskPhases.ToWire(Phase) };
             DateTime? runningAt = null;
             DateTime? finalAt = null;
-            foreach (var change in StepChanges.OrderBy(c => c.At).ThenBy(c => c.Id))
+            foreach (var change in PhaseChanges.OrderBy(c => c.At).ThenBy(c => c.Id))
             {
-                var key = FederatedTaskSteps.ToWire(change.Step) + "_at";
-                // A step is recorded once on Postgres, where a failed save rolls back. The in-memory test provider
-                // can keep a row from a save that lost a race, so the first time a step was reached wins.
+                var key = FederatedTaskPhases.ToWire(change.Phase) + "_at";
+                // A phase is recorded once on Postgres, where a failed save rolls back. The in-memory test provider
+                // can keep a row from a save that lost a race, so the first time a phase was reached wins.
                 if (metadata.ContainsKey(key))
                 {
                     continue;
                 }
 
                 metadata[key] = DateTime.SpecifyKind(change.At, DateTimeKind.Utc).ToString("O");
-                if (change.Step == FederatedTaskStep.Running)
+                if (change.Phase == FederatedTaskPhase.Running)
                 {
                     runningAt = change.At;
                 }
 
-                if (change.Step == Step && FederatedTaskSteps.IsFinal(Step))
+                if (change.Phase == Phase && FederatedTaskPhases.IsFinal(Phase))
                 {
                     finalAt = change.At;
                 }
             }
 
-            if (Step == FederatedTaskStep.Released)
+            if (Phase == FederatedTaskPhase.Released)
             {
                 metadata["result_bucket"] = ResultBucket ?? "";
                 metadata["result_key"] = ResultKey ?? "";
                 metadata["result_sha256"] = ResultSha256 ?? "";
             }
-            else if (Step == FederatedTaskStep.Failed || FederatedTaskSteps.IsRejection(Step))
+            else if (Phase == FederatedTaskPhase.Failed || FederatedTaskPhases.IsRejection(Phase))
             {
                 metadata["error_code"] = ErrorCode ?? "";
                 metadata["error_message"] = ResultErrorMessage ?? "";

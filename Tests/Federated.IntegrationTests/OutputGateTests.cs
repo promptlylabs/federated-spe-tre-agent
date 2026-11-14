@@ -19,11 +19,11 @@ public class OutputGateTests
         Assert.Equal(200, queued.Status);
         var waiting = await Await.UntilSettledAsync(stack, queued.Id!, Pickup);
         Assert.Equal("RUNNING", waiting.State);
-        Assert.Equal("waiting_for_output_approval", waiting.Step);
+        Assert.Equal("waiting_for_output_approval", waiting.Phase);
         return queued.Id!;
     }
 
-    private Task<TaskView> FinalAsync(string id) => Await.UntilAsync(stack, id, t => t.Step != "waiting_for_output_approval", Act);
+    private Task<TaskView> FinalAsync(string id) => Await.UntilAsync(stack, id, t => t.Phase != "waiting_for_output_approval", Act);
 
     [SkippableFact]
     public async Task Approved_result_is_released_and_stored_with_the_reviewed_sha256()
@@ -35,7 +35,7 @@ public class OutputGateTests
         var end = await FinalAsync(id);
 
         Assert.Equal("COMPLETE", end.State);
-        Assert.Equal("released", end.Step);
+        Assert.Equal("released", end.Phase);
         var result = await stack.Submission.GetResultAsync(id);
         Assert.NotNull(result);
         Assert.Equal(end.ResultSha256, result.Sha256);
@@ -52,7 +52,7 @@ public class OutputGateTests
         var end = await FinalAsync(id);
 
         Assert.Equal("CANCELED", end.State);
-        Assert.Equal("rejected_at_output_approval", end.Step);
+        Assert.Equal("rejected_at_output_approval", end.Phase);
         Assert.Equal("rejected_by_reviewer", end.ErrorCode);
         Assert.Equal("small cells", end.ErrorMessage);
         Assert.Null(await stack.Submission.GetResultAsync(id));
@@ -70,7 +70,7 @@ public class OutputGateTests
         var end = await FinalAsync(id);
 
         Assert.Equal("SYSTEM_ERROR", end.State);
-        Assert.Equal("failed", end.Step);
+        Assert.Equal("failed", end.Phase);
         Assert.Equal("result_changed_after_review", end.ErrorCode);
         Assert.Null(await stack.Submission.GetResultAsync(id));
         Assert.False(await stack.Results.HasResultAsync(id));
