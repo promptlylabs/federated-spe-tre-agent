@@ -64,7 +64,7 @@ namespace Submission.Api.Tests
         [Theory]
         [InlineData(FederatedTaskStep.Queued, TesState.QUEUEDEnum)]
         [InlineData(FederatedTaskStep.Running, TesState.RUNNINGEnum)]
-        [InlineData(FederatedTaskStep.WaitingForOutputApproval, TesState.PAUSEDEnum)]
+        [InlineData(FederatedTaskStep.WaitingForOutputApproval, TesState.RUNNINGEnum)]
         [InlineData(FederatedTaskStep.Released, TesState.COMPLETEEnum)]
         public void MoveTo_sets_tes_state(FederatedTaskStep step, TesState expected)
         {
@@ -157,6 +157,20 @@ namespace Submission.Api.Tests
         }
 
         [Fact]
+        public void StepOf_reads_the_step_from_the_task_log()
+        {
+            var task = NewTask();
+            task.MoveTo(FederatedTaskStep.Queued, T0);
+            task.MoveTo(FederatedTaskStep.WaitingForOutputApproval, T0.AddMinutes(1));
+
+            Assert.Equal(FederatedTaskStep.WaitingForOutputApproval, FederatedTaskSteps.StepOf(task.ToTesTask()));
+        }
+
+        [Fact]
+        public void StepOf_is_null_for_a_task_without_a_step() =>
+            Assert.Null(FederatedTaskSteps.StepOf(new TesTask()));
+
+        [Fact]
         public void ToTesTask_waiting_shows_step_and_times()
         {
             var task = NewTask();
@@ -167,7 +181,7 @@ namespace Submission.Api.Tests
             var tes = task.ToTesTask();
             var log = Assert.Single(tes.Logs!);
 
-            Assert.Equal(TesState.PAUSEDEnum, tes.State);
+            Assert.Equal(TesState.RUNNINGEnum, tes.State);
             Assert.Equal("waiting_for_output_approval", log.Metadata["step"]);
             Assert.Equal("2026-11-09T10:00:00.0000000Z", log.Metadata["queued_at"]);
             Assert.True(log.Metadata.ContainsKey("running_at"));

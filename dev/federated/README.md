@@ -62,7 +62,7 @@ The `uploader` login through the RustFS console's "TRE Keycloak" button loops. T
 
 ```bash
 cd dev/federated
-./task.sh run cohort_2024 mean --column age     # PAUSED {"step": "waiting_for_output_approval", ...}, then prints the approve/reject commands
+./task.sh run cohort_2024 mean --column age     # RUNNING {"step": "waiting_for_output_approval", ...}, then prints the approve/reject commands
 ./task.sh approve <task-id>                     # COMPLETE {"step": "released", "result_key": "<treId>/<taskId>/<sha256>.json", "result_sha256": ...}
 ./task.sh result <task-id>                      # downloads and prints the result file
 ./task.sh run cohort_2024 count

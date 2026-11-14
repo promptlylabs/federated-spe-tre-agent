@@ -18,12 +18,12 @@ public class OutputGateTests
         var queued = await stack.Submission.EnqueueAsync("cohort_2024", operation, args);
         Assert.Equal(200, queued.Status);
         var waiting = await Await.UntilSettledAsync(stack, queued.Id!, Pickup);
-        Assert.Equal("PAUSED", waiting.State);
+        Assert.Equal("RUNNING", waiting.State);
         Assert.Equal("waiting_for_output_approval", waiting.Step);
         return queued.Id!;
     }
 
-    private Task<TaskView> FinalAsync(string id) => Await.UntilAsync(stack, id, t => t.State != "PAUSED", Act);
+    private Task<TaskView> FinalAsync(string id) => Await.UntilAsync(stack, id, t => t.Step != "waiting_for_output_approval", Act);
 
     [SkippableFact]
     public async Task Approved_result_is_released_and_stored_with_the_reviewed_sha256()

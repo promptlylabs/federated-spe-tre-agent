@@ -1175,7 +1175,9 @@ namespace Submission.Api.Tests
             var result = await AgentControllerFor(db, "tre-a-client").GetPendingTasksForTre();
 
             var tasks = Assert.IsType<List<TesTask>>(Assert.IsType<OkObjectResult>(result).Value);
-            Assert.Equal(new[] { TesState.RUNNINGEnum, TesState.PAUSEDEnum }, tasks.Select(t => t.State).ToArray());
+            Assert.Equal(new[] { TesState.RUNNINGEnum, TesState.RUNNINGEnum }, tasks.Select(t => t.State).ToArray());
+            Assert.Equal(new FederatedTaskStep?[] { FederatedTaskStep.Running, FederatedTaskStep.WaitingForOutputApproval },
+                tasks.Select(FederatedTaskSteps.StepOf).ToArray());
         }
 
         [Fact]

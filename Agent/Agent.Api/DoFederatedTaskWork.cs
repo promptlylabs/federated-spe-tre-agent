@@ -79,9 +79,9 @@ namespace Agent.Api
 
             foreach (var task in pending)
             {
-                // QUEUED and RUNNING tasks are run; PAUSED ones wait for the hospital's output approval. Any other
-                // state here is unexpected.
-                if (task.State is not (TesState.QUEUEDEnum or TesState.RUNNINGEnum or TesState.PAUSEDEnum))
+                // Only QUEUED and RUNNING tasks are handed out. A RUNNING task is either running or waiting for the
+                // hospital's output approval; its step says which.
+                if (task.State is not (TesState.QUEUEDEnum or TesState.RUNNINGEnum))
                 {
                     Log.Warning("Federated tasks: task {TaskId} is pending in unexpected state {State}; skipping it", task.Id, task.State);
                     continue;
@@ -157,7 +157,8 @@ namespace Agent.Api
                 return Hold.None;
             }
 
-            if (bytes == null && task.State == TesState.PAUSEDEnum)
+            var waiting = FederatedTaskSteps.StepOf(task) == FederatedTaskStep.WaitingForOutputApproval;
+            if (bytes == null && waiting)
             {
                 Log.Warning("Federated tasks: task {TaskId} is waiting for output approval, but the TRE has no saved result and no review for it; skipping it",
                     taskId);
@@ -293,8 +294,7 @@ namespace Agent.Api
 
             if (review.IsPending)
             {
-                // Submission shows the task as waiting (PAUSED) until the reviewer decides.
-                if (task.State != TesState.PAUSEDEnum) await ReportWaitingAsync(taskId);
+                if (!waiting) await ReportWaitingAsync(taskId);
                 return Hold.None;
             }
 

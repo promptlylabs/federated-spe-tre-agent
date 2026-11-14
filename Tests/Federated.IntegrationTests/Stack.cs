@@ -305,8 +305,8 @@ public static class Await
     private static readonly TimeSpan TriggerEvery = TimeSpan.FromSeconds(15);
 
     /// <summary>
-    /// Polls GetTask until done(task) or the timeout. While the task waits for the Agent (QUEUED or RUNNING), triggers
-    /// the Agent's poll at the start and every 15 s.
+    /// Polls GetTask until done(task) or the timeout. While the task waits for the Agent (step queued or running),
+    /// triggers the Agent's poll at the start and every 15 s.
     /// </summary>
     public static async Task<TaskView> UntilAsync(StackFixture s, string id, Func<TaskView, bool> done, TimeSpan timeout)
     {
@@ -319,7 +319,7 @@ public static class Await
             if (done(view)) return view;
             if (DateTime.UtcNow > until)
                 throw new TimeoutException($"task {id}: still {view.State}/{view.Step} after {timeout}");
-            if (view.State is "QUEUED" or "RUNNING" && DateTime.UtcNow >= nextTrigger)
+            if (view.Step is "queued" or "running" && DateTime.UtcNow >= nextTrigger)
             {
                 await s.Agent.TriggerAsync();
                 nextTrigger = DateTime.UtcNow + TriggerEvery;
@@ -328,7 +328,7 @@ public static class Await
         }
     }
 
-    /// <summary>Waits until the Agent is done with the task for now: neither QUEUED nor RUNNING.</summary>
+    /// <summary>Waits until the Agent is done with the task for now: its step is neither queued nor running.</summary>
     public static Task<TaskView> UntilSettledAsync(StackFixture s, string id, TimeSpan timeout) =>
-        UntilAsync(s, id, t => t.State is not ("QUEUED" or "RUNNING"), timeout);
+        UntilAsync(s, id, t => t.Step is not ("queued" or "running"), timeout);
 }

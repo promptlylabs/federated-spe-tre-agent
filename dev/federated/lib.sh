@@ -89,16 +89,18 @@ result() {
   rm -f "$tmp"
 }
 
-# Polls the task every 5 s while its state is one of the given prefixes; prints the first other state.
+# Polls the task every 5 s while its step is one of the given ones; prints the first other state, as get prints it.
+# The step, not the TES state, tells running from waiting for review: both are RUNNING.
 wait_while() {
   local id=$1 seconds=$2
   shift 2
-  local state prefix waiting
+  local state step s waiting
   for _ in $(seq 1 $(( seconds / 5 ))); do
     state=$(get "$id")
+    step=$(sed -nE 's/.*"step": "([^"]*)".*/\1/p' <<<"$state")
     waiting=false
-    for prefix in "$@"; do
-      [[ $state == "$prefix"* ]] && waiting=true
+    for s in "$@"; do
+      [ "$step" = "$s" ] && waiting=true
     done
     if [ "$waiting" = false ]; then
       echo "$state"

@@ -49,18 +49,18 @@ m = (t.get("logs") or [{}])[0].get("metadata") or {}
 print("|".join([t.get("state") or "UNKNOWN", m.get("step") or "", m.get("error_code") or "", (m.get("error_message") or "").replace("|", "/")]))'
 }
 
-# Polls the task every 2 s while its state is one of the given ones, showing a line whose counter moves every 10 s.
-# Prints the final view.
+# Polls the task every 2 s while its step is one of the given ones, showing a line whose counter moves every 10 s.
+# The step, not the TES state, tells running from waiting for review: both are RUNNING. Prints the final view.
 # Returns 1 on timeout (0 = no limit).
-wait_while_state() {
+wait_while_step() {
   local id=$1 limit=$2 label=$3 hint=$4
   shift 4
-  local start=$SECONDS shown=-10 view state s waiting_now
+  local start=$SECONDS shown=-10 view state step s waiting_now
   while :; do
-    view=$(task_view "$id"); state=${view%%|*}
+    view=$(task_view "$id"); IFS='|' read -r state step _ <<<"$view"
     waiting_now=false
-    for s in "$@"; do [ "$state" = "$s" ] && waiting_now=true; done
-    if [ "$waiting_now" = false ] && [ "$state" != UNKNOWN ]; then
+    for s in "$@"; do [ "$step" = "$s" ] && waiting_now=true; done
+    if [ "$waiting_now" = false ] && [ -n "$step" ]; then
       printf '\r\033[K' >&2; echo "$view"; return 0
     fi
     if [ "$limit" -gt 0 ] && [ $((SECONDS - start)) -ge "$limit" ]; then
@@ -138,24 +138,24 @@ run_case() {
   fi
   ok "Request received by the hospital" "task ${id:0:8}"
 
-  view=$(wait_while_state "$id" "$PICKUP_TIMEOUT" "Waiting for the hospital to pick it up…" \
-    "the hospital checks for new requests once a minute" QUEUED) || true
+  view=$(wait_while_step "$id" "$PICKUP_TIMEOUT" "Waiting for the hospital to pick it up…" \
+    "the hospital checks for new requests once a minute" queued) || true
   IFS='|' read -r state step code message <<<"$view"
 
   if [ "$step" = rejected_by_input_checks ]; then
     stop "Stopped by the hospital's checks: $(plain_reason "$code" "$message")" "$state · $step · $code"
     stop "Nothing ran, nothing left the hospital"
     outcome=$code; decision="stopped by the checks"
-  elif [ "$state" = QUEUED ] || [ "$state" = UNKNOWN ]; then
+  elif [ "$step" = queued ] || [ -z "$step" ]; then
     stop "The hospital did not pick the request up in time" "task $id · $state"
     FAILURES=$((FAILURES + 1)); SUMMARY+=("$n|$title|no answer|?"); return
-  elif [ "$state" != RUNNING ] && [ "$state" != PAUSED ]; then
+  elif [ "$step" != running ] && [ "$step" != waiting_for_output_approval ]; then
     # Ended before the analysis started, but not by the input checks (for example a system error).
     stop "The task ended unexpectedly" "task $id · $state · $step · $code"
     outcome="$state/$step/$code"; decision="$state"
   else
     ok "Hospital checks passed" "approved code, dataset held by the hospital"
-    view=$(wait_while_state "$id" "$PICKUP_TIMEOUT" "Analysis running inside the hospital…" "" RUNNING) || true
+    view=$(wait_while_step "$id" "$PICKUP_TIMEOUT" "Analysis running inside the hospital…" "" running) || true
     IFS='|' read -r state step code message <<<"$view"
     if [ "$step" = waiting_for_output_approval ]; then
       ok "Analysis ran inside the hospital" "the researcher sees nothing yet"
@@ -168,7 +168,7 @@ run_case() {
       fi
       # A person decides in live mode: wait longer for them, but not for ever.
       [ "$MODE" = live ] && limit=$REVIEW_TIMEOUT
-      if ! view=$(wait_while_state "$id" "$limit" "Waiting for the hospital reviewer…" "" PAUSED); then
+      if ! view=$(wait_while_step "$id" "$limit" "Waiting for the hospital reviewer…" "" waiting_for_output_approval); then
         stop "No decision reached the hospital in $((limit / 60)) minute(s)" "task $id · check the Egress app and its logs"
         FAILURES=$((FAILURES + 1)); SUMMARY+=("$n|$title|no decision|?"); return
       fi

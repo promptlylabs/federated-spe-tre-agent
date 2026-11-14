@@ -61,6 +61,10 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             return false;
         }
 
+        /// <summary>The step a task carries in its first log's metadata, as GetTask and GetPendingTasksForTre return it.</summary>
+        public static FederatedTaskStep? StepOf(TesTask task) =>
+            TryParse(task.Logs?.FirstOrDefault()?.Metadata?.GetValueOrDefault("step"), out var step) ? step : null;
+
         public static bool IsFinal(FederatedTaskStep step) => step switch
         {
             FederatedTaskStep.Queued or FederatedTaskStep.Running or FederatedTaskStep.WaitingForOutputApproval => false,
@@ -89,7 +93,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         {
             FederatedTaskStep.Queued => TesState.QUEUEDEnum,
             FederatedTaskStep.Running => TesState.RUNNINGEnum,
-            FederatedTaskStep.WaitingForOutputApproval => TesState.PAUSEDEnum,
+            FederatedTaskStep.WaitingForOutputApproval => TesState.RUNNINGEnum,
             FederatedTaskStep.Released => TesState.COMPLETEEnum,
             FederatedTaskStep.RejectedByInputChecks or FederatedTaskStep.RejectedAtOutputApproval => TesState.CANCELEDEnum,
             _ => throw new ArgumentOutOfRangeException(nameof(step), step, "a failed step has no fixed TES state")
