@@ -158,6 +158,20 @@ namespace Submission.Api.Tests
             Assert.True(metadata.ContainsKey("queued_at"));
         }
 
+        [Theory]
+        [InlineData(TesState.CANCELINGEnum, "CANCELING")]
+        [InlineData(TesState.PREEMPTEDEnum, "PREEMPTED")]
+        public async Task GetTask_returns_a_tes_1_1_state_as_stored(TesState state, string wire)
+        {
+            using var db = NewDb();
+            var seeded = SeedTask(db, 1, state);
+
+            var task = await GetTask(db, seeded.TaskId);
+
+            Assert.Equal(state, task.State);
+            Assert.Contains($"\"state\":\"{wire}\"", JsonConvert.SerializeObject(task));
+        }
+
         [Fact]
         public async Task GetTask_backfilled_task_has_no_running_time()
         {
