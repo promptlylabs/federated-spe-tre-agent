@@ -408,7 +408,7 @@ public class DoFederatedTaskWorkTests
         var store = Store();
         var client = new FakeClient();
         var task = PendingTask(T1, "cohort_2024", "count", null);
-        task.Tags!["tres"] = "tre-b";
+        task.Tags!["fed.sites"] = "tre-b";
         client.Pending.Add(task);
         client.Pending.Add(PendingTask(T2, "cohort_2024", "count", null));
 
@@ -1280,7 +1280,7 @@ public class DoFederatedTaskWorkTests
     {
         var client = new FakeClient();
         var task = PendingTask(T1, "cohort_2024", "count", null);
-        task.Tags!["tres"] = "tre-b";
+        task.Tags!["fed.sites"] = "tre-b";
         client.Pending.Add(task);
 
         await Work(client, new ThrowingReader()).Execute();

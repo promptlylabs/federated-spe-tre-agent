@@ -236,7 +236,7 @@ Withdrawing. If the saved result changes or disappears while its review is still
 | filter `<op>` | `eq`, `gt`, `lt`, `gte` or `lte`. Split on the first two `:` only, so a value may contain `:`. |
 | `inputs` | Exactly 1. `url` is `dataset://<name>`. |
 | `outputs` | Must be null or empty. The result is returned in the task log. |
-| `tags` | `tres` names exactly one existing TRE. It is trimmed and lowercased, and must not contain `\|`. `study_id` must not be empty. Both are at most 1024 characters, the limit for strings in the result document. |
+| `tags` | `fed.sites` names the TRE the task runs at. For now it must name exactly one existing TRE; study fan-out will let a study name several. It is trimmed and lowercased, and must not contain `\|`, which is kept for that list. `fed.study_id` must not be empty. Both are at most 1024 characters, the limit for strings in the result document. Tags without the `fed.` prefix are kept and ignored. |
 | `resources`, `volumes`, `name`, `description` | Accepted and ignored. |
 
 The dataset name must match `^[a-z0-9][a-z0-9_-]{0,62}$`.
@@ -260,8 +260,8 @@ Example: the mean of `age` on dataset `cohort_2024`, for rows where `sex` is `F`
   ],
   "outputs": [],
   "tags": {
-    "tres": "my-tre",
-    "study_id": "study-001"
+    "fed.sites": "my-tre",
+    "fed.study_id": "study-001"
   }
 }
 ```
@@ -361,7 +361,7 @@ TODO: researcher access scoped by study once study_id → project mapping exists
 
 Set `TreName` in the Agent's settings to the name of the TRE as registered in Submission. The shipped default is `SAIL`, so every other site must override it. The comparison ignores case.
 
-The Agent does not run a task whose `tres` is not its own `TreName`. It logs an error, does not read the dataset, and does not report, so the task stays as it is and runs once `TreName` is fixed. If `TreName` is empty, the Agent logs an error and runs no task.
+The Agent does not run a task whose `fed.sites` is not its own `TreName`. It logs an error, does not read the dataset, and does not report, so the task stays as it is and runs once `TreName` is fixed. If `TreName` is empty, the Agent logs an error and runs no task.
 
 If a TRE is renamed in Submission, its unfinished tasks (`queued`, `running` or `waiting_for_output_approval`) that were enqueued under the old name fail at once with the step `failed`, `SYSTEM_ERROR` and `tre_renamed`. Enqueue them again under the new name. A change of case only (`My-TRE` to `my-tre`) is not a rename. If the name is changed directly in the database instead, the old tasks are not failed, but they are no longer sent to the Agent.
 

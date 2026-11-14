@@ -17,7 +17,7 @@ public class FederatedTesProfileTests
             }
         ],
         Inputs = [new TesInput { Url = "dataset://cohort_2024", Path = "/data/cohort_2024", Type = TesFileType.DIRECTORYEnum }],
-        Tags = new Dictionary<string, string> { ["tres"] = "tre-a", ["study_id"] = "s1" }
+        Tags = new Dictionary<string, string> { ["fed.sites"] = "tre-a", ["fed.study_id"] = "s1" }
     };
 
     [Fact]
@@ -62,8 +62,8 @@ public class FederatedTesProfileTests
     public void Parse_TagsAtLengthLimit_AreAccepted()
     {
         var task = ValidTask();
-        task.Tags!["tres"] = new string('t', 1024);
-        task.Tags["study_id"] = new string('s', 1024);
+        task.Tags!["fed.sites"] = new string('t', 1024);
+        task.Tags["fed.study_id"] = new string('s', 1024);
 
         Assert.True(FederatedTesProfile.Parse(task).IsSuccess);
     }
@@ -72,9 +72,9 @@ public class FederatedTesProfileTests
     public void Parse_TreNameIsLowercased()
     {
         var task = ValidTask();
-        task.Tags!["TRES"] = "x";
-        task.Tags.Remove("tres");
-        task.Tags["TRES"] = "TRE-A";
+        task.Tags!["FED.SITES"] = "x";
+        task.Tags.Remove("fed.sites");
+        task.Tags["FED.SITES"] = "TRE-A";
 
         Assert.Equal("tre-a", FederatedTesProfile.Parse(task).Spec!.TreName);
     }
@@ -83,9 +83,43 @@ public class FederatedTesProfileTests
     public void Parse_TreNameWithSpaces_IsAccepted()
     {
         var task = ValidTask();
-        task.Tags!["tres"] = "Five Safes TRE";
+        task.Tags!["fed.sites"] = "Five Safes TRE";
 
         Assert.Equal("five safes tre", FederatedTesProfile.Parse(task).Spec!.TreName);
+    }
+
+    [Fact]
+    public void Parse_with_only_the_old_tags_is_rejected_naming_the_missing_tag()
+    {
+        var task = ValidTask();
+        task.Tags = new Dictionary<string, string> { ["tres"] = "tre-a", ["study_id"] = "s1" };
+
+        var result = FederatedTesProfile.Parse(task);
+
+        Assert.Equal(FederatedTaskErrorCodes.InvalidTask, result.ErrorCode);
+        Assert.Contains("fed.sites", result.ErrorMessage);
+    }
+
+    [Fact]
+    public void Parse_ignores_tags_outside_the_namespace()
+    {
+        var task = ValidTask();
+        task.Tags!["tres"] = "tre-b";
+        task.Tags["study_id"] = "other";
+        task.Tags["daams.request"] = "r-42";
+
+        var spec = FederatedTesProfile.Parse(task).Spec!;
+
+        Assert.Equal("tre-a", spec.TreName);
+        Assert.Equal("s1", spec.StudyId);
+    }
+
+    [Fact]
+    public void Build_writes_the_namespaced_tags()
+    {
+        var tags = FederatedTesProfile.Build(new FederatedTaskSpec("count", "cohort_2024", null, [], "s1", "tre-a")).Tags!;
+
+        Assert.Equal(new Dictionary<string, string> { ["fed.sites"] = "tre-a", ["fed.study_id"] = "s1" }, tags);
     }
 
     public static TheoryData<string, Action<TesTask>, string> Rejections => new()
@@ -98,10 +132,10 @@ public class FederatedTesProfileTests
         { "traversal dataset", t => t.Inputs![0].Url = "dataset://../x", FederatedTaskErrorCodes.InvalidDatasetName },
         { "uppercase dataset", t => t.Inputs![0].Url = "dataset://Cohort", FederatedTaskErrorCodes.InvalidDatasetName },
         { "output added", t => t.Outputs = [new TesOutput { Url = "s3://b/o", Path = "/o" }], FederatedTaskErrorCodes.InvalidTask },
-        { "multiple tres", t => t.Tags!["tres"] = "tre-a|tre-b", FederatedTaskErrorCodes.InvalidTask },
-        { "study_id missing", t => t.Tags!.Remove("study_id"), FederatedTaskErrorCodes.InvalidTask },
-        { "study_id too long", t => t.Tags!["study_id"] = new string('s', 1025), FederatedTaskErrorCodes.InvalidTask },
-        { "tres too long", t => t.Tags!["tres"] = new string('t', 1025), FederatedTaskErrorCodes.InvalidTask },
+        { "multiple sites", t => t.Tags!["fed.sites"] = "tre-a|tre-b", FederatedTaskErrorCodes.InvalidTask },
+        { "study id missing", t => t.Tags!.Remove("fed.study_id"), FederatedTaskErrorCodes.InvalidTask },
+        { "study id too long", t => t.Tags!["fed.study_id"] = new string('s', 1025), FederatedTaskErrorCodes.InvalidTask },
+        { "sites too long", t => t.Tags!["fed.sites"] = new string('t', 1025), FederatedTaskErrorCodes.InvalidTask },
         { "unknown operation", t => t.Executors[0].Command = ["median"], FederatedTaskErrorCodes.UnknownOperation },
         { "mean without column", t => t.Executors[0].Command = ["mean"], FederatedTaskErrorCodes.InvalidTask },
         { "bad filter operator", t => t.Executors[0].Command = ["count", "--filter", "sex:like:F"], FederatedTaskErrorCodes.InvalidFilter },
@@ -110,8 +144,8 @@ public class FederatedTesProfileTests
         { "null executor", t => t.Executors = [null!], FederatedTaskErrorCodes.InvalidTask },
         { "null input", t => t.Inputs = [null!], FederatedTaskErrorCodes.InvalidTask },
         { "null command", t => t.Executors[0].Command = null, FederatedTaskErrorCodes.InvalidTask },
-        { "tres blank", t => t.Tags!["tres"] = "  ", FederatedTaskErrorCodes.InvalidTask },
-        { "tag keys collide by case", t => t.Tags = new Dictionary<string, string> { ["tres"] = "a", ["TRES"] = "b", ["study_id"] = "s1" }, FederatedTaskErrorCodes.InvalidTask },
+        { "sites blank", t => t.Tags!["fed.sites"] = "  ", FederatedTaskErrorCodes.InvalidTask },
+        { "tag keys collide by case", t => t.Tags = new Dictionary<string, string> { ["fed.sites"] = "a", ["FED.SITES"] = "b", ["fed.study_id"] = "s1" }, FederatedTaskErrorCodes.InvalidTask },
         { "null filter value", t => t.Executors[0].Command = ["count", "--filter", null!], FederatedTaskErrorCodes.InvalidFilter },
         { "unknown arg", t => t.Executors[0].Command = ["count", "--limit", "5"], FederatedTaskErrorCodes.InvalidTask },
     };
