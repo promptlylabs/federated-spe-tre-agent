@@ -24,6 +24,12 @@ namespace Submission.Api.Tests
             return Task.CompletedTask;
         }
 
+        public Task DeleteAsync(string key, CancellationToken ct)
+        {
+            Objects.Remove(key);
+            return Task.CompletedTask;
+        }
+
         public string? LastGetBucket { get; private set; }
 
         public Task<byte[]?> GetAsync(string bucket, string key, CancellationToken ct)

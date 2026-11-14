@@ -22,5 +22,8 @@ namespace Submission.Api.Services
         /// </summary>
         /// <returns>Null when the object does not exist. Throws when storage is unreachable.</returns>
         Task<byte[]?> GetAsync(string bucket, string key, CancellationToken ct);
+
+        /// <summary>Deletes a file written by <see cref="PutAsync"/>; deleting one that does not exist succeeds.</summary>
+        Task DeleteAsync(string key, CancellationToken ct);
     }
 }

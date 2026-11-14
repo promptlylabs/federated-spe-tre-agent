@@ -160,18 +160,18 @@ The Agent sends `running` when it picks a `queued` task up, `waiting_for_output_
 `POST /api/FederatedTask/Cancel?id=<taskId>` cancels a task. It needs the `dare-control-admin` role. A 200 response is `{ "phase": "<the phase the task is at now>" }`.
 
 - A `queued` task, which no hospital has picked up, moves straight to `canceled`. If the Agent picked it up at the same moment, its `running` report is refused, and it does not run the task.
-- A `running` or `waiting_for_output_approval` task moves to `canceling`. It stays in `GetPendingTasksForTre` (listed first) until the hospital confirms.
+- A `running` or `waiting_for_output_approval` task moves to `canceling`. It stays in `GetPendingTasksForTre` (listed first, even if the TRE was renamed since) until the hospital confirms. A TRE rename does not fail it.
 - A `canceling` task: 200, nothing changes. A final task: 409 `task_already_finished`. An unknown task: 404 `task_not_found`.
 
 While a task is `canceling`, Submission refuses every `ReportResult` (an approved result, a rejection or an error) with 409 `task_canceling`, before any file is written. So a reviewer's decision made at the same moment as a cancel never releases the result: the task can only end `canceled`.
 
 On a `canceling` task, the Agent:
 
-1. withdraws the review if it is still pending, so no decision is accepted any more, and the Egress app closes the request;
+1. withdraws the review if it is still pending, so no decision is accepted any more, and closes the request in the Egress app (an Egress error stops here, and the next poll tries again);
 2. deletes the saved result from `federated-outputs` (a store error stops here, and the next poll tries again);
 3. reports `ReportProgress` with `canceled`.
 
-Each part is safe to repeat, so if one fails the next poll does them again. The review record and its withdrawn marker stay in the TRE as the audit of what was reviewed; they hold no data. The standard TES cancel (`POST /tasks/{id}:cancel`, for DAAMS) comes with the TES API and uses the same rules.
+Each part is safe to repeat, so if one fails the next poll does them again. The review record and its withdrawn marker stay in the TRE as the audit of what was reviewed; they hold no data. There is no standard TES cancel yet. `POST /tasks/{id}:cancel`, for DAAMS, is planned with the TES API task and will apply the same rules.
 
 ### Reporting a result
 

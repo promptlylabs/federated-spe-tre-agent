@@ -22,6 +22,8 @@ namespace Submission.Api.Services
             var orphaned = db.FederatedTasks
                 .Where(x => x.TreId == treId && x.TreName != current)
                 .Where(FederatedTaskPhases.IsUnfinishedTask)
+                // A cancelled task is still handed to its hospital under the old name, to be cleaned up.
+                .Where(x => x.Phase != FederatedTaskPhase.Canceling)
                 .Include(x => x.PhaseChanges)
                 .ToList();
 

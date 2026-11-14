@@ -34,6 +34,21 @@ namespace Submission.Api.Tests
         }
 
         [Fact]
+        public void FailUnfinishedUnderOtherNames_leaves_a_canceling_task_for_its_hospital_to_clean_up()
+        {
+            using var db = NewDb();
+            var canceling = Seed(db, 1, "tre-a", TesState.CANCELINGEnum);
+            canceling.Phase = FederatedTaskPhase.Canceling;
+            db.SaveChanges();
+
+            var failed = FederatedTaskRenames.FailUnfinishedUnderOtherNames(db, 1, "tre-a-2");
+            db.SaveChanges();
+
+            Assert.Equal(0, failed);
+            Assert.Equal(FederatedTaskPhase.Canceling, db.FederatedTasks.AsNoTracking().Single(x => x.TaskId == canceling.TaskId).Phase);
+        }
+
+        [Fact]
         public void FailUnfinishedUnderOtherNames_FailsOnlyThisTresQueuedTasksUnderAnotherName()
         {
             using var db = NewDb();

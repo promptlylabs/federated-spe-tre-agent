@@ -136,7 +136,7 @@ namespace Agent.Api
             }
             var storeKey = guid.ToString("D");
 
-            if (FederatedTaskPhases.PhaseOf(task) == FederatedTaskPhase.Canceling)
+            if (task.State == TesState.CANCELINGEnum || FederatedTaskPhases.PhaseOf(task) == FederatedTaskPhase.Canceling)
             {
                 await CancelAsync(taskId, storeKey);
                 return Hold.None;
@@ -371,8 +371,18 @@ namespace Agent.Api
         private async Task CancelAsync(string taskId, string storeKey)
         {
             var review = await _approval.GetAsync(storeKey, CancellationToken.None);
-            if (review is { IsPending: true } && !await _approval.IsWithdrawnAsync(storeKey, CancellationToken.None))
-                await WithdrawPendingReviewAsync(storeKey, CanceledReason);
+            if (review is { IsPending: true })
+            {
+                if (!await _approval.IsWithdrawnAsync(storeKey, CancellationToken.None))
+                    await WithdrawPendingReviewAsync(storeKey, CanceledReason);
+
+                // The withdrawal above only tries to close the Egress request. Here it must succeed before the cancel
+                // is confirmed; closing a request that is already closed succeeds, so this is safe to repeat.
+                if (_egress.IsConfigured)
+                    await _egress.WithdrawAsync(storeKey, CanceledReason, CancellationToken.None);
+                else
+                    Log.Warning("Federated tasks: the Egress app is not configured, so the review request of cancelled task {TaskId} cannot be closed there", taskId);
+            }
 
             // A store error is thrown: the task keeps its phase and the cancel is tried again at the next poll.
             await _outputs.DeleteAsync(storeKey, CancellationToken.None);
@@ -409,7 +419,9 @@ namespace Agent.Api
         private async Task ReportWaitingAsync(string taskId)
         {
             var outcome = await _client.ReportProgressAsync(taskId, FederatedTaskPhase.WaitingForOutputApproval);
-            if (!outcome.Accepted)
+            if (IsCanceling(outcome))
+                Log.Information("Federated tasks: task {TaskId} was cancelled while it ran; the next poll closes its review and removes its result", taskId);
+            else if (!outcome.Accepted)
                 Log.Warning("Federated tasks: Submission did not accept the waiting-for-output-approval report for task {TaskId} (status {Status}, {ErrorCode}); it is sent again at the next poll",
                     taskId, outcome.StatusCode, outcome.ErrorCode);
         }

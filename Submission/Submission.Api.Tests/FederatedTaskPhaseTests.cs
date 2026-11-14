@@ -24,16 +24,37 @@ namespace Submission.Api.Tests
             from n in Enum.GetValues<FederatedTaskPhase>()
             select new object[] { c, n };
 
+        /// <summary>
+        /// The phase graph. A cancel is the only way into canceling (from running or waiting) and into canceled (from
+        /// queued, or canceling once the hospital confirms); a canceling task can only end canceled.
+        /// </summary>
+        private static FederatedTaskTransition Expected(FederatedTaskPhase current, FederatedTaskPhase next)
+        {
+            if (Rank(current) == 4)
+                return current == next ? FederatedTaskTransition.NoChange : FederatedTaskTransition.AlreadyFinal;
+            if (current == FederatedTaskPhase.Canceling)
+                return next switch
+                {
+                    FederatedTaskPhase.Canceled => FederatedTaskTransition.Apply,
+                    FederatedTaskPhase.Canceling => FederatedTaskTransition.NoChange,
+                    _ => FederatedTaskTransition.Canceling
+                };
+            if (next == FederatedTaskPhase.Canceling)
+                return current is FederatedTaskPhase.Running or FederatedTaskPhase.WaitingForOutputApproval
+                    ? FederatedTaskTransition.Apply : FederatedTaskTransition.Invalid;
+            if (next == FederatedTaskPhase.Canceled)
+                return current == FederatedTaskPhase.Queued ? FederatedTaskTransition.Apply : FederatedTaskTransition.Invalid;
+            return Rank(next) > Rank(current) ? FederatedTaskTransition.Apply
+                : Rank(next) == Rank(current) ? FederatedTaskTransition.NoChange
+                : FederatedTaskTransition.Backwards;
+        }
+
         [Theory]
         [MemberData(nameof(AllPairs))]
         public void Check_table(FederatedTaskPhase current, FederatedTaskPhase next)
         {
             var currentFinal = Rank(current) == 4;
-            var expected =
-                currentFinal ? (current == next ? FederatedTaskTransition.NoChange : FederatedTaskTransition.AlreadyFinal)
-                : Rank(next) > Rank(current) ? FederatedTaskTransition.Apply
-                : Rank(next) == Rank(current) ? FederatedTaskTransition.NoChange
-                : FederatedTaskTransition.Backwards;
+            var expected = Expected(current, next);
 
             Assert.Equal(expected, FederatedTaskPhases.Check(current, next));
             Assert.Equal(currentFinal, FederatedTaskPhases.IsFinal(current));

@@ -1403,6 +1403,49 @@ namespace Submission.Api.Tests
         }
 
         [Fact]
+        public async Task ReportResult_complete_that_loses_to_a_cancel_is_refused_and_removes_its_file()
+        {
+            var name = Guid.NewGuid().ToString();
+            using var setup = OpenDb(name);
+            setup.Tres.Add(NewTre(1, "tre-a", "tre-a-admin", "tre-a-client"));
+            setup.SaveChanges();
+            var seeded = SeedAtPhase(setup, FederatedTaskPhase.WaitingForOutputApproval);
+
+            // The cancel is saved after ReportResult has stored the file and before it saves the task.
+            var interceptor = new BeforeFirstSave(() =>
+            {
+                using var other = OpenDb(name);
+                var t = other.FederatedTasks.Include(x => x.PhaseChanges).Single();
+                t.MoveTo(FederatedTaskPhase.Canceling, DateTime.UtcNow);
+                other.SaveChanges();
+            });
+            using var dbA = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
+                .UseInMemoryDatabase(name).AddInterceptors(interceptor).Options);
+            var store = new FakeResultStore();
+
+            var result = await ReportComplete(AgentControllerFor(dbA, "tre-a-client", store), seeded);
+
+            AssertError(result, 409, FederatedTaskErrorCodes.TaskCanceling);
+            Assert.Empty(store.Objects);
+            using var check = OpenDb(name);
+            Assert.Equal(FederatedTaskPhase.Canceling, Reload(check, seeded.TaskId).Phase);
+        }
+
+        [Fact]
+        public async Task GetPending_hands_out_a_canceling_task_enqueued_under_an_old_tre_name()
+        {
+            using var db = NewDb();
+            var seeded = SeedAtPhase(db, FederatedTaskPhase.Canceling);
+            seeded.TreName = "old-name";
+            db.SaveChanges();
+
+            var pending = Assert.IsType<List<TesTask>>(Assert.IsType<OkObjectResult>(
+                await AgentControllerFor(db, "tre-a-client").GetPendingTasksForTre()).Value);
+
+            Assert.Equal(seeded.TaskId.ToString(), Assert.Single(pending).Id);
+        }
+
+        [Fact]
         public async Task ReportResult_complete_retries_on_top_of_a_concurrent_progress_report()
         {
             var name = Guid.NewGuid().ToString();

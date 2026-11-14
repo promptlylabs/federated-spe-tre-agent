@@ -23,7 +23,11 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         Apply,
         NoChange,
         Backwards,
-        AlreadyFinal
+        AlreadyFinal,
+        /// <summary>The task is being cancelled: it can only end canceled.</summary>
+        Canceling,
+        /// <summary>Not an edge of the phase graph, for example canceled from running without a cancel.</summary>
+        Invalid
     }
 
     public static class FederatedTaskPhases
@@ -87,6 +91,29 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             if (IsFinal(current))
             {
                 return current == next ? FederatedTaskTransition.NoChange : FederatedTaskTransition.AlreadyFinal;
+            }
+
+            // A cancel is the only way into canceling (from running or waiting) and into canceled (from queued, or
+            // from canceling once the hospital confirms); a canceling task can only end canceled.
+            if (current == FederatedTaskPhase.Canceling)
+            {
+                return next switch
+                {
+                    FederatedTaskPhase.Canceled => FederatedTaskTransition.Apply,
+                    FederatedTaskPhase.Canceling => FederatedTaskTransition.NoChange,
+                    _ => FederatedTaskTransition.Canceling
+                };
+            }
+
+            if (next == FederatedTaskPhase.Canceling)
+            {
+                return current is FederatedTaskPhase.Running or FederatedTaskPhase.WaitingForOutputApproval
+                    ? FederatedTaskTransition.Apply : FederatedTaskTransition.Invalid;
+            }
+
+            if (next == FederatedTaskPhase.Canceled)
+            {
+                return current == FederatedTaskPhase.Queued ? FederatedTaskTransition.Apply : FederatedTaskTransition.Invalid;
             }
 
             var c = Rank(current);

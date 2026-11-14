@@ -161,7 +161,15 @@ public class DoFederatedTaskWorkTests
 
         public Task RegisterAsync(EgressRegistration r, CancellationToken ct) => throw new NotSupportedException();
 
-        public Task WithdrawAsync(string taskId, string reason, CancellationToken ct) => throw new NotSupportedException();
+        public List<string> Closed { get; } = new();
+        public bool FailWithdraw { get; set; }
+
+        public Task WithdrawAsync(string taskId, string reason, CancellationToken ct)
+        {
+            if (FailWithdraw) throw new HttpRequestException("egress down");
+            Closed.Add(taskId);
+            return Task.CompletedTask;
+        }
     }
 
     private static OutputReview PendingReview(string sha) => OutputReview.Pending(sha, Now);
@@ -896,9 +904,12 @@ public class DoFederatedTaskWorkTests
         var outputs = Saved();
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), registered: true);
 
-        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+        var egress = new FakeEgressClient();
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval, egress: egress).Execute();
 
         Assert.Contains(T1, approval.Withdrawn);
+        Assert.Contains(T1, egress.Closed);
         Assert.Empty(outputs.Files);
         Assert.Equal([(T1, FederatedTaskPhase.Canceled)], client.ProgressCalls);
         Assert.Empty(client.Calls);
@@ -950,6 +961,52 @@ public class DoFederatedTaskWorkTests
         Assert.Equal(0, approval.RegisterCalls);
         Assert.Equal([(T1, FederatedTaskPhase.Canceled)], client.ProgressCalls);
         Assert.Empty(client.Calls);
+    }
+
+    [Fact]
+    public async Task Canceling_task_whose_egress_request_cannot_be_closed_is_not_confirmed()
+    {
+        var client = OneMean();
+        Canceling(client.Pending[0]);
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), registered: true);
+        var egress = new FakeEgressClient { FailWithdraw = true };
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval, egress: egress).Execute();
+
+        Assert.Contains(T1, approval.Withdrawn);
+        Assert.Empty(client.ProgressCalls);
+    }
+
+    [Fact]
+    public async Task Canceling_task_already_withdrawn_still_has_its_egress_request_closed()
+    {
+        var client = OneMean();
+        Canceling(client.Pending[0]);
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), registered: true);
+        approval.Withdrawn.Add(T1);
+        var egress = new FakeEgressClient();
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval, egress: egress).Execute();
+
+        Assert.Equal([T1], egress.Closed);
+        Assert.Equal([(T1, FederatedTaskPhase.Canceled)], client.ProgressCalls);
+    }
+
+    [Fact]
+    public async Task Canceling_state_without_a_phase_is_still_cleaned_up_and_never_run()
+    {
+        var client = OneMean();
+        client.Pending[0].State = TesState.CANCELINGEnum;
+        client.Pending[0].Logs = null;
+        var outputs = new FakeResultOutputStore();
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: new FakeOutputApproval { AutoApprove = false }).Execute();
+
+        Assert.Equal([(T1, FederatedTaskPhase.Canceled)], client.ProgressCalls);
+        Assert.Empty(client.Calls);
+        Assert.Empty(outputs.Files);
     }
 
     [Fact]

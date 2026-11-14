@@ -114,7 +114,8 @@ namespace Submission.Api.Controllers
             var tasks = await _DbContext.FederatedTasks
                 .AsNoTracking()
                 .Include(x => x.PhaseChanges)
-                .Where(x => x.TreId == tre.Id && x.TreName == treName)
+                // A cancelled task is handed out under any name: the hospital must still clean it up.
+                .Where(x => x.TreId == tre.Id && (x.TreName == treName || x.Phase == FederatedTaskPhase.Canceling))
                 .Where(FederatedTaskPhases.IsUnfinishedTask)
                 // Cancelled first (the hospital cleans up), then running (the Agent may need to resume it), then
                 // queued, then waiting: waiting tasks are only polled for their approval outcome, so they must not
@@ -243,6 +244,7 @@ namespace Submission.Api.Controllers
             }
 
             Action<FederatedTask> apply;
+            string? storedKey = null;
             var response = new FederatedReportResponse { Result = true };
             if (state == TesState.COMPLETEEnum)
             {
@@ -280,6 +282,7 @@ namespace Submission.Api.Controllers
                 try
                 {
                     await _resultStore.PutAsync(key, bytes, cancellationToken);
+                    storedKey = key;
                 }
                 catch (Exception ex)
                 {
@@ -352,6 +355,8 @@ namespace Submission.Api.Controllers
 
                         if (current.Phase == FederatedTaskPhase.Canceling)
                         {
+                            // A cancel won the race after the file was stored: a cancelled task keeps no result here.
+                            if (storedKey != null) await DeleteStoredResultAsync(storedKey, taskId);
                             return TaskCanceling();
                         }
 
@@ -413,21 +418,18 @@ namespace Submission.Api.Controllers
                     return TaskNotFound();
                 }
 
-                // While cancelling, the only accepted report is the hospital confirming the cancel; and only a
-                // cancelled task can be confirmed.
-                if (task.Phase == FederatedTaskPhase.Canceling && phase != FederatedTaskPhase.Canceled)
+                // The phase graph lets a cancel take a queued task to canceled; the Agent may only confirm a cancel.
+                if (phase == FederatedTaskPhase.Canceled && task.Phase == FederatedTaskPhase.Queued)
                 {
-                    return TaskCanceling();
-                }
-
-                if (phase == FederatedTaskPhase.Canceled && !FederatedTaskPhases.IsFinal(task.Phase) && task.Phase != FederatedTaskPhase.Canceling)
-                {
-                    return Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.InvalidTransition,
-                        $"task is at phase '{FederatedTaskPhases.ToWire(task.Phase)}' and was not cancelled");
+                    return NotCancelled(task);
                 }
 
                 switch (FederatedTaskPhases.Check(task.Phase, phase))
                 {
+                    case FederatedTaskTransition.Canceling:
+                        return TaskCanceling();
+                    case FederatedTaskTransition.Invalid:
+                        return NotCancelled(task);
                     case FederatedTaskTransition.NoChange:
                         return Ok(new FederatedProgressResponse { Phase = FederatedTaskPhases.ToWire(task.Phase) });
                     case FederatedTaskTransition.Backwards:
@@ -484,18 +486,16 @@ namespace Submission.Api.Controllers
                     return TaskNotFound();
                 }
 
-                if (task.Phase == FederatedTaskPhase.Canceling)
-                {
-                    return Ok(new FederatedProgressResponse { Phase = FederatedTaskPhases.ToWire(task.Phase) });
-                }
-
-                if (FederatedTaskPhases.IsFinal(task.Phase))
-                {
-                    return Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.TaskAlreadyFinished,
-                        $"the task already finished at phase '{FederatedTaskPhases.ToWire(task.Phase)}'");
-                }
-
                 var next = task.Phase == FederatedTaskPhase.Queued ? FederatedTaskPhase.Canceled : FederatedTaskPhase.Canceling;
+                switch (FederatedTaskPhases.Check(task.Phase, next))
+                {
+                    case FederatedTaskTransition.NoChange:
+                        return Ok(new FederatedProgressResponse { Phase = FederatedTaskPhases.ToWire(task.Phase) });
+                    case FederatedTaskTransition.AlreadyFinal:
+                        return Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.TaskAlreadyFinished,
+                            $"the task already finished at phase '{FederatedTaskPhases.ToWire(task.Phase)}'");
+                }
+
                 task.MoveTo(next, DateTime.UtcNow);
                 try
                 {
@@ -627,6 +627,22 @@ namespace Submission.Api.Controllers
 
         private static ObjectResult TaskNotFound() =>
             Error(StatusCodes.Status404NotFound, FederatedTaskErrorCodes.TaskNotFound, "task not found");
+
+        private async Task DeleteStoredResultAsync(string key, Guid taskId)
+        {
+            try
+            {
+                await _resultStore.DeleteAsync(key, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "The result of federated task {TaskId} was stored before the task was cancelled and could not be deleted; key {Key}", taskId, key);
+            }
+        }
+
+        private static ObjectResult NotCancelled(FederatedTask task) =>
+            Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.InvalidTransition,
+                $"task is at phase '{FederatedTaskPhases.ToWire(task.Phase)}' and was not cancelled");
 
         private static ObjectResult TaskCanceling() =>
             Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.TaskCanceling,

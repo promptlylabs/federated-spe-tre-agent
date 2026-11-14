@@ -60,5 +60,7 @@ namespace Submission.Api.Services
 
         public Task<byte[]?> GetAsync(string bucket, string key, CancellationToken ct) =>
             _minio.GetObjectBytesAsync(bucket, key, ct);
+
+        public Task DeleteAsync(string key, CancellationToken ct) => _minio.DeleteObject(Bucket, key);
     }
 }
