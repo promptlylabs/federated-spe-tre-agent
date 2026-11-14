@@ -11,8 +11,8 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         public const string ExecutorImage = "5s-tes/federated-ops:1";
         public const string DatasetUrlScheme = "dataset://";
 
-        private const string TresTag = "tres";
-        private const string StudyIdTag = "study_id";
+        public const string SitesTag = "fed.sites";
+        public const string StudyIdTag = "fed.study_id";
         private const string ColumnArg = "--column";
         private const string FilterArg = "--filter";
 
@@ -99,13 +99,13 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             }
 
             // Exactly one TRE: non-empty after trimming, no '|' separator. Existence is checked later.
-            if (!tags.TryGetValue(TresTag, out var tre) || string.IsNullOrWhiteSpace(tre) || tre.Contains('|'))
-                return Fail(FederatedTaskErrorCodes.InvalidTask, $"tag '{TresTag}' must name exactly one TRE");
+            if (!tags.TryGetValue(SitesTag, out var tre) || string.IsNullOrWhiteSpace(tre) || tre.Contains('|'))
+                return Fail(FederatedTaskErrorCodes.InvalidTask, $"tag '{SitesTag}' must name exactly one TRE");
             if (!tags.TryGetValue(StudyIdTag, out var studyId) || string.IsNullOrWhiteSpace(studyId))
                 return Fail(FederatedTaskErrorCodes.InvalidTask, $"tag '{StudyIdTag}' is required");
             if (tre.Length > FederatedResultLimits.MaxStringLength || studyId.Length > FederatedResultLimits.MaxStringLength)
                 return Fail(FederatedTaskErrorCodes.InvalidTask,
-                    $"tags '{TresTag}' and '{StudyIdTag}' must be at most {FederatedResultLimits.MaxStringLength} characters");
+                    $"tags '{SitesTag}' and '{StudyIdTag}' must be at most {FederatedResultLimits.MaxStringLength} characters");
 
             var spec = new FederatedTaskSpec(operation, dataset, column, filters, studyId, tre.Trim().ToLowerInvariant());
             return new FederatedTaskParseResult(spec, null, null);
@@ -144,7 +144,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
                 Outputs = [],
                 Tags = new Dictionary<string, string>
                 {
-                    [TresTag] = spec.TreName,
+                    [SitesTag] = spec.TreName,
                     [StudyIdTag] = spec.StudyId
                 }
             };

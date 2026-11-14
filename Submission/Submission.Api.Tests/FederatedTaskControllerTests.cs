@@ -221,11 +221,11 @@ namespace Submission.Api.Tests
             yield return [image];
 
             var multi = MeanTask();
-            multi.Tags!["tres"] = "tre-a|tre-b";
+            multi.Tags!["fed.sites"] = "tre-a|tre-b";
             yield return [multi];
 
             var unknown = MeanTask();
-            unknown.Tags!["tres"] = "tre-zzz";
+            unknown.Tags!["fed.sites"] = "tre-zzz";
             yield return [unknown];
 
             var output = MeanTask();
@@ -245,11 +245,38 @@ namespace Submission.Api.Tests
         }
 
         [Fact]
+        public async Task Enqueue_with_only_the_old_tags_is_refused_naming_the_missing_tag()
+        {
+            using var db = NewDb();
+            var task = MeanTask();
+            task.Tags = new Dictionary<string, string> { ["tres"] = "tre-a", ["study_id"] = "study-1" };
+
+            var result = await ControllerFor(db, "dare-admin").Enqueue(task);
+
+            var error = AssertError(result, 400, FederatedTaskErrorCodes.InvalidTask);
+            Assert.Contains("fed.sites", error.ErrorMessage);
+            Assert.Equal(0, db.FederatedTasks.Count());
+        }
+
+        [Fact]
+        public async Task Enqueue_keeps_tags_outside_the_namespace()
+        {
+            using var db = NewDb();
+            var task = MeanTask();
+            task.Tags!["daams.request"] = "r-42";
+
+            await ControllerFor(db, "dare-admin").Enqueue(task);
+
+            var stored = JsonConvert.DeserializeObject<TesTask>(db.FederatedTasks.Single().TesTaskJson)!;
+            Assert.Equal("r-42", stored.Tags!["daams.request"]);
+        }
+
+        [Fact]
         public async Task Enqueue_TreLookupIsCaseInsensitive()
         {
             using var db = NewDb();
             var task = MeanTask();
-            task.Tags!["tres"] = "TRE-A";
+            task.Tags!["fed.sites"] = "TRE-A";
             var result = await ControllerFor(db, "dare-admin").Enqueue(task);
 
             Assert.IsType<OkObjectResult>(result);

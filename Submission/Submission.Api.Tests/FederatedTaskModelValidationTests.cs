@@ -23,7 +23,7 @@ namespace Submission.Api.Tests
                 { "url": "dataset://cohort_2024", "path": "/data/cohort_2024", "type": "DIRECTORY" }
               ],
               "outputs": [],
-              "tags": { "tres": "my-tre", "study_id": "study-001" }
+              "tags": { "fed.sites": "my-tre", "fed.study_id": "study-001" }
             }
             """;
 
