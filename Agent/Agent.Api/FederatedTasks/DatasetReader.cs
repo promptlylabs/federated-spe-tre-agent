@@ -32,7 +32,17 @@ namespace Agent.Api.FederatedTasks
 
             // Trailing slash so "cohort" does not match "cohort_2024/...".
             var prefix = $"{_settings.DatasetPrefix}{datasetName}/";
-            var keys = (await _store.ListKeysAsync(prefix, ct))
+            IReadOnlyList<string> listed;
+            try
+            {
+                listed = await _store.ListKeysAsync(prefix, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                throw new DatasetStoreException($"Listing dataset '{datasetName}' failed", ex);
+            }
+
+            var keys = listed
                 .Where(k => k.IndexOf('/', prefix.Length) < 0) // direct children only
                 .Where(k => k.EndsWith(DatasetExtension, StringComparison.Ordinal))
                 .ToList();

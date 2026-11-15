@@ -152,6 +152,15 @@ public class DatasetReaderTests
     }
 
     [Fact]
+    public async Task Resolve_store_failure_throws_DatasetStoreException()
+    {
+        var store = new FakeDatasetStore { ThrowOnList = true };
+
+        var ex = await Assert.ThrowsAsync<DatasetStoreException>(() => Reader(store).ResolveAsync("cohort_2024", CancellationToken.None));
+        Assert.IsType<InvalidOperationException>(ex.InnerException);
+    }
+
+    [Fact]
     public async Task Read_store_failure_throws_DatasetStoreException()
     {
         var store = new FakeDatasetStore().Add("dataset/x/a.csv", "a\n1\n");

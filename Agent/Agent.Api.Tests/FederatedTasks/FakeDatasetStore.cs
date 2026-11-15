@@ -10,6 +10,9 @@ public class FakeDatasetStore : IDatasetStore
 
     public string? ThrowOnOpenKey { get; set; }
 
+    /// <summary>Fails every listing as MinioDatasetStore does when the bucket cannot be listed.</summary>
+    public bool ThrowOnList { get; set; }
+
     public FakeDatasetStore Add(string key, string content) => Add(key, System.Text.Encoding.UTF8.GetBytes(content));
 
     public FakeDatasetStore Add(string key, byte[] content)
@@ -21,6 +24,11 @@ public class FakeDatasetStore : IDatasetStore
     public Task<IReadOnlyList<string>> ListKeysAsync(string prefix, CancellationToken ct)
     {
         ListCalls++;
+        if (ThrowOnList)
+        {
+            throw new InvalidOperationException($"Listing bucket with prefix '{prefix}' failed");
+        }
+
         IReadOnlyList<string> keys = _objects.Keys.Where(k => k.StartsWith(prefix, StringComparison.Ordinal)).ToList();
         return Task.FromResult(keys);
     }

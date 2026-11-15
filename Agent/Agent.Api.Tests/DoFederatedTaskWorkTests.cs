@@ -1635,6 +1635,36 @@ public class DoFederatedTaskWorkTests
     }
 
     [Fact]
+    public async Task Execute_dataset_listing_fails_on_a_young_queued_task_reports_nothing_and_retries_next_poll()
+    {
+        var client = OneMean();
+        var store = Store();
+        store.ThrowOnList = true;
+
+        await Work(client, store).Execute();
+
+        // A storage outage while the input checks look for the dataset is retried, not failed as internal_error.
+        Assert.Empty(client.Calls);
+        Assert.Empty(client.ProgressCalls);
+    }
+
+    [Fact]
+    public async Task Execute_dataset_listing_fails_for_too_long_reports_internal_error()
+    {
+        var client = OneMean();
+        client.Pending[0].CreationTime = Now.AddMinutes(-60);
+        var store = Store();
+        store.ThrowOnList = true;
+
+        await Work(client, store).Execute();
+
+        // Like a read failure, a listing failure gives up after the retry window instead of waiting for ever.
+        var report = Assert.Single(client.Reports);
+        Assert.Equal(TesState.SYSTEMERROREnum, report.State);
+        Assert.Equal("internal_error", report.ErrorCode);
+    }
+
+    [Fact]
     public async Task Execute_dataset_read_fails_on_a_young_queued_task_marks_it_running_and_reports_nothing_else()
     {
         var client = OneMean();
