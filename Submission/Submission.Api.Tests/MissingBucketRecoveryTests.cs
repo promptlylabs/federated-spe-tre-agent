@@ -9,6 +9,19 @@ public class MissingBucketRecoveryTests
     private static AmazonS3Exception NoBucket() => new("missing") { ErrorCode = "NoSuchBucket" };
 
     [Fact]
+    public async Task Delete_treats_NoSuchBucket_as_done_and_creates_nothing()
+    {
+        await MissingBucketRecovery.DeleteAsync(() => throw NoBucket());
+    }
+
+    [Fact]
+    public async Task Delete_passes_other_errors_through()
+    {
+        await Assert.ThrowsAsync<AmazonS3Exception>(() =>
+            MissingBucketRecovery.DeleteAsync(() => throw new AmazonS3Exception("denied") { ErrorCode = "AccessDenied" }));
+    }
+
+    [Fact]
     public async Task Write_creates_bucket_and_retries_once_on_NoSuchBucket()
     {
         var calls = 0;

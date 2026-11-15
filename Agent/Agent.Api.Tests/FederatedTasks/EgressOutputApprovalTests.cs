@@ -50,7 +50,7 @@ public class EgressOutputApprovalTests
 
     private sealed class FakeEgress : IEgressReviewClient
     {
-        public bool IsConfigured => true;
+        public bool IsConfigured { get; set; } = true;
         public int Calls;
         public Func<EgressRegistration, Task>? OnRegister;
 
@@ -352,6 +352,40 @@ public class EgressOutputApprovalTests
         await approval.WithdrawAsync(TaskId, "changed", default);
 
         Assert.Contains(TaskId, store.Withdrawn);
+    }
+
+    [Fact]
+    public async Task WithdrawAndClose_marks_the_task_and_closes_the_egress_request()
+    {
+        var (approval, store, egress) = Make();
+
+        await approval.WithdrawAndCloseAsync(TaskId, "cancelled", default);
+
+        Assert.Contains(TaskId, store.Withdrawn);
+        Assert.Equal((TaskId, "cancelled"), Assert.Single(egress.Withdrawals));
+    }
+
+    [Fact]
+    public async Task WithdrawAndClose_throws_when_the_egress_request_cannot_be_closed_but_still_marks_the_task()
+    {
+        var (approval, store, egress) = Make();
+        egress.ThrowOnWithdraw = true;
+
+        await Assert.ThrowsAsync<HttpRequestException>(() => approval.WithdrawAndCloseAsync(TaskId, "cancelled", default));
+
+        Assert.Contains(TaskId, store.Withdrawn);
+    }
+
+    [Fact]
+    public async Task WithdrawAndClose_throws_when_the_egress_app_is_not_configured()
+    {
+        var (approval, store, egress) = Make();
+        egress.IsConfigured = false;
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => approval.WithdrawAndCloseAsync(TaskId, "cancelled", default));
+
+        Assert.Contains(TaskId, store.Withdrawn);
+        Assert.Empty(egress.Withdrawals);
     }
 
     [Fact]

@@ -153,6 +153,17 @@ public class DoFederatedTaskWorkTests
             Withdrawn.Add(taskId);
             return Task.CompletedTask;
         }
+
+        public int CloseCalls { get; private set; }
+        public bool FailClose { get; set; }
+
+        public Task WithdrawAndCloseAsync(string taskId, string reason, CancellationToken ct)
+        {
+            CloseCalls++;
+            Withdrawn.Add(taskId);
+            if (FailClose) throw new HttpRequestException("egress down");
+            return Task.CompletedTask;
+        }
     }
 
     private sealed class FakeEgressClient : IEgressReviewClient
@@ -904,12 +915,11 @@ public class DoFederatedTaskWorkTests
         var outputs = Saved();
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), registered: true);
 
-        var egress = new FakeEgressClient();
-
-        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval, egress: egress).Execute();
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
 
         Assert.Contains(T1, approval.Withdrawn);
-        Assert.Contains(T1, egress.Closed);
+        Assert.Equal(1, approval.CloseCalls);
+        Assert.Equal(0, approval.WithdrawCalls);
         Assert.Empty(outputs.Files);
         Assert.Equal([(T1, FederatedTaskPhase.Canceled)], client.ProgressCalls);
         Assert.Empty(client.Calls);
@@ -969,12 +979,12 @@ public class DoFederatedTaskWorkTests
         var client = OneMean();
         Canceling(client.Pending[0]);
         var outputs = Saved();
-        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), registered: true);
-        var egress = new FakeEgressClient { FailWithdraw = true };
+        var approval = new FakeOutputApproval { AutoApprove = false, FailClose = true }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), registered: true);
 
-        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval, egress: egress).Execute();
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
 
         Assert.Contains(T1, approval.Withdrawn);
+        Assert.True(outputs.Files.ContainsKey(T1));
         Assert.Empty(client.ProgressCalls);
     }
 
@@ -986,11 +996,10 @@ public class DoFederatedTaskWorkTests
         var outputs = Saved();
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), registered: true);
         approval.Withdrawn.Add(T1);
-        var egress = new FakeEgressClient();
 
-        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval, egress: egress).Execute();
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
 
-        Assert.Equal([T1], egress.Closed);
+        Assert.Equal(1, approval.CloseCalls);
         Assert.Equal([(T1, FederatedTaskPhase.Canceled)], client.ProgressCalls);
     }
 

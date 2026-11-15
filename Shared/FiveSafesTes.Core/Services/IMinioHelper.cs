@@ -32,6 +32,9 @@ namespace FiveSafesTes.Core.Services
 
         Task DeleteObject(string bucketName, string objectKey);
 
+        /// <summary>Every key under the prefix, across all pages. Throws on any storage error.</summary>
+        Task<List<string>> ListObjectKeysAsync(string bucketName, string prefix, CancellationToken ct = default);
+
         /// <summary>
         /// Removes every object from a bucket without removing the bucket itself.
         /// </summary>

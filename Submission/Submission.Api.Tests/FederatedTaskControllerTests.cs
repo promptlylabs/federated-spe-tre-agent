@@ -1403,7 +1403,7 @@ namespace Submission.Api.Tests
         }
 
         [Fact]
-        public async Task ReportResult_complete_that_loses_to_a_cancel_is_refused_and_removes_its_file()
+        public async Task ReportResult_complete_that_loses_to_a_cancel_is_refused_and_its_file_goes_when_the_cancel_is_confirmed()
         {
             var name = Guid.NewGuid().ToString();
             using var setup = OpenDb(name);
@@ -1426,9 +1426,42 @@ namespace Submission.Api.Tests
             var result = await ReportComplete(AgentControllerFor(dbA, "tre-a-client", store), seeded);
 
             AssertError(result, 409, FederatedTaskErrorCodes.TaskCanceling);
-            Assert.Empty(store.Objects);
             using var check = OpenDb(name);
             Assert.Equal(FederatedTaskPhase.Canceling, Reload(check, seeded.TaskId).Phase);
+
+            var confirmed = await Progress(AgentControllerFor(check, "tre-a-client", store), seeded.TaskId, "canceled");
+
+            Assert.IsType<OkObjectResult>(confirmed);
+            Assert.Empty(store.Objects);
+        }
+
+        [Fact]
+        public async Task Progress_canceled_deletes_every_result_stored_for_the_task_only()
+        {
+            using var db = NewDb();
+            var seeded = SeedAtPhase(db, FederatedTaskPhase.Canceling);
+            var store = new FakeResultStore();
+            store.Objects[$"1/{seeded.TaskId:D}/{new string('a', 64)}.json"] = [1];
+            var other = $"1/{Guid.NewGuid():D}/{new string('b', 64)}.json";
+            store.Objects[other] = [2];
+
+            var result = await Progress(AgentControllerFor(db, "tre-a-client", store), seeded.TaskId, "canceled");
+
+            Assert.IsType<OkObjectResult>(result);
+            Assert.Equal([other], store.Objects.Keys);
+        }
+
+        [Fact]
+        public async Task Progress_canceled_when_storage_fails_keeps_the_task_canceling()
+        {
+            using var db = NewDb();
+            var seeded = SeedAtPhase(db, FederatedTaskPhase.Canceling);
+            var store = new FakeResultStore { FailDeletes = true };
+
+            var result = await Progress(AgentControllerFor(db, "tre-a-client", store), seeded.TaskId, "canceled");
+
+            AssertError(result, 503, FederatedTaskErrorCodes.StorageUnavailable);
+            AssertUnchanged(db, seeded);
         }
 
         [Fact]

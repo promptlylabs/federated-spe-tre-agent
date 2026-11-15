@@ -371,18 +371,9 @@ namespace Agent.Api
         private async Task CancelAsync(string taskId, string storeKey)
         {
             var review = await _approval.GetAsync(storeKey, CancellationToken.None);
+            // No decision is accepted from here on, and the Egress request must close before the cancel is confirmed.
             if (review is { IsPending: true })
-            {
-                if (!await _approval.IsWithdrawnAsync(storeKey, CancellationToken.None))
-                    await WithdrawPendingReviewAsync(storeKey, CanceledReason);
-
-                // The withdrawal above only tries to close the Egress request. Here it must succeed before the cancel
-                // is confirmed; closing a request that is already closed succeeds, so this is safe to repeat.
-                if (_egress.IsConfigured)
-                    await _egress.WithdrawAsync(storeKey, CanceledReason, CancellationToken.None);
-                else
-                    Log.Warning("Federated tasks: the Egress app is not configured, so the review request of cancelled task {TaskId} cannot be closed there", taskId);
-            }
+                await _approval.WithdrawAndCloseAsync(storeKey, CanceledReason, CancellationToken.None);
 
             // A store error is thrown: the task keeps its phase and the cancel is tried again at the next poll.
             await _outputs.DeleteAsync(storeKey, CancellationToken.None);

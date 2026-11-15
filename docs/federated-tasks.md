@@ -169,7 +169,7 @@ On a `canceling` task, the Agent:
 
 1. withdraws the review if it is still pending, so no decision is accepted any more, and closes the request in the Egress app (an Egress error stops here, and the next poll tries again);
 2. deletes the saved result from `federated-outputs` (a store error stops here, and the next poll tries again);
-3. reports `ReportProgress` with `canceled`.
+3. reports `ReportProgress` with `canceled`. Before Submission accepts it, it deletes any result file stored for the task (one can exist if a cancel raced a result report). A storage error answers 503 `storage_unavailable`, and the Agent confirms again at the next poll.
 
 Each part is safe to repeat, so if one fails the next poll does them again. The review record and its withdrawn marker stay in the TRE as the audit of what was reviewed; they hold no data. There is no standard TES cancel yet. `POST /tasks/{id}:cancel`, for DAAMS, is planned with the TES API task and will apply the same rules.
 

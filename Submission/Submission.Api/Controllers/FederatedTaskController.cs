@@ -109,12 +109,12 @@ namespace Submission.Api.Controllers
             var treName = tre.Name.ToLower();
 
             // The Agent refuses tasks whose fed.sites is not its own name and leaves them as they are. Tasks enqueued under a
-            // name the TRE no longer has would stay unfinished forever and fill the list, so they are not handed out.
+            // name the TRE no longer has would stay unfinished forever and fill the list, so they are not handed out;
+            // except a canceling task, which the Agent cleans up before any name check (the rename sweep skips it too).
             // ToTesTask reads the history. Without the Include, lazy loading would run one query per task.
             var tasks = await _DbContext.FederatedTasks
                 .AsNoTracking()
                 .Include(x => x.PhaseChanges)
-                // A cancelled task is handed out under any name: the hospital must still clean it up.
                 .Where(x => x.TreId == tre.Id && (x.TreName == treName || x.Phase == FederatedTaskPhase.Canceling))
                 .Where(FederatedTaskPhases.IsUnfinishedTask)
                 // Cancelled first (the hospital cleans up), then running (the Agent may need to resume it), then
@@ -244,7 +244,6 @@ namespace Submission.Api.Controllers
             }
 
             Action<FederatedTask> apply;
-            string? storedKey = null;
             var response = new FederatedReportResponse { Result = true };
             if (state == TesState.COMPLETEEnum)
             {
@@ -282,7 +281,6 @@ namespace Submission.Api.Controllers
                 try
                 {
                     await _resultStore.PutAsync(key, bytes, cancellationToken);
-                    storedKey = key;
                 }
                 catch (Exception ex)
                 {
@@ -355,8 +353,7 @@ namespace Submission.Api.Controllers
 
                         if (current.Phase == FederatedTaskPhase.Canceling)
                         {
-                            // A cancel won the race after the file was stored: a cancelled task keeps no result here.
-                            if (storedKey != null) await DeleteStoredResultAsync(storedKey, taskId);
+                            // A file stored above is deleted when the hospital confirms the cancel.
                             return TaskCanceling();
                         }
 
@@ -439,6 +436,22 @@ namespace Submission.Api.Controllers
                         return AlreadyReported(task);
                 }
 
+                if (phase == FederatedTaskPhase.Canceled)
+                {
+                    // A result stored while the cancel raced a report (or by any earlier attempt) goes before the task
+                    // is final; a storage error refuses the confirmation, and the hospital confirms again next poll.
+                    try
+                    {
+                        await _resultStore.DeleteTaskResultsAsync(task.TreId, task.TaskId, cancellationToken);
+                    }
+                    catch (Exception ex)
+                    {
+                        Log.Warning(ex, "Deleting stored results of cancelled federated task {TaskId} failed", task.TaskId);
+                        return Error(StatusCodes.Status503ServiceUnavailable, FederatedTaskErrorCodes.StorageUnavailable,
+                            "the task's stored results could not be deleted, try again later");
+                    }
+                }
+
                 task.MoveTo(phase, DateTime.UtcNow);
                 try
                 {
@@ -486,17 +499,21 @@ namespace Submission.Api.Controllers
                     return TaskNotFound();
                 }
 
-                var next = task.Phase == FederatedTaskPhase.Queued ? FederatedTaskPhase.Canceled : FederatedTaskPhase.Canceling;
-                switch (FederatedTaskPhases.Check(task.Phase, next))
+                switch (task.RequestCancel(DateTime.UtcNow))
                 {
+                    case FederatedTaskTransition.Apply:
+                        break;
                     case FederatedTaskTransition.NoChange:
                         return Ok(new FederatedProgressResponse { Phase = FederatedTaskPhases.ToWire(task.Phase) });
                     case FederatedTaskTransition.AlreadyFinal:
                         return Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.TaskAlreadyFinished,
                             $"the task already finished at phase '{FederatedTaskPhases.ToWire(task.Phase)}'");
+                    default:
+                        return Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.InvalidTransition,
+                            $"a task at phase '{FederatedTaskPhases.ToWire(task.Phase)}' cannot be cancelled");
                 }
 
-                task.MoveTo(next, DateTime.UtcNow);
+                var next = task.Phase;
                 try
                 {
                     await _DbContext.SaveChangesAsync(cancellationToken);
@@ -627,18 +644,6 @@ namespace Submission.Api.Controllers
 
         private static ObjectResult TaskNotFound() =>
             Error(StatusCodes.Status404NotFound, FederatedTaskErrorCodes.TaskNotFound, "task not found");
-
-        private async Task DeleteStoredResultAsync(string key, Guid taskId)
-        {
-            try
-            {
-                await _resultStore.DeleteAsync(key, CancellationToken.None);
-            }
-            catch (Exception ex)
-            {
-                Log.Error(ex, "The result of federated task {TaskId} was stored before the task was cancelled and could not be deleted; key {Key}", taskId, key);
-            }
-        }
 
         private static ObjectResult NotCancelled(FederatedTask task) =>
             Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.InvalidTransition,

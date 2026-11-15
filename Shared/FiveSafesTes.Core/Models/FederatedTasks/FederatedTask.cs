@@ -77,6 +77,23 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             Record(phase, FederatedTaskPhases.ToTesState(phase), atUtc, null, null);
         }
 
+        /// <summary>
+        /// Cancels the task as the phase graph allows: a queued task to canceled at once, a running or waiting task to
+        /// canceling until its hospital confirms. Returns what happened; only <see cref="FederatedTaskTransition.Apply"/>
+        /// changes the task.
+        /// </summary>
+        public FederatedTaskTransition RequestCancel(DateTime atUtc)
+        {
+            var next = Phase == FederatedTaskPhase.Queued ? FederatedTaskPhase.Canceled : FederatedTaskPhase.Canceling;
+            var transition = FederatedTaskPhases.Check(Phase, next);
+            if (transition == FederatedTaskTransition.Apply)
+            {
+                MoveTo(next, atUtc);
+            }
+
+            return transition;
+        }
+
         /// <summary>Moves the task to a rejected phase (TES CANCELED) with the reason.</summary>
         public void Reject(FederatedTaskPhase phase, DateTime atUtc, string errorCode, string errorMessage)
         {
