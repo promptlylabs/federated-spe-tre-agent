@@ -22,5 +22,8 @@ namespace Submission.Api.Services
         /// </summary>
         /// <returns>Null when the object does not exist. Throws when storage is unreachable.</returns>
         Task<byte[]?> GetAsync(string bucket, string key, CancellationToken ct);
+
+        /// <summary>Deletes every result file stored for the task. Nothing stored, or no bucket, is success. Throws on any other storage error.</summary>
+        Task DeleteTaskResultsAsync(int treId, Guid taskId, CancellationToken ct);
     }
 }

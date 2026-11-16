@@ -87,6 +87,16 @@ public class DoFederatedTaskWorkTests
             Released[taskId] = (resultKey, resultSha256);
             return Task.CompletedTask;
         }
+
+        public bool FailDelete { get; set; }
+
+        public Task DeleteAsync(string taskId, CancellationToken ct)
+        {
+            Touches++;
+            if (FailDelete) throw new IOException("delete failed");
+            Files.Remove(taskId);
+            return Task.CompletedTask;
+        }
     }
 
     /// <summary>Output approval stand-in. By default it approves every registration at once.</summary>
@@ -135,9 +145,23 @@ public class DoFederatedTaskWorkTests
 
         public Task<bool> IsWithdrawnAsync(string taskId, CancellationToken ct) => Task.FromResult(Withdrawn.Contains(taskId));
 
+        public int WithdrawCalls { get; private set; }
+
         public Task WithdrawAsync(string taskId, string reason, CancellationToken ct)
         {
+            WithdrawCalls++;
             Withdrawn.Add(taskId);
+            return Task.CompletedTask;
+        }
+
+        public int CloseCalls { get; private set; }
+        public bool FailClose { get; set; }
+
+        public Task WithdrawAndCloseAsync(string taskId, string reason, CancellationToken ct)
+        {
+            CloseCalls++;
+            Withdrawn.Add(taskId);
+            if (FailClose) throw new HttpRequestException("egress down");
             return Task.CompletedTask;
         }
     }
@@ -148,7 +172,15 @@ public class DoFederatedTaskWorkTests
 
         public Task RegisterAsync(EgressRegistration r, CancellationToken ct) => throw new NotSupportedException();
 
-        public Task WithdrawAsync(string taskId, string reason, CancellationToken ct) => throw new NotSupportedException();
+        public List<string> Closed { get; } = new();
+        public bool FailWithdraw { get; set; }
+
+        public Task WithdrawAsync(string taskId, string reason, CancellationToken ct)
+        {
+            if (FailWithdraw) throw new HttpRequestException("egress down");
+            Closed.Add(taskId);
+            return Task.CompletedTask;
+        }
     }
 
     private static OutputReview PendingReview(string sha) => OutputReview.Pending(sha, Now);
@@ -184,6 +216,13 @@ public class DoFederatedTaskWorkTests
     }
 
     private static FakeDatasetStore Store() => new FakeDatasetStore().Add("dataset/cohort_2024/cohort.csv", Csv);
+
+    /// <summary>The task as Submission hands it out after the orchestrator cancelled it.</summary>
+    private static void Canceling(TesTask task)
+    {
+        task.State = TesState.CANCELINGEnum;
+        task.Logs = [new TesTaskLog { Metadata = new Dictionary<string, string> { ["phase"] = "canceling" } }];
+    }
 
     /// <summary>The task as Submission hands it out while its result waits for the hospital reviewer.</summary>
     private static void Waiting(TesTask task)
@@ -869,6 +908,150 @@ public class DoFederatedTaskWorkTests
     }
 
     [Fact]
+    public async Task Canceling_task_with_pending_review_is_withdrawn_deleted_and_reported_canceled()
+    {
+        var client = OneMean();
+        Canceling(client.Pending[0]);
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), registered: true);
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+
+        Assert.Contains(T1, approval.Withdrawn);
+        Assert.Equal(1, approval.CloseCalls);
+        Assert.Equal(0, approval.WithdrawCalls);
+        Assert.Empty(outputs.Files);
+        Assert.Equal([(T1, FederatedTaskPhase.Canceled)], client.ProgressCalls);
+        Assert.Empty(client.Calls);
+    }
+
+    [Fact]
+    public async Task Canceling_task_already_withdrawn_is_not_withdrawn_again()
+    {
+        var client = OneMean();
+        Canceling(client.Pending[0]);
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), registered: true);
+        approval.Withdrawn.Add(T1);
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+
+        Assert.Equal(0, approval.WithdrawCalls);
+        Assert.Empty(outputs.Files);
+        Assert.Equal([(T1, FederatedTaskPhase.Canceled)], client.ProgressCalls);
+    }
+
+    [Fact]
+    public async Task Canceling_task_approved_before_the_cancel_is_never_released()
+    {
+        var client = OneMean();
+        Canceling(client.Pending[0]);
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Approved(ShaOf(outputs.Files[T1])));
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+
+        Assert.Empty(client.Calls);
+        Assert.Equal(0, approval.WithdrawCalls);
+        Assert.Empty(outputs.Files);
+        Assert.Equal([(T1, FederatedTaskPhase.Canceled)], client.ProgressCalls);
+    }
+
+    [Fact]
+    public async Task Canceling_task_without_result_or_review_is_reported_canceled_without_running()
+    {
+        var client = OneMean();
+        Canceling(client.Pending[0]);
+        var outputs = new FakeResultOutputStore();
+        var approval = new FakeOutputApproval { AutoApprove = false };
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+
+        Assert.Equal(0, approval.WithdrawCalls);
+        Assert.Equal(0, approval.RegisterCalls);
+        Assert.Equal([(T1, FederatedTaskPhase.Canceled)], client.ProgressCalls);
+        Assert.Empty(client.Calls);
+    }
+
+    [Fact]
+    public async Task Canceling_task_whose_egress_request_cannot_be_closed_is_not_confirmed()
+    {
+        var client = OneMean();
+        Canceling(client.Pending[0]);
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false, FailClose = true }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), registered: true);
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+
+        Assert.Contains(T1, approval.Withdrawn);
+        Assert.True(outputs.Files.ContainsKey(T1));
+        Assert.Empty(client.ProgressCalls);
+    }
+
+    [Fact]
+    public async Task Canceling_task_already_withdrawn_still_has_its_egress_request_closed()
+    {
+        var client = OneMean();
+        Canceling(client.Pending[0]);
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), registered: true);
+        approval.Withdrawn.Add(T1);
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+
+        Assert.Equal(1, approval.CloseCalls);
+        Assert.Equal([(T1, FederatedTaskPhase.Canceled)], client.ProgressCalls);
+    }
+
+    [Fact]
+    public async Task Canceling_state_without_a_phase_is_still_cleaned_up_and_never_run()
+    {
+        var client = OneMean();
+        client.Pending[0].State = TesState.CANCELINGEnum;
+        client.Pending[0].Logs = null;
+        var outputs = new FakeResultOutputStore();
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: new FakeOutputApproval { AutoApprove = false }).Execute();
+
+        Assert.Equal([(T1, FederatedTaskPhase.Canceled)], client.ProgressCalls);
+        Assert.Empty(client.Calls);
+        Assert.Empty(outputs.Files);
+    }
+
+    [Fact]
+    public async Task Canceling_task_whose_result_cannot_be_deleted_is_not_confirmed()
+    {
+        var client = OneMean();
+        Canceling(client.Pending[0]);
+        var outputs = Saved();
+        outputs.FailDelete = true;
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), registered: true);
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+
+        Assert.Contains(T1, approval.Withdrawn);
+        Assert.True(outputs.Files.ContainsKey(T1));
+        Assert.Empty(client.ProgressCalls);
+    }
+
+    [Fact]
+    public async Task Release_refused_because_the_task_is_canceling_reports_nothing_more()
+    {
+        var client = OneMean();
+        var outputs = Saved();
+        var sha = ShaOf(outputs.Files[T1]);
+        var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Approved(sha));
+        client.Outcomes.Enqueue(new FederatedReportOutcome(409, FederatedTaskErrorCodes.TaskCanceling, "the task is being cancelled", null, null));
+
+        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).ActOnDecision(T1);
+
+        var report = Assert.Single(client.Calls).Report;
+        Assert.Equal(TesState.COMPLETEEnum, report.State);
+        Assert.Empty(outputs.Released);
+        Assert.True(outputs.Files.ContainsKey(T1));
+    }
+
+    [Fact]
     public async Task Waiting_task_without_decision_reports_nothing()
     {
         var client = OneMean();
@@ -1449,6 +1632,36 @@ public class DoFederatedTaskWorkTests
         await Work(client, new FailingResolveReader()).Execute();
 
         Assert.Equal("internal_error", Assert.Single(client.Reports).ErrorCode);
+    }
+
+    [Fact]
+    public async Task Execute_dataset_listing_fails_on_a_young_queued_task_reports_nothing_and_retries_next_poll()
+    {
+        var client = OneMean();
+        var store = Store();
+        store.ThrowOnList = true;
+
+        await Work(client, store).Execute();
+
+        // A storage outage while the input checks look for the dataset is retried, not failed as internal_error.
+        Assert.Empty(client.Calls);
+        Assert.Empty(client.ProgressCalls);
+    }
+
+    [Fact]
+    public async Task Execute_dataset_listing_fails_for_too_long_reports_internal_error()
+    {
+        var client = OneMean();
+        client.Pending[0].CreationTime = Now.AddMinutes(-60);
+        var store = Store();
+        store.ThrowOnList = true;
+
+        await Work(client, store).Execute();
+
+        // Like a read failure, a listing failure gives up after the retry window instead of waiting for ever.
+        var report = Assert.Single(client.Reports);
+        Assert.Equal(TesState.SYSTEMERROREnum, report.State);
+        Assert.Equal("internal_error", report.ErrorCode);
     }
 
     [Fact]

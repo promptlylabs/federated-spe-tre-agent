@@ -24,6 +24,23 @@ namespace Submission.Api.Tests
             return Task.CompletedTask;
         }
 
+        public bool FailDeletes { get; set; }
+
+        public Task DeleteTaskResultsAsync(int treId, Guid taskId, CancellationToken ct)
+        {
+            if (FailDeletes)
+            {
+                throw new IOException("storage down");
+            }
+
+            foreach (var key in Objects.Keys.Where(k => k.StartsWith($"{treId}/{taskId:D}/", StringComparison.Ordinal)).ToList())
+            {
+                Objects.Remove(key);
+            }
+
+            return Task.CompletedTask;
+        }
+
         public string? LastGetBucket { get; private set; }
 
         public Task<byte[]?> GetAsync(string bucket, string key, CancellationToken ct)

@@ -30,6 +30,20 @@ namespace FiveSafesTes.Core.Services
             }
         }
 
+        /// <summary>
+        /// For a delete: NoSuchBucket means there is nothing to delete, so it counts as done. No bucket is created.
+        /// </summary>
+        public static async Task DeleteAsync(Func<Task> operation)
+        {
+            try
+            {
+                await operation();
+            }
+            catch (AmazonS3Exception ex) when (IsNoSuchBucket(ex))
+            {
+            }
+        }
+
         /// <summary>As <see cref="RunAsync{T}"/> for an operation without a result.</summary>
         public static Task RunAsync(Func<Task> operation, Func<Task<bool>> createBucket, string bucket) =>
             RunAsync(async () =>

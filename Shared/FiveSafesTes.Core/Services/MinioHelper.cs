@@ -339,18 +339,27 @@ namespace FiveSafesTes.Core.Services
             }
         }
 
+        public async Task<List<string>> ListObjectKeysAsync(string bucketName, string prefix, CancellationToken ct = default)
+        {
+            var amazonS3Client = GenerateAmazonS3Client();
+            var request = new ListObjectsV2Request { BucketName = bucketName, Prefix = prefix };
+            var keys = new List<string>();
+            ListObjectsV2Response response;
+            do
+            {
+                response = await amazonS3Client.ListObjectsV2Async(request, ct);
+                keys.AddRange((response.S3Objects ?? []).Select(o => o.Key));
+                request.ContinuationToken = response.NextContinuationToken;
+            } while (response.IsTruncated == true);
+
+            return keys;
+        }
+
+        /// <summary>Deletes the object; deleting one that does not exist succeeds. A store error is thrown, not hidden.</summary>
         public async Task DeleteObject(string bucketName, string objectKey)
         {
             var amazonS3Client = GenerateAmazonS3Client();
-
-            try
-            {
-                await amazonS3Client.DeleteObjectAsync(bucketName, objectKey);
-            }
-            catch (AmazonS3Exception ex)
-            {
-                Log.Error(ex.ToString());
-            }
+            await amazonS3Client.DeleteObjectAsync(bucketName, objectKey);
         }
 
         /// <summary>

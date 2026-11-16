@@ -118,6 +118,14 @@ public sealed class SubmissionClient
         return new TaskView(task["state"]!.GetValue<string>(), Meta("phase"), Meta("error_code"), Meta("error_message"), Meta("result_sha256"));
     }
 
+    /// <summary>Cancels the task as an orchestrator admin. Returns the HTTP status and the phase the task moved to.</summary>
+    public async Task<(int Status, string? Phase)> CancelAsync(string id)
+    {
+        using var response = await SendAsync(HttpMethod.Post, $"/api/FederatedTask/Cancel?id={id}");
+        var json = TryParse(await response.Content.ReadAsStringAsync());
+        return ((int)response.StatusCode, json?["phase"]?.GetValue<string>());
+    }
+
     /// <summary>The stored result, or null when Submission has none for the task.</summary>
     public async Task<ResultView?> GetResultAsync(string id)
     {
@@ -164,6 +172,15 @@ public sealed class EgressClient
             if (DateTime.UtcNow > until) throw new TimeoutException($"task {taskId}: no review request in the Egress app after {timeout}");
             await Task.Delay(TimeSpan.FromSeconds(2));
         }
+    }
+
+    /// <summary>True while the task's review request is still waiting for a reviewer in the Egress app.</summary>
+    public async Task<bool> HasOpenRequestAsync(string taskId)
+    {
+        using var response = await SendAsync(HttpMethod.Get, "/api/DataEgress/GetAllEgresses?unprocessedonly=true");
+        response.EnsureSuccessStatusCode();
+        return JsonNode.Parse(await response.Content.ReadAsStringAsync())!.AsArray()
+            .Any(r => r?["submissionId"]?.GetValue<string>() == taskId);
     }
 
     /// <summary>Decides every file of the task's review request and completes it, as the Egress UI does.</summary>
@@ -262,6 +279,13 @@ public sealed class TreStorage : IDisposable
             await s3.DeleteObjectAsync(Datasets, obj.Key);
     }
 
+    /// <summary>True while the TRE holds the task's saved result, waiting for output approval.</summary>
+    public async Task<bool> HasOutputAsync(string taskId)
+    {
+        var listed = await s3.ListObjectsV2Async(new ListObjectsV2Request { BucketName = Outputs, Prefix = $"{taskId}.json" });
+        return (listed.S3Objects ?? []).Count > 0;
+    }
+
     public Task OverwriteResultAsync(string taskId, byte[] bytes) =>
         s3.PutObjectAsync(new PutObjectRequest { BucketName = Outputs, Key = $"{taskId}.json", InputStream = new MemoryStream(bytes) });
 
@@ -305,8 +329,8 @@ public static class Await
     private static readonly TimeSpan TriggerEvery = TimeSpan.FromSeconds(15);
 
     /// <summary>
-    /// Polls GetTask until done(task) or the timeout. While the task waits for the Agent (phase queued or running),
-    /// triggers the Agent's poll at the start and every 15 s.
+    /// Polls GetTask until done(task) or the timeout. While the task waits for the Agent (phase queued, running or
+    /// canceling), triggers the Agent's poll at the start and every 15 s.
     /// </summary>
     public static async Task<TaskView> UntilAsync(StackFixture s, string id, Func<TaskView, bool> done, TimeSpan timeout)
     {
@@ -319,7 +343,7 @@ public static class Await
             if (done(view)) return view;
             if (DateTime.UtcNow > until)
                 throw new TimeoutException($"task {id}: still {view.State}/{view.Phase} after {timeout}");
-            if (view.Phase is "queued" or "running" && DateTime.UtcNow >= nextTrigger)
+            if (view.Phase is "queued" or "running" or "canceling" && DateTime.UtcNow >= nextTrigger)
             {
                 await s.Agent.TriggerAsync();
                 nextTrigger = DateTime.UtcNow + TriggerEvery;

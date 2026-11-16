@@ -22,7 +22,7 @@ To try the flow locally, see [dev/federated](../dev/federated/README.md). It is 
 
 If the Agent cannot save the file, or the registration with the Egress app fails, or the release fails (network error, 5xx, or a 4xx that is not listed under "Reporting a result"), the task stays `running` and the Agent tries again at the next poll. A task that fails before there is a file (for example `dataset_not_found`) is reported as a rejection or a failure, with no file, and does not go through save and release.
 
-`GetPendingTasksForTre` returns the tasks that are not finished: `running` first, then `queued`, then `waiting_for_output_approval`, oldest first inside each group. For a `waiting_for_output_approval` task the Agent reads the review record and acts on the decision, if there is one (see "Output approval"). A `running` task was marked by an earlier poll that did not finish. The Agent resumes it, and does not report `running` again. If the result file from the earlier poll is in the TRE bucket, the Agent reuses it. Otherwise it runs the task again from the start, so every step the Agent does before it reports must be safe to do twice. The Agent skips, and logs, a pending task in any state other than `QUEUED` or `RUNNING`. A `RUNNING` task is either `running` or `waiting_for_output_approval`; the Agent reads the phase to tell which.
+`GetPendingTasksForTre` returns the tasks that are not finished: `canceling` first, then `running`, then `queued`, then `waiting_for_output_approval`, oldest first inside each group. For a `waiting_for_output_approval` task the Agent reads the review record and acts on the decision, if there is one (see "Output approval"). A `running` task was marked by an earlier poll that did not finish. The Agent resumes it, and does not report `running` again. If the result file from the earlier poll is in the TRE bucket, the Agent reuses it. Otherwise it runs the task again from the start, so every step the Agent does before it reports must be safe to do twice. The Agent skips, and logs, a pending task in any state other than `QUEUED` or `RUNNING`. A `RUNNING` task is either `running` or `waiting_for_output_approval`; the Agent reads the phase to tell which.
 
 `GetPendingTasksForTre`, `ReportProgress` and `ReportResult` accept only the TRE Agent's service account (role `dare-tre-admin`). See "Reporting a result". `Enqueue`, `GetTask` and `GetTaskResult` need `dare-control-admin`.
 
@@ -122,7 +122,9 @@ Every 4xx from these endpoints has the same JSON body. Its keys are the same as 
 | 404 | `result_not_found` | `GetTaskResult`: the task is not `released`. |
 | 409 | `task_already_reported` | `ReportResult` or `ReportProgress` for a task that is already final. When the task is `released`, the body also has `result_sha256` and `result_key`. |
 | 409 | `invalid_transition` | `ReportProgress` asks to go back to an earlier phase. |
-| 409 | `task_busy` | `ReportProgress` or `ReportResult` lost a race with other reports for the same task three times in a row. Nothing was recorded. Send the report again. |
+| 409 | `task_busy` | `ReportProgress`, `ReportResult` or `Cancel` lost a race with other reports for the same task three times in a row. Nothing was recorded. Send it again. |
+| 409 | `task_canceling` | `ReportResult` or `ReportProgress` for a task the orchestrator is cancelling. Only the cancel confirmation (`ReportProgress` with `canceled`) is accepted. See "Cancelling a task". |
+| 409 | `task_already_finished` | `Cancel` for a task that is already in a final phase. |
 | 500 | `internal_error` | `GetTaskResult`: the stored file does not match its SHA-256. The file is not returned. |
 | 503 | `storage_unavailable` | The orchestrator bucket cannot be reached, or `ReportResult` lost a race and could not read the task again. For `ReportResult` the task keeps its phase and the Agent sends the report again at the next poll. |
 
@@ -140,16 +142,36 @@ A `ReportResult` with state `EXECUTOR_ERROR`, `SYSTEM_ERROR` or `CANCELED` must 
 { "task_id": "0b9a3c4e-6f1d-4c1e-9a52-3d7b8e2f1a10", "phase": "running" }
 ```
 
-`phase` is `running` or `waiting_for_output_approval`. Any other value, or a `task_id` that is not a GUID, gets 400 `invalid_task`. A 200 response is `{ "phase": "<the phase the task is at now>" }`.
+`phase` is `running`, `waiting_for_output_approval` or `canceled`. Any other value, or a `task_id` that is not a GUID, gets 400 `invalid_task`. A 200 response is `{ "phase": "<the phase the task is at now>" }`.
 
 - The task is at an earlier phase: it moves to the new phase and the time is recorded.
 - The task is already at that phase: 200, nothing changes. The Agent can send the same report again.
 - The task is at a later phase: 409 `invalid_transition`.
 - The task is final: 409 `task_already_reported`.
+- The task is `canceling`: only `canceled` is accepted; `running` and `waiting_for_output_approval` get 409 `task_canceling`.
+- `canceled` for a task that was not cancelled: 409 `invalid_transition`.
 - Other reports for the same task won the race three times in a row: 409 `task_busy`. Nothing changed. Send the report again.
 - The task belongs to another TRE, or does not exist: 404 `task_not_found`.
 
-The Agent sends `running` when it picks a `queued` task up, and `waiting_for_output_approval` after it has registered the result with the Egress app.
+The Agent sends `running` when it picks a `queued` task up, `waiting_for_output_approval` after it has registered the result with the Egress app, and `canceled` once it has cleaned up a cancelled task.
+
+### Cancelling a task
+
+`POST /api/FederatedTask/Cancel?id=<taskId>` cancels a task. It needs the `dare-control-admin` role. A 200 response is `{ "phase": "<the phase the task is at now>" }`.
+
+- A `queued` task, which no hospital has picked up, moves straight to `canceled`. If the Agent picked it up at the same moment, its `running` report is refused, and it does not run the task.
+- A `running` or `waiting_for_output_approval` task moves to `canceling`. It stays in `GetPendingTasksForTre` (listed first, even if the TRE was renamed since) until the hospital confirms. A TRE rename does not fail it.
+- A `canceling` task: 200, nothing changes. A final task: 409 `task_already_finished`. An unknown task: 404 `task_not_found`.
+
+While a task is `canceling`, Submission refuses every `ReportResult` (an approved result, a rejection or an error) with 409 `task_canceling`, before any file is written. So a reviewer's decision made at the same moment as a cancel never releases the result: the task can only end `canceled`.
+
+On a `canceling` task, the Agent:
+
+1. withdraws the review if it is still pending, so no decision is accepted any more, and closes the request in the Egress app (an Egress error stops here, and the next poll tries again);
+2. deletes the saved result from `federated-outputs` (a store error stops here, and the next poll tries again);
+3. reports `ReportProgress` with `canceled`. Before Submission accepts it, it deletes any result file stored for the task (one can exist if a cancel raced a result report). A storage error answers 503 `storage_unavailable`, and the Agent confirms again at the next poll.
+
+Each part is safe to repeat, so if one fails the next poll does them again. The review record and its withdrawn marker stay in the TRE as the audit of what was reviewed; they hold no data. There is no standard TES cancel yet. `POST /tasks/{id}:cancel`, for DAAMS, is planned with the TES API task and will apply the same rules.
 
 ### Reporting a result
 
@@ -278,9 +300,11 @@ A task has a phase. It says where the task is, from intake to release. `GetTask`
 | `released` | `COMPLETE` | The result file is stored in the orchestrator. |
 | `rejected_by_input_checks` | `CANCELED` | The task was refused before it ran. The error code is one of `invalid_task`, `unknown_operation`, `invalid_filter`, `image_not_approved`, `invalid_dataset_name`, `dataset_not_found` or `ambiguous_dataset`. |
 | `rejected_at_output_approval` | `CANCELED` | A reviewer refused the result. The error code is `rejected_by_reviewer` and the message is the reviewer's reason. |
+| `canceling` | `CANCELING` | The orchestrator cancelled a task a hospital had picked up. The hospital is closing the review and removing the result. |
+| `canceled` | `CANCELED` | The task was cancelled: before any hospital picked it up, or after the hospital confirmed its clean-up. |
 | `failed` | `EXECUTOR_ERROR` or `SYSTEM_ERROR` | Any other error. The Agent sends the state. `SYSTEM_ERROR` is for `internal_error`, `tre_renamed` and `result_changed_after_review`. `EXECUTOR_ERROR` is for the other codes. |
 
-A task only moves forward: `queued`, `running`, `waiting_for_output_approval`, then one final phase (`released`, a `rejected_*` phase or `failed`). A final phase never changes. The Agent decides between a rejection and a failure by the error code.
+A task only moves forward: `queued`, `running`, `waiting_for_output_approval`, then one final phase (`released`, a `rejected_*` phase, `failed` or `canceled`). A cancel can also move a `running` or `waiting_for_output_approval` task to `canceling`, which ends in `canceled`. A final phase never changes. The Agent decides between a rejection and a failure by the error code.
 
 The result is in `logs[0].metadata`. Every key and value is a string.
 

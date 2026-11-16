@@ -89,6 +89,18 @@ result() {
   rm -f "$tmp"
 }
 
+# Cancels the task as an orchestrator admin. Queued: canceled at once; picked up: canceling until the hospital confirms.
+cancel() {
+  local response code
+  response=$(curl -s -w '\n%{http_code}' -X POST "$SUBMISSION/api/FederatedTask/Cancel?id=$1" -H "Authorization: Bearer $(token)") ||
+    response=$'Submission is not reachable\n000'
+  code=${response##*$'\n'}
+  if [ "$code" != 200 ]; then
+    echo "Cancel refused (HTTP $code): ${response%$'\n'*}" >&2
+    return 1
+  fi
+}
+
 # Polls the task every 5 s while its phase is one of the given ones; prints the first other state, as get prints it.
 # The phase, not the TES state, tells running from waiting for review: both are RUNNING.
 wait_while() {

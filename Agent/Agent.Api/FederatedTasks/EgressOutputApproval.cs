@@ -76,6 +76,14 @@ namespace Agent.Api.FederatedTasks
             return DecisionOutcome.Recorded;
         }
 
+        public async Task WithdrawAndCloseAsync(string taskId, string reason, CancellationToken ct)
+        {
+            await _store.MarkWithdrawnAsync(taskId, ct);
+            if (!_egress.IsConfigured)
+                throw new InvalidOperationException("the Egress app is not configured, so the review request cannot be closed");
+            await _egress.WithdrawAsync(taskId, reason, ct);
+        }
+
         public async Task WithdrawAsync(string taskId, string reason, CancellationToken ct)
         {
             await _store.MarkWithdrawnAsync(taskId, ct);

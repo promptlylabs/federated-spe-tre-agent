@@ -42,5 +42,11 @@ namespace Agent.Api.FederatedTasks
         /// reviewers' queue, so a failure there is logged and not thrown.
         /// </summary>
         Task WithdrawAsync(string taskId, string reason, CancellationToken ct);
+
+        /// <summary>
+        /// As <see cref="WithdrawAsync"/>, but closing the Egress request must succeed: an Egress error, or an Egress
+        /// app that is not configured, is thrown. Marking and closing are both safe to repeat.
+        /// </summary>
+        Task WithdrawAndCloseAsync(string taskId, string reason, CancellationToken ct);
     }
 }

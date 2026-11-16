@@ -39,6 +39,8 @@ public class FederatedEgressDecisionTests
 
         public Task WithdrawAsync(string taskId, string reason, CancellationToken ct) => throw new NotSupportedException();
 
+        public Task WithdrawAndCloseAsync(string taskId, string reason, CancellationToken ct) => throw new NotSupportedException();
+
         public Task<DecisionOutcome> RecordDecisionAsync(string taskId, ReviewDecision d, CancellationToken ct)
         {
             if (WithdrawnTask) return Task.FromResult(DecisionOutcome.Withdrawn);

@@ -13,8 +13,9 @@ namespace Submission.Api.Tests
             FederatedTaskPhase.Queued => 0,
             FederatedTaskPhase.Running => 1,
             FederatedTaskPhase.WaitingForOutputApproval => 2,
+            FederatedTaskPhase.Canceling => 3,
             FederatedTaskPhase.Released or FederatedTaskPhase.RejectedByInputChecks
-                or FederatedTaskPhase.RejectedAtOutputApproval or FederatedTaskPhase.Failed => 3,
+                or FederatedTaskPhase.RejectedAtOutputApproval or FederatedTaskPhase.Failed or FederatedTaskPhase.Canceled => 4,
             _ => throw new ArgumentOutOfRangeException(nameof(s), s, "add the new phase to this test")
         };
 
@@ -23,11 +24,20 @@ namespace Submission.Api.Tests
             from n in Enum.GetValues<FederatedTaskPhase>()
             select new object[] { c, n };
 
+        private static bool IsCancelPhase(FederatedTaskPhase p) => p is FederatedTaskPhase.Canceling or FederatedTaskPhase.Canceled;
+
+        /// <summary>Every pair except moves into or out of the cancel phases, which Cancel_edges lists one by one.</summary>
+        public static IEnumerable<object[]> NonCancelPairs() =>
+            from c in Enum.GetValues<FederatedTaskPhase>()
+            from n in Enum.GetValues<FederatedTaskPhase>()
+            where !IsCancelPhase(n) && c != FederatedTaskPhase.Canceling
+            select new object[] { c, n };
+
         [Theory]
-        [MemberData(nameof(AllPairs))]
+        [MemberData(nameof(NonCancelPairs))]
         public void Check_table(FederatedTaskPhase current, FederatedTaskPhase next)
         {
-            var currentFinal = Rank(current) == 3;
+            var currentFinal = Rank(current) == 4;
             var expected =
                 currentFinal ? (current == next ? FederatedTaskTransition.NoChange : FederatedTaskTransition.AlreadyFinal)
                 : Rank(next) > Rank(current) ? FederatedTaskTransition.Apply
@@ -36,6 +46,52 @@ namespace Submission.Api.Tests
 
             Assert.Equal(expected, FederatedTaskPhases.Check(current, next));
             Assert.Equal(currentFinal, FederatedTaskPhases.IsFinal(current));
+        }
+
+        [Theory]
+        [InlineData(FederatedTaskPhase.Queued, FederatedTaskPhase.Canceled, FederatedTaskTransition.Apply)]
+        [InlineData(FederatedTaskPhase.Queued, FederatedTaskPhase.Canceling, FederatedTaskTransition.Invalid)]
+        [InlineData(FederatedTaskPhase.Running, FederatedTaskPhase.Canceling, FederatedTaskTransition.Apply)]
+        [InlineData(FederatedTaskPhase.Running, FederatedTaskPhase.Canceled, FederatedTaskTransition.Invalid)]
+        [InlineData(FederatedTaskPhase.WaitingForOutputApproval, FederatedTaskPhase.Canceling, FederatedTaskTransition.Apply)]
+        [InlineData(FederatedTaskPhase.WaitingForOutputApproval, FederatedTaskPhase.Canceled, FederatedTaskTransition.Invalid)]
+        [InlineData(FederatedTaskPhase.Canceling, FederatedTaskPhase.Canceled, FederatedTaskTransition.Apply)]
+        [InlineData(FederatedTaskPhase.Canceling, FederatedTaskPhase.Canceling, FederatedTaskTransition.NoChange)]
+        [InlineData(FederatedTaskPhase.Canceling, FederatedTaskPhase.Queued, FederatedTaskTransition.Canceling)]
+        [InlineData(FederatedTaskPhase.Canceling, FederatedTaskPhase.Running, FederatedTaskTransition.Canceling)]
+        [InlineData(FederatedTaskPhase.Canceling, FederatedTaskPhase.WaitingForOutputApproval, FederatedTaskTransition.Canceling)]
+        [InlineData(FederatedTaskPhase.Canceling, FederatedTaskPhase.Released, FederatedTaskTransition.Canceling)]
+        [InlineData(FederatedTaskPhase.Canceling, FederatedTaskPhase.RejectedAtOutputApproval, FederatedTaskTransition.Canceling)]
+        [InlineData(FederatedTaskPhase.Canceling, FederatedTaskPhase.Failed, FederatedTaskTransition.Canceling)]
+        [InlineData(FederatedTaskPhase.Released, FederatedTaskPhase.Canceling, FederatedTaskTransition.AlreadyFinal)]
+        [InlineData(FederatedTaskPhase.Released, FederatedTaskPhase.Canceled, FederatedTaskTransition.AlreadyFinal)]
+        [InlineData(FederatedTaskPhase.Failed, FederatedTaskPhase.Canceling, FederatedTaskTransition.AlreadyFinal)]
+        [InlineData(FederatedTaskPhase.Canceled, FederatedTaskPhase.Canceled, FederatedTaskTransition.NoChange)]
+        [InlineData(FederatedTaskPhase.Canceled, FederatedTaskPhase.Canceling, FederatedTaskTransition.AlreadyFinal)]
+        public void Cancel_edges(FederatedTaskPhase current, FederatedTaskPhase next, FederatedTaskTransition expected) =>
+            Assert.Equal(expected, FederatedTaskPhases.Check(current, next));
+
+        [Theory]
+        [InlineData(FederatedTaskPhase.Queued, FederatedTaskTransition.Apply, FederatedTaskPhase.Canceled)]
+        [InlineData(FederatedTaskPhase.Running, FederatedTaskTransition.Apply, FederatedTaskPhase.Canceling)]
+        [InlineData(FederatedTaskPhase.WaitingForOutputApproval, FederatedTaskTransition.Apply, FederatedTaskPhase.Canceling)]
+        [InlineData(FederatedTaskPhase.Canceling, FederatedTaskTransition.NoChange, FederatedTaskPhase.Canceling)]
+        [InlineData(FederatedTaskPhase.Released, FederatedTaskTransition.AlreadyFinal, FederatedTaskPhase.Released)]
+        public void RequestCancel_moves_the_task_as_the_graph_allows(FederatedTaskPhase from, FederatedTaskTransition expected, FederatedTaskPhase after)
+        {
+            var task = new FederatedTask();
+            task.MoveTo(FederatedTaskPhase.Queued, T0);
+            if (from is FederatedTaskPhase.Running or FederatedTaskPhase.WaitingForOutputApproval or FederatedTaskPhase.Canceling)
+                task.MoveTo(FederatedTaskPhase.Running, T0.AddMinutes(1));
+            if (from == FederatedTaskPhase.WaitingForOutputApproval)
+                task.MoveTo(FederatedTaskPhase.WaitingForOutputApproval, T0.AddMinutes(2));
+            if (from == FederatedTaskPhase.Canceling)
+                task.MoveTo(FederatedTaskPhase.Canceling, T0.AddMinutes(2));
+            if (from == FederatedTaskPhase.Released)
+                task.MoveTo(FederatedTaskPhase.Released, T0.AddMinutes(2));
+
+            Assert.Equal(expected, task.RequestCancel(T0.AddMinutes(3)));
+            Assert.Equal(after, task.Phase);
         }
 
         [Fact]
@@ -66,6 +122,8 @@ namespace Submission.Api.Tests
         [InlineData(FederatedTaskPhase.Running, TesState.RUNNINGEnum)]
         [InlineData(FederatedTaskPhase.WaitingForOutputApproval, TesState.RUNNINGEnum)]
         [InlineData(FederatedTaskPhase.Released, TesState.COMPLETEEnum)]
+        [InlineData(FederatedTaskPhase.Canceling, TesState.CANCELINGEnum)]
+        [InlineData(FederatedTaskPhase.Canceled, TesState.CANCELEDEnum)]
         public void MoveTo_sets_tes_state(FederatedTaskPhase phase, TesState expected)
         {
             var task = new FederatedTask();

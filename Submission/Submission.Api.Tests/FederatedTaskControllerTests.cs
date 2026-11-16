@@ -1038,12 +1038,174 @@ namespace Submission.Api.Tests
             Assert.Equal("{\"error_code\":\"task_not_found\",\"error_message\":\"task not found\"}", json);
         }
 
+        private static Task<IActionResult> Cancel(ApplicationDbContext db, Guid taskId) =>
+            ControllerFor(db, "dare-admin").Cancel(taskId.ToString());
+
+        [Fact]
+        public async Task Cancel_queued_task_is_canceled_at_once_and_never_handed_out()
+        {
+            using var db = NewDb();
+            var seeded = SeedAtPhase(db, FederatedTaskPhase.Queued);
+
+            var result = await Cancel(db, seeded.TaskId);
+
+            Assert.Equal("canceled", Assert.IsType<FederatedProgressResponse>(Assert.IsType<OkObjectResult>(result).Value).Phase);
+            var row = Reload(db, seeded.TaskId);
+            Assert.Equal(FederatedTaskPhase.Canceled, row.Phase);
+            Assert.Equal(TesState.CANCELEDEnum, row.State);
+            var pending = await AgentControllerFor(db, "tre-a-client").GetPendingTasksForTre();
+            Assert.Empty(Assert.IsType<List<TesTask>>(Assert.IsType<OkObjectResult>(pending).Value));
+        }
+
+        [Theory]
+        [InlineData(FederatedTaskPhase.Running)]
+        [InlineData(FederatedTaskPhase.WaitingForOutputApproval)]
+        public async Task Cancel_picked_up_task_moves_to_canceling_and_is_handed_out_first(FederatedTaskPhase phase)
+        {
+            using var db = NewDb();
+            SeedAtPhase(db, FederatedTaskPhase.Running, submittedAt: DateTime.UtcNow.AddHours(-2));
+            var seeded = SeedAtPhase(db, phase, submittedAt: DateTime.UtcNow.AddHours(-1));
+
+            var result = await Cancel(db, seeded.TaskId);
+
+            Assert.Equal("canceling", Assert.IsType<FederatedProgressResponse>(Assert.IsType<OkObjectResult>(result).Value).Phase);
+            var row = Reload(db, seeded.TaskId);
+            Assert.Equal(FederatedTaskPhase.Canceling, row.Phase);
+            Assert.Equal(TesState.CANCELINGEnum, row.State);
+            var pending = Assert.IsType<List<TesTask>>(Assert.IsType<OkObjectResult>(
+                await AgentControllerFor(db, "tre-a-client").GetPendingTasksForTre()).Value);
+            Assert.Equal(seeded.TaskId.ToString(), pending[0].Id);
+            Assert.Equal(FederatedTaskPhase.Canceling, FederatedTaskPhases.PhaseOf(pending[0]));
+        }
+
+        [Fact]
+        public async Task Cancel_of_a_canceling_task_changes_nothing()
+        {
+            using var db = NewDb();
+            var seeded = SeedAtPhase(db, FederatedTaskPhase.Canceling);
+
+            var result = await Cancel(db, seeded.TaskId);
+
+            Assert.IsType<OkObjectResult>(result);
+            AssertUnchanged(db, seeded);
+        }
+
+        [Theory]
+        [InlineData(FederatedTaskPhase.Released)]
+        [InlineData(FederatedTaskPhase.Canceled)]
+        public async Task Cancel_of_a_finished_task_is_refused(FederatedTaskPhase phase)
+        {
+            using var db = NewDb();
+            var seeded = SeedAtPhase(db, phase);
+
+            var result = await Cancel(db, seeded.TaskId);
+
+            AssertError(result, 409, FederatedTaskErrorCodes.TaskAlreadyFinished);
+            AssertUnchanged(db, seeded);
+        }
+
+        [Fact]
+        public async Task Cancel_of_an_unknown_task_is_not_found()
+        {
+            using var db = NewDb();
+
+            AssertError(await Cancel(db, Guid.NewGuid()), 404, FederatedTaskErrorCodes.TaskNotFound);
+            AssertError(await ControllerFor(db, "dare-admin").Cancel("nope"), 404, FederatedTaskErrorCodes.TaskNotFound);
+        }
+
+        [Fact]
+        public void Cancel_is_for_orchestrator_admins_only()
+        {
+            var authorize = typeof(FederatedTaskController).GetMethod(nameof(FederatedTaskController.Cancel))!
+                .GetCustomAttribute<Microsoft.AspNetCore.Authorization.AuthorizeAttribute>();
+
+            Assert.Equal("dare-control-admin", authorize?.Roles);
+        }
+
+        [Fact]
+        public async Task Report_complete_on_a_canceling_task_is_refused_and_stores_no_file()
+        {
+            using var db = NewDb();
+            var seeded = SeedAtPhase(db, FederatedTaskPhase.Canceling);
+            var store = new FakeResultStore();
+
+            var result = await ReportComplete(AgentControllerFor(db, "tre-a-client", store), seeded);
+
+            AssertError(result, 409, FederatedTaskErrorCodes.TaskCanceling);
+            Assert.Empty(store.Objects);
+            AssertUnchanged(db, seeded);
+        }
+
+        [Fact]
+        public async Task Report_error_on_a_canceling_task_is_refused()
+        {
+            using var db = NewDb();
+            var seeded = SeedAtPhase(db, FederatedTaskPhase.Canceling);
+
+            var result = await ReportAs(AgentControllerFor(db, "tre-a-client"),
+                Fields(seeded.TaskId, "SYSTEM_ERROR", FederatedTaskErrorCodes.InternalError, "boom"));
+
+            AssertError(result, 409, FederatedTaskErrorCodes.TaskCanceling);
+            AssertUnchanged(db, seeded);
+        }
+
+        [Theory]
+        [InlineData("running")]
+        [InlineData("waiting_for_output_approval")]
+        public async Task Progress_on_a_canceling_task_is_refused(string phase)
+        {
+            using var db = NewDb();
+            var seeded = SeedAtPhase(db, FederatedTaskPhase.Canceling);
+
+            var result = await Progress(AgentControllerFor(db, "tre-a-client"), seeded.TaskId, phase);
+
+            AssertError(result, 409, FederatedTaskErrorCodes.TaskCanceling);
+            AssertUnchanged(db, seeded);
+        }
+
+        [Fact]
+        public async Task Progress_canceled_confirms_the_cancel()
+        {
+            using var db = NewDb();
+            var seeded = SeedAtPhase(db, FederatedTaskPhase.Canceling);
+
+            var result = await Progress(AgentControllerFor(db, "tre-a-client"), seeded.TaskId, "canceled");
+
+            Assert.Equal("canceled", Assert.IsType<FederatedProgressResponse>(Assert.IsType<OkObjectResult>(result).Value).Phase);
+            var row = Reload(db, seeded.TaskId);
+            Assert.Equal(FederatedTaskPhase.Canceled, row.Phase);
+            Assert.Equal(TesState.CANCELEDEnum, row.State);
+            var task = await GetTask(db, seeded.TaskId);
+            Assert.Equal("canceled", Assert.Single(task.Logs!).Metadata["phase"]);
+        }
+
+        [Theory]
+        [InlineData(FederatedTaskPhase.Queued)]
+        [InlineData(FederatedTaskPhase.Running)]
+        [InlineData(FederatedTaskPhase.WaitingForOutputApproval)]
+        public async Task Progress_canceled_without_a_cancel_is_refused(FederatedTaskPhase phase)
+        {
+            using var db = NewDb();
+            var seeded = SeedAtPhase(db, phase);
+
+            var result = await Progress(AgentControllerFor(db, "tre-a-client"), seeded.TaskId, "canceled");
+
+            AssertError(result, 409, FederatedTaskErrorCodes.InvalidTransition);
+            AssertUnchanged(db, seeded);
+        }
+
         private static FederatedTask SeedAtPhase(ApplicationDbContext db, FederatedTaskPhase phase, int treId = 1, DateTime? submittedAt = null)
         {
             var task = SeedTask(db, treId, TesState.QUEUEDEnum);
             task.SubmittedAt = submittedAt ?? task.SubmittedAt;
             task.MoveTo(FederatedTaskPhase.Queued, task.SubmittedAt);
-            if (phase != FederatedTaskPhase.Queued)
+            if (phase is FederatedTaskPhase.Canceling or FederatedTaskPhase.Canceled)
+            {
+                task.MoveTo(FederatedTaskPhase.Running, task.SubmittedAt.AddSeconds(1));
+                task.MoveTo(FederatedTaskPhase.Canceling, task.SubmittedAt.AddSeconds(2));
+                if (phase == FederatedTaskPhase.Canceled) task.MoveTo(FederatedTaskPhase.Canceled, task.SubmittedAt.AddSeconds(3));
+            }
+            else if (phase != FederatedTaskPhase.Queued)
             {
                 task.MoveTo(phase, task.SubmittedAt.AddSeconds(1));
             }
@@ -1238,6 +1400,82 @@ namespace Submission.Api.Tests
 
                 return ValueTask.FromResult(result);
             }
+        }
+
+        [Fact]
+        public async Task ReportResult_complete_that_loses_to_a_cancel_is_refused_and_its_file_goes_when_the_cancel_is_confirmed()
+        {
+            var name = Guid.NewGuid().ToString();
+            using var setup = OpenDb(name);
+            setup.Tres.Add(NewTre(1, "tre-a", "tre-a-admin", "tre-a-client"));
+            setup.SaveChanges();
+            var seeded = SeedAtPhase(setup, FederatedTaskPhase.WaitingForOutputApproval);
+
+            // The cancel is saved after ReportResult has stored the file and before it saves the task.
+            var interceptor = new BeforeFirstSave(() =>
+            {
+                using var other = OpenDb(name);
+                var t = other.FederatedTasks.Include(x => x.PhaseChanges).Single();
+                t.MoveTo(FederatedTaskPhase.Canceling, DateTime.UtcNow);
+                other.SaveChanges();
+            });
+            using var dbA = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
+                .UseInMemoryDatabase(name).AddInterceptors(interceptor).Options);
+            var store = new FakeResultStore();
+
+            var result = await ReportComplete(AgentControllerFor(dbA, "tre-a-client", store), seeded);
+
+            AssertError(result, 409, FederatedTaskErrorCodes.TaskCanceling);
+            using var check = OpenDb(name);
+            Assert.Equal(FederatedTaskPhase.Canceling, Reload(check, seeded.TaskId).Phase);
+
+            var confirmed = await Progress(AgentControllerFor(check, "tre-a-client", store), seeded.TaskId, "canceled");
+
+            Assert.IsType<OkObjectResult>(confirmed);
+            Assert.Empty(store.Objects);
+        }
+
+        [Fact]
+        public async Task Progress_canceled_deletes_every_result_stored_for_the_task_only()
+        {
+            using var db = NewDb();
+            var seeded = SeedAtPhase(db, FederatedTaskPhase.Canceling);
+            var store = new FakeResultStore();
+            store.Objects[$"1/{seeded.TaskId:D}/{new string('a', 64)}.json"] = [1];
+            var other = $"1/{Guid.NewGuid():D}/{new string('b', 64)}.json";
+            store.Objects[other] = [2];
+
+            var result = await Progress(AgentControllerFor(db, "tre-a-client", store), seeded.TaskId, "canceled");
+
+            Assert.IsType<OkObjectResult>(result);
+            Assert.Equal([other], store.Objects.Keys);
+        }
+
+        [Fact]
+        public async Task Progress_canceled_when_storage_fails_keeps_the_task_canceling()
+        {
+            using var db = NewDb();
+            var seeded = SeedAtPhase(db, FederatedTaskPhase.Canceling);
+            var store = new FakeResultStore { FailDeletes = true };
+
+            var result = await Progress(AgentControllerFor(db, "tre-a-client", store), seeded.TaskId, "canceled");
+
+            AssertError(result, 503, FederatedTaskErrorCodes.StorageUnavailable);
+            AssertUnchanged(db, seeded);
+        }
+
+        [Fact]
+        public async Task GetPending_hands_out_a_canceling_task_enqueued_under_an_old_tre_name()
+        {
+            using var db = NewDb();
+            var seeded = SeedAtPhase(db, FederatedTaskPhase.Canceling);
+            seeded.TreName = "old-name";
+            db.SaveChanges();
+
+            var pending = Assert.IsType<List<TesTask>>(Assert.IsType<OkObjectResult>(
+                await AgentControllerFor(db, "tre-a-client").GetPendingTasksForTre()).Value);
+
+            Assert.Equal(seeded.TaskId.ToString(), Assert.Single(pending).Id);
         }
 
         [Fact]

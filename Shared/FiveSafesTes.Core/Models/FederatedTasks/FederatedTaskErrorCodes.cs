@@ -36,5 +36,11 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         public const string InvalidTransition = "invalid_transition";
         // Other reports for the same task kept winning the race; the report was not applied and can be sent again.
         public const string TaskBusy = "task_busy";
+
+        /// <summary>The orchestrator cancelled the task; it accepts no result or progress until the hospital confirms.</summary>
+        public const string TaskCanceling = "task_canceling";
+
+        /// <summary>A cancel was asked for a task that is already in a final phase.</summary>
+        public const string TaskAlreadyFinished = "task_already_finished";
     }
 }

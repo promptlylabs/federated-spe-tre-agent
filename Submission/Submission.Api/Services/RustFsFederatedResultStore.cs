@@ -60,5 +60,14 @@ namespace Submission.Api.Services
 
         public Task<byte[]?> GetAsync(string bucket, string key, CancellationToken ct) =>
             _minio.GetObjectBytesAsync(bucket, key, ct);
+
+        public Task DeleteTaskResultsAsync(int treId, Guid taskId, CancellationToken ct) =>
+            MissingBucketRecovery.DeleteAsync(async () =>
+            {
+                foreach (var key in await _minio.ListObjectKeysAsync(Bucket, FederatedResultKeys.PrefixFor(treId, taskId), ct))
+                {
+                    await _minio.DeleteObject(Bucket, key);
+                }
+            });
     }
 }
