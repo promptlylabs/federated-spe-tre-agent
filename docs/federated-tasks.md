@@ -401,7 +401,7 @@ The input checks run on every poll until the task's result file is saved, so a r
 
 ### Runner image
 
-`5s-tes/python-runner:1` is the image that a researcher's Python code will run in at the hospital. It is the Open Data Hub data-science runtime image with pip removed and one command added: `run-analysis <code.py> <dataset dir> <result.json>`. The command checks the dataset against its `schema.json`, calls the researcher's `site_analysis(df)`, checks the return value and writes `result.json`. No error message contains a data value. The Agent does not use the image yet (PoC task 2.4), so it is not in `ApprovedImages`. See [`runner/README.md`](../runner/README.md) for the command, the `result.json` format, the error codes and the tests.
+`5s-tes/python-runner:1` is the image that a researcher's Python code will run in at the hospital. The researcher's SPE is a notebook that `spms-spe-operator-go` starts from the RHOAI image `s2i-generic-data-science-notebook:2025.1`. At the hospital, a version of the same operator on OpenShift will start a locked-down pod from this image. The image has the same Python and libraries as the SPE notebook, no package installers, and one command: `run-analysis <code.py> <dataset dir> <result.json>`. The command checks the dataset against its `schema.json`, calls the researcher's `site_analysis(df)`, checks the return value and writes `result.json`. No error message contains a data value. Nothing starts the image yet (PoC task 2.4), so it is not in `ApprovedImages`. See [`runner/README.md`](../runner/README.md) for the command, the `result.json` format, the error codes, the pod settings and the tests.
 
 ### Output approval
 

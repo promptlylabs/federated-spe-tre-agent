@@ -40,15 +40,20 @@ image() {
 
   echo "2. pip and ensurepip are gone"
   for cmd in "pip --version" "pip3 --version" "python3 -m pip --version" "python3 -m ensurepip" \
-    "/usr/bin/python3.11 -m pip --version" "/usr/bin/python3.11 -m ensurepip" "micropipenv --version"; do
+    "/usr/bin/python3.11 -m pip --version" "/usr/bin/python3.11 -m ensurepip" "micropipenv --version" \
+    "uv --version" "uvx --version" "python3 -m virtualenv --version"; do
     if docker run --rm --platform linux/amd64 --network none "$IMAGE" sh -c "$cmd" >/dev/null 2>&1; then
       fail "'$cmd' works in the image"
     fi
   done
 
-  echo "3. runs as user 1001"
+  echo "3. runs as user 1001 by default, and as a random user in group 0 (OpenShift)"
   uid=$(docker run --rm --platform linux/amd64 "$IMAGE" id -u)
   [ "$uid" = 1001 ] || fail "runs as user $uid"
+  docker run --rm --platform linux/amd64 --network none --user 1000740000:0 \
+    -v "$examples:/in:ro" "$IMAGE" \
+    sh -c 'run-analysis /in/analysis.py /in/cohort /outputs/result.json && cat /outputs/result.json' \
+    | grep -q '"status":"ok"' || fail "a random user in group 0 cannot run the example into /outputs"
 
   echo "4. Python is 3.11"
   docker run --rm --platform linux/amd64 "$IMAGE" python3 -c 'import sys; assert sys.version_info[:2] == (3, 11)' \

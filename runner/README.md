@@ -1,12 +1,16 @@
 # Runner image (`5s-tes/python-runner:1`)
 
-The image that a researcher's Python code runs in at the hospital. It is the
-Open Data Hub data-science runtime image (Python 3.11, pandas, numpy, scipy,
-scikit-learn, matplotlib) with one addition, the `run-analysis` wrapper, and
-with pip removed.
+The image that a researcher's Python code runs in at the hospital. The
+researcher writes and tests the code in their SPE, a Jupyter notebook that
+`spms-spe-operator-go` starts from the RHOAI image
+`s2i-generic-data-science-notebook:2025.1`. At the hospital, a version of the
+same operator, on OpenShift, starts a locked-down pod from this image to run
+the code. So the image has the same Python and libraries as the SPE notebook
+(Python 3.11, pandas, numpy, scipy, scikit-learn, matplotlib), plus one
+command, `run-analysis`, and without pip.
 
-The image is not yet used by the Agent. Running it from a federated task is
-PoC task 2.4.
+The image is not yet used. Starting the pod from a federated task is PoC
+task 2.4.
 
 ## Command
 
@@ -89,11 +93,23 @@ arguments, 1 when `result.json` could not be written.
 
 ## Isolation
 
-The image runs as user 1001. The Agent must run it with `--network none
---read-only`, the dataset mounted read-only, and `/outputs` as the only
-writable path. pip, micropipenv, and the pip wheels that `ensurepip` uses are
-removed, so code cannot install packages. The list of installed libraries is
-in `/opt/runner/libraries.txt` in the image.
+The image runs as user 1001 by default. On OpenShift the pod runs as a random
+user ID in group 0, so `/outputs` is writable by group 0.
+
+The isolation comes from the pod that the operator starts, not from the image.
+The pod must have:
+
+- `readOnlyRootFilesystem: true`, non-root, no privilege escalation;
+- a NetworkPolicy that denies all ingress and egress;
+- the dataset as a read-only volume;
+- `/outputs` as the only writable volume.
+
+`runner/test.sh image` checks the same things with `docker run --network none
+--read-only`, as a stand-in for the pod.
+
+pip, uv, micropipenv, virtualenv, and the pip and setuptools wheels that
+`ensurepip` uses are removed, so code cannot install packages. The list of
+installed libraries is in `/opt/runner/libraries.txt` in the image.
 
 Known PoC limit: the researcher's code runs in the same Python process as the
 wrapper, so it can change the wrapper's behaviour, for example write
@@ -127,21 +143,37 @@ runner/test.sh image    # build the image and check isolation
 
 The unit tests run in a `test` stage of the Dockerfile, on the image's own
 Python and pandas. The image checks run the example locked down, and check
-that pip is gone, the user is 1001, Python is 3.11, and code can neither open
-a network connection nor change the dataset.
+that the installers are gone, the user is 1001, a random user in group 0 can
+write `/outputs`, Python is 3.11, and code can neither open a network
+connection nor change the dataset.
 
 The image is amd64 only. On Apple silicon, Docker runs it under emulation.
 
 ## Base image
 
-`quay.io/opendatahub/workbench-images:runtime-datascience-ubi9-python-3.11-2024b-20250904`,
-pinned by digest in the `Dockerfile`. It stands in for the RHOAI
-`s2i-generic-data-science-notebook` image that the SPE offers, so that code
-that works in the SPE also works at the hospital. When SPMS confirms the exact
-image, change only the `FROM` line, then run `runner/test.sh`.
+`quay.io/opendatahub/odh-pipeline-runtime-datascience-cpu-py311-ubi9:2025a-v1.35`,
+pinned by digest in the `Dockerfile`. It is the Open Data Hub data-science
+runtime image, which has the notebook's libraries without Jupyter. It stands
+in for the RHOAI ImageStream `s2i-generic-data-science-notebook:2025.1` that
+the SPE notebooks use. RHOAI builds its 2025.1 images from Open Data Hub
+2025a. The ImageStream is in the cluster, so its registry digest is not in
+any repository. To find it:
 
-The runtime image has the same data-science libraries as the Jupyter variant
-of the same tag (`jupyter-datascience-ubi9-python-3.11-2024b-20250904`):
-pandas 2.2.3, numpy 2.1.3, scipy 1.14.1, scikit-learn 1.5.2, matplotlib 3.9.4.
-Only Jupyter and infrastructure packages differ (ipython, ipykernel, tornado,
-pyzmq, kubernetes, protobuf, psutil, MarkupSafe). statsmodels is in neither.
+```sh
+oc get imagestream s2i-generic-data-science-notebook -n redhat-ods-applications \
+  -o jsonpath='{.spec.tags[?(@.name=="2025.1")].from.name}'
+```
+
+Then change only the `FROM` line (and the labels), and run `runner/test.sh`.
+Pulling from `registry.redhat.io` needs a Red Hat login.
+
+The runtime image has the same data-science libraries as the Open Data Hub
+2025a notebook image (`odh-workbench-jupyter-datascience-cpu-py311-ubi9:2025a-v1.35`):
+pandas 2.2.3, numpy 2.2.6, scipy 1.15.3, scikit-learn 1.6.1, matplotlib
+3.10.5, pyarrow 21.0.0. statsmodels and seaborn are in neither. The packages
+that differ are Jupyter and infrastructure packages (ipython, ipykernel,
+pyzmq, kubernetes, protobuf, psutil, urllib3, click, opentelemetry-proto),
+and onnx (1.19.0 here, 1.18.0 in the notebook).
+
+Researcher code must use only these libraries. A package that the researcher
+installs in the SPE notebook does not exist at the hospital.
