@@ -399,6 +399,10 @@ There is no default, because the site approves the images. Only `appsettings.Dev
 
 The input checks run on every poll until the task's result file is saved, so a resumed `running` task is checked again. After the file is saved, the input checks don't run again: whether the result leaves is the decision of output approval, not of the input checks. If its image was removed from the list in the meantime, the Agent logs a warning and the result still goes on to output approval.
 
+### Runner image
+
+`5s-tes/python-runner:1` is the image that a researcher's Python code will run in at the hospital. It is the Open Data Hub data-science runtime image with pip removed and one command added: `run-analysis <code.py> <dataset dir> <result.json>`. The command checks the dataset against its `schema.json`, calls the researcher's `site_analysis(df)`, checks the return value and writes `result.json`. No error message contains a data value. The Agent does not use the image yet (PoC task 2.4), so it is not in `ApprovedImages`. See [`runner/README.md`](../runner/README.md) for the command, the `result.json` format, the error codes and the tests.
+
 ### Output approval
 
 Every result waits for a reviewer, so a site must run the Data Egress app (`Egress/Data-Egress-API` and `Egress/Data-Egress-UI`) and connect it to the Agent in both directions. `dev/federated/docker-compose.yml` and its realm files are a working example.
