@@ -15,8 +15,14 @@ task 2.4.
 ## Command
 
 ```sh
-run-analysis <code.py> <dataset dir> <result.json>
+run-analysis [--debug] <code.py> <dataset dir> <result.json>
 ```
+
+`--debug` also prints the full traceback of a failure in the researcher's
+code to stderr. Use it only in the SPE, against synthetic data: a traceback
+can contain data values. `result.json` is the same with or without it. The
+hospital never passes `--debug`; the Agent, not the researcher, sets the
+command (PoC task 2.4).
 
 The wrapper does these steps in order. If a step fails, it writes an error
 result and stops.
@@ -39,6 +45,11 @@ The researcher's file must define:
 def site_analysis(df):  # df is a pandas DataFrame with typed columns
     return {"n": len(df), "mean_age": float(df["age"].mean())}
 ```
+
+The code is one file. It can import the image's libraries, but not other
+files of your own: put helper functions in the same file. (`run-analysis`
+starts Python in isolated mode, so `from helpers import x` fails in the SPE
+the same way it would at the hospital.)
 
 The return value must be a dict with string keys that can be written as JSON
 (no NaN or infinity). It must contain `n`, a non-negative integer: the number

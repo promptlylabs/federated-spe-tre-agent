@@ -63,3 +63,37 @@ def test_missing_function(run):
 def test_sys_exit_is_code_error(run, source):
     r, _ = run(source)
     assert r["code"] == "code_error"
+
+
+def _run_with_flags(tmp_path, make_code, make_dataset, source, flags):
+    d = make_dataset("age,sex\n30,SECRET\n40,F\n", AGE_SEX)
+    out = tmp_path / "result.json"
+    assert main([*flags, str(make_code(source)), str(d), str(out)]) == 0
+    return out.read_text()
+
+
+def test_debug_prints_the_full_traceback_to_stderr(tmp_path, make_code, make_dataset, capsys):
+    text = _run_with_flags(
+        tmp_path, make_code, make_dataset, "def site_analysis(df): raise ValueError(df.sex[0])\n", ["--debug"]
+    )
+    err = capsys.readouterr().err
+    assert "ValueError: SECRET" in err
+    assert "Traceback" in err
+    # result.json is the same as without --debug: no data value.
+    assert "SECRET" not in text
+    assert json.loads(text)["message"] == "site_analysis raised ValueError at analysis.py line 1"
+
+
+def test_debug_shows_import_errors(tmp_path, make_code, make_dataset, capsys):
+    _run_with_flags(tmp_path, make_code, make_dataset, "import helpers\n", ["--debug"])
+    assert "No module named 'helpers'" in capsys.readouterr().err
+
+
+def test_without_debug_nothing_reaches_stderr(tmp_path, make_code, make_dataset, capsys):
+    _run_with_flags(tmp_path, make_code, make_dataset, "def site_analysis(df): raise ValueError(df.sex[0])\n", [])
+    assert capsys.readouterr().err == ""
+
+
+def test_debug_with_wrong_argument_count_is_usage(capsys):
+    assert main(["--debug", "a", "b"]) == 2
+    assert "usage: run-analysis [--debug]" in capsys.readouterr().err

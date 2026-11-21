@@ -1,10 +1,14 @@
 """Import the researcher's file and call its site_analysis(df).
 
 A failure is reported by exception type and line only: the exception text can
-hold data values (for example KeyError: 'F'), so it is never kept.
+hold data values (for example KeyError: 'F'), so it is never kept in
+result.json. With debug=True (the --debug flag, for the researcher's SPE with
+synthetic data only) the full traceback is also printed to stderr.
 """
 
 import importlib.util
+import sys
+import traceback
 from pathlib import Path
 
 import pandas
@@ -24,7 +28,7 @@ def _line_in(code_path: Path, exc: BaseException) -> int | None:
     return line
 
 
-def call_site_analysis(code_path: Path, frame: pandas.DataFrame) -> object:
+def call_site_analysis(code_path: Path, frame: pandas.DataFrame, debug: bool = False) -> object:
     name = code_path.name
     try:
         spec = importlib.util.spec_from_file_location("analysis", code_path)
@@ -35,6 +39,8 @@ def call_site_analysis(code_path: Path, frame: pandas.DataFrame) -> object:
     except AnalysisError:
         raise
     except BaseException as e:
+        if debug:
+            traceback.print_exception(e, file=sys.stderr)
         line = _line_in(code_path, e)
         where = f" at line {line}" if line is not None else ""
         raise AnalysisError("code_error", f"importing {name} raised {type(e).__name__}{where}") from None
@@ -46,6 +52,8 @@ def call_site_analysis(code_path: Path, frame: pandas.DataFrame) -> object:
     try:
         return site_analysis(frame)
     except BaseException as e:
+        if debug:
+            traceback.print_exception(e, file=sys.stderr)
         line = _line_in(code_path, e)
         where = f" at {name} line {line}" if line is not None else ""
         raise AnalysisError("code_error", f"site_analysis raised {type(e).__name__}{where}") from None
