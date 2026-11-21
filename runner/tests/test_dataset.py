@@ -119,3 +119,50 @@ def test_ragged_row_is_invalid_dataset_with_line(make_dataset, run):
     r, _ = run(make_dataset("age,sex\n1,F\n2,F,x\n", AGE_SEX))
     assert r["code"] == "invalid_dataset"
     assert "line 3" in r["message"]
+
+
+# Final-review fixes
+
+
+def test_missing_header_does_not_echo_the_first_row(make_dataset, run):
+    r, text = run(make_dataset("42,SECRET\n50,M\n", AGE_SEX))
+    assert r["code"] == "schema_mismatch"
+    assert "SECRET" not in text and "42" not in r["message"]
+    assert "expected [age, sex]" in r["message"]
+
+
+def test_preamble_line_does_not_echo(make_dataset, run):
+    r, text = run(make_dataset("Exported by SECRET\nage,sex\n30,F\n", AGE_SEX))
+    assert r["code"] == "schema_mismatch"
+    assert "SECRET" not in text
+
+
+def test_extra_field_on_every_row_is_invalid_dataset(make_dataset, run):
+    schema = [{"name": "site", "type": "string"}, {"name": "sex", "type": "string"}]
+    r, _ = run(make_dataset("site,sex\nA,F,X\nB,M,Y\n", schema))
+    assert r["code"] == "invalid_dataset"
+    assert "line 2" in r["message"]
+
+
+def test_short_row_is_invalid_dataset(make_dataset, run):
+    r, _ = run(make_dataset("age,sex\n42,F\n50\n", AGE_SEX))
+    assert r["code"] == "invalid_dataset"
+    assert "line 3" in r["message"]
+
+
+def test_integer_beyond_int64_is_schema_mismatch(make_dataset, run):
+    r, _ = run(make_dataset("age\n99999999999999999999\n", [{"name": "age", "type": "integer"}]))
+    assert r["code"] == "schema_mismatch"
+    assert r["message"] == "column 'age', line 2: not an integer"
+
+
+def test_utf8_bom_is_accepted(make_dataset):
+    d = make_dataset("", None)
+    (d / "cohort.csv").write_bytes(b"\xef\xbb\xbfage,sex\n30,F\n")
+    frame = read_dataset(d / "cohort.csv", [Column("age", "integer"), Column("sex", "string")])
+    assert frame.age.tolist() == [30]
+
+
+def test_line_numbers_count_blank_lines_and_multiline_cells(make_dataset, run):
+    r, _ = run(make_dataset('age,sex\n\n30,"F\nX"\nbad,F\n', AGE_SEX))
+    assert r["message"] == "column 'age', line 5: not an integer"

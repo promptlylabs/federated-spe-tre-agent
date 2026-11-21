@@ -19,7 +19,9 @@ result and stops.
 
 1. Find the one `.csv` file and `schema.json` in the dataset directory.
 2. Check that the CSV is not larger than 1 GiB.
-3. Read the CSV as UTF-8 with a header row.
+3. Read the CSV as UTF-8 with a header row. A byte-order mark (from Excel's
+   "CSV UTF-8" export) is allowed. Blank lines are skipped. Every row must
+   have as many fields as the header.
 4. Check the CSV against `schema.json`: the same column names in the same
    order, and every value is of the column's type. Then convert the columns
    to those types.
@@ -74,7 +76,10 @@ An error result has `datasetSha256` only when the CSV was read.
 | `result_too_large` | The return value is larger than 61,440 bytes. |
 
 No message contains a value from the dataset. Messages name columns, line
-numbers, types, sizes and file names. For an exception, the message gives only
+numbers, types, sizes and file names. If the CSV's first line has none of the
+schema's column names (no header row, or a line above it), the message does
+not repeat that line, because it may be data. Line numbers are lines in the
+file, counting blank lines and lines inside quoted cells. For an exception, the message gives only
 its type and the line in the researcher's file
 (`site_analysis raised KeyError at analysis.py line 2`), because the
 exception text can contain data values.

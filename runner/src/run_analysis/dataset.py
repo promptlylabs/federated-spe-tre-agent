@@ -9,7 +9,6 @@ import hashlib
 import io
 import json
 import math
-import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -84,35 +83,65 @@ def load_schema(path: Path) -> list[Column]:
 
 def read_dataset(csv_path: Path, columns: list[Column]) -> pandas.DataFrame:
     try:
-        text = csv_path.read_bytes().decode("utf-8")
+        # utf-8-sig drops the byte-order mark that Excel's "CSV UTF-8" export writes.
+        text = csv_path.read_bytes().decode("utf-8-sig")
     except UnicodeDecodeError:
         raise AnalysisError("invalid_dataset", "the dataset file is not valid UTF-8") from None
     if not text.strip():
         raise AnalysisError("invalid_dataset", "the dataset file is empty")
 
-    try:
-        header = next(csv.reader(io.StringIO(text)))
-    except csv.Error:
-        raise AnalysisError("invalid_dataset", "the dataset file is not valid CSV at line 1") from None
     expected = [c.name for c in columns]
-    if header != expected:
-        raise AnalysisError(
-            "schema_mismatch",
-            f"columns differ from schema.json: expected [{', '.join(expected)}], found [{', '.join(header)}]",
-        )
-
+    header: list[str] | None = None
+    rows: list[list[str]] = []
+    lines: list[int] = []  # the physical line each row starts on
+    reader = csv.reader(io.StringIO(text, newline=""), strict=True)
+    last_line = 0
     try:
-        raw = pandas.read_csv(io.StringIO(text), dtype=str, keep_default_na=False)
-    except pandas.errors.ParserError as e:
-        match = re.search(r"line (\d+)", str(e))
-        where = f" at line {match.group(1)}" if match else ""
-        raise AnalysisError("invalid_dataset", f"the dataset file is not valid CSV{where}") from None
+        for record in reader:
+            start_line, last_line = last_line + 1, reader.line_num
+            if not record:  # a blank line
+                continue
+            if header is None:
+                header = record
+                _check_header(header, expected)
+                continue
+            if len(record) != len(header):
+                raise AnalysisError(
+                    "invalid_dataset", f"line {start_line} has {len(record)} fields; the header has {len(header)}"
+                )
+            rows.append(record)
+            lines.append(start_line)
+    except csv.Error:
+        raise AnalysisError("invalid_dataset", f"the dataset file is not valid CSV at line {reader.line_num}") from None
 
-    return pandas.DataFrame({c.name: _convert(c, raw[c.name]) for c in columns}, index=raw.index)
+    cells = list(zip(*rows)) if rows else [()] * len(columns)
+    return pandas.DataFrame(
+        {c.name: _convert(c, list(cells[i]), lines) for i, c in enumerate(columns)},
+        index=pandas.RangeIndex(len(rows)),
+    )
+
+
+def _check_header(header: list[str], expected: list[str]) -> None:
+    if header == expected:
+        return
+    message = f"columns differ from schema.json: expected [{', '.join(expected)}]"
+    # Name what was found only when it looks like a header. A file with no header
+    # row, or a line above it, would otherwise put data values in the message.
+    if any(name in expected for name in header):
+        message += f", found [{', '.join(header)}]"
+    else:
+        message += "; the first line has none of these names (is the header row missing?)"
+    raise AnalysisError("schema_mismatch", message)
+
+
+_INT64_MIN, _INT64_MAX = -(2**63), 2**63 - 1
 
 
 def _parse_integer(v: str) -> int:
-    return int(v)
+    i = int(v)
+    if not _INT64_MIN <= i <= _INT64_MAX:
+        raise ValueError
+    return i
 
 
 def _parse_number(v: str) -> float:
@@ -138,17 +167,17 @@ _PARSERS = {
 }
 
 
-def _convert(column: Column, cells: pandas.Series) -> pandas.Series:
+def _convert(column: Column, cells: list[str], lines: list[int]) -> pandas.Series:
     if column.type == "string":
-        return pandas.Series([None if v == "" else v for v in cells], index=cells.index, dtype="string")
+        return pandas.Series([None if v == "" else v for v in cells], dtype="string")
     parse, dtype, what = _PARSERS[column.type]
     values = []
-    for row, v in enumerate(cells):
+    for v, line in zip(cells, lines):
         if v == "":
             values.append(None)
             continue
         try:
             values.append(parse(v))
         except (ValueError, OverflowError):
-            raise AnalysisError("schema_mismatch", f"column '{column.name}', line {row + 2}: not {what}") from None
-    return pandas.Series(pandas.array(values, dtype=dtype), index=cells.index)
+            raise AnalysisError("schema_mismatch", f"column '{column.name}', line {line}: not {what}") from None
+    return pandas.Series(pandas.array(values, dtype=dtype))
