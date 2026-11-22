@@ -1,7 +1,8 @@
 namespace FiveSafesTes.Core.Models.FederatedTasks
 {
     /// <summary>
-    /// A validated federated task: one allow-listed operation over one dataset.
+    /// A validated federated task over one dataset: either one allow-listed operation (count, mean), or a code task
+    /// that runs the researcher's file with run-analysis (Operation "run-analysis", CodeSha256 set).
     /// </summary>
     public sealed record FederatedTaskSpec(
         string Operation,
@@ -9,7 +10,11 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         string? Column,
         IReadOnlyList<TaskFilter> Filters,
         string StudyId,
-        string TreName);
+        string TreName,
+        string? CodeSha256 = null)
+    {
+        public bool IsCodeTask => CodeSha256 != null;
+    }
 
     /// <summary>
     /// Outcome of parsing a TES task against the federated profile: either a spec or an error code and message.
