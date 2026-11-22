@@ -557,6 +557,27 @@ namespace Submission.Api.Tests
         }
 
         [Fact]
+        public async Task Report_complete_of_code_task_releases_analysis_result_with_dataset_hash()
+        {
+            using var db = NewDb();
+            var seeded = SeededTask(db);
+            seeded.Operation = "run-analysis";
+            db.SaveChanges();
+            const string datasetSha = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+            var json = "{\"schemaVersion\":1,\"taskId\":\"" + seeded.TaskId.ToString("D") + "\",\"tre\":\"tre-a\"," +
+                "\"studyId\":\"study-1\",\"operation\":\"run-analysis\",\"dataset\":\"cohort_2024\"," +
+                "\"datasetSha256\":\"" + datasetSha + "\",\"completedAt\":\"2026-11-04T10:00:00+00:00\"," +
+                "\"result\":{\"kind\":\"analysis\",\"n\":3,\"value\":{\"mean_age\":40.0,\"n\":3}}}";
+
+            var result = await ReportComplete(AgentControllerFor(db, "tre-a-client"), seeded, System.Text.Encoding.UTF8.GetBytes(json));
+
+            Assert.IsType<OkObjectResult>(result);
+            var row = db.FederatedTasks.AsNoTracking().Single();
+            Assert.Equal(FederatedTaskPhase.Released, row.Phase);
+            Assert.Equal(datasetSha, row.DatasetSha256);
+        }
+
+        [Fact]
         public async Task Report_complete_stores_file_and_returns_location()
         {
             using var db = NewDb();

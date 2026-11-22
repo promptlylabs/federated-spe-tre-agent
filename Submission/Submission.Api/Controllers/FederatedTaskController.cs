@@ -293,7 +293,7 @@ namespace Submission.Api.Controllers
                 }
 
                 var bucket = _resultStore.Bucket;
-                var datasetSha = validation.Document!.DatasetSha256;
+                var datasetSha = validation.DatasetSha256;
                 apply = t =>
                 {
                     t.MoveTo(FederatedTaskPhase.Released, DateTime.UtcNow);

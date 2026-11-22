@@ -4,9 +4,18 @@ using System.Text.RegularExpressions;
 
 namespace FiveSafesTes.Core.Models.FederatedTasks
 {
-    public sealed record FederatedResultValidation(FederatedResultDocument? Document, string? Message)
+    /// <summary>
+    /// Outcome of validating a result file: <see cref="Document"/> for a count/mean task, <see cref="AnalysisDocument"/>
+    /// for a code task, or a <see cref="Message"/>.
+    /// </summary>
+    public sealed record FederatedResultValidation(
+        FederatedResultDocument? Document,
+        string? Message,
+        FederatedAnalysisResultDocument? AnalysisDocument = null)
     {
-        public bool IsValid => Document != null;
+        public bool IsValid => Document != null || AnalysisDocument != null;
+
+        public string? DatasetSha256 => Document?.DatasetSha256 ?? AnalysisDocument?.DatasetSha256;
     }
 
     public static class FederatedResultDocumentJson
@@ -37,11 +46,20 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
 
         public static string Sha256Hex(byte[] bytes) => Convert.ToHexStringLower(SHA256.HashData(bytes));
 
+        private static readonly string[] RequiredTopFields =
+            ["schemaVersion", "taskId", "tre", "studyId", "operation", "dataset", "datasetSha256", "completedAt", "result"];
+
         /// <summary>
-        /// Validates a result file against the task row. Messages are fixed text plus field names only; they never
+        /// Validates a result file against the task row: an "analysis" result for a code task (operation
+        /// "run-analysis"), a "scalar" result otherwise. Messages are fixed text plus field names only; they never
         /// include file content.
         /// </summary>
-        public static FederatedResultValidation Validate(byte[] bytes, FederatedTask row)
+        public static FederatedResultValidation Validate(byte[] bytes, FederatedTask row) =>
+            row.Operation == FederatedTesProfile.RunAnalysisCommand
+                ? ValidateAnalysis(bytes, row)
+                : ValidateScalar(bytes, row);
+
+        private static FederatedResultValidation ValidateScalar(byte[] bytes, FederatedTask row)
         {
             FederatedResultDocument? doc;
             JsonElement root;
@@ -65,12 +83,9 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
                 return Invalid("result file is not a JSON object");
             }
 
-            foreach (var name in new[] { "schemaVersion", "taskId", "tre", "studyId", "operation", "dataset", "datasetSha256", "completedAt", "result" })
+            if (MissingField(root, RequiredTopFields) is { } missingTop)
             {
-                if (!root.TryGetProperty(name, out var p) || p.ValueKind == JsonValueKind.Null)
-                {
-                    return Invalid($"missing required field '{name}'");
-                }
+                return Invalid($"missing required field '{missingTop}'");
             }
 
             if (doc.SchemaVersion != 1)
@@ -96,12 +111,9 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
                 ("taskId", doc.TaskId), ("tre", doc.Tre), ("studyId", doc.StudyId), ("operation", doc.Operation),
                 ("dataset", doc.Dataset), ("datasetSha256", doc.DatasetSha256), ("result.kind", doc.Result.Kind)
             };
-            foreach (var (name, value) in strings)
+            if (TooLong(strings) is { } tooLong)
             {
-                if (value is { Length: > MaxStringLength })
-                {
-                    return Invalid($"field '{name}' is longer than {MaxStringLength} characters");
-                }
+                return Invalid(tooLong);
             }
 
             if (doc.Result.Kind != "scalar")
@@ -114,32 +126,158 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
                 return Invalid("field 'datasetSha256' is not a lowercase hex SHA-256");
             }
 
-            if (!Guid.TryParse(doc.TaskId, out var taskId) || taskId != row.TaskId)
+            if (Mismatch(doc.TaskId, doc.Tre, doc.StudyId, doc.Operation, doc.Dataset, row) is { } mismatch)
             {
-                return Invalid("field 'taskId' does not match the task");
-            }
-
-            if (doc.Tre != row.TreName)
-            {
-                return Invalid("field 'tre' does not match the task");
-            }
-
-            if (doc.StudyId != row.StudyId)
-            {
-                return Invalid("field 'studyId' does not match the task");
-            }
-
-            if (doc.Operation != row.Operation)
-            {
-                return Invalid("field 'operation' does not match the task");
-            }
-
-            if (doc.Dataset != row.Dataset)
-            {
-                return Invalid("field 'dataset' does not match the task");
+                return Invalid(mismatch);
             }
 
             return new FederatedResultValidation(doc, null);
+        }
+
+        private static FederatedResultValidation ValidateAnalysis(byte[] bytes, FederatedTask row)
+        {
+            JsonElement root;
+            try
+            {
+                using var parsed = JsonDocument.Parse(bytes, new JsonDocumentOptions
+                {
+                    MaxDepth = FederatedResultLimits.MaxJsonDepth,
+                    AllowDuplicateProperties = false
+                });
+                root = parsed.RootElement.Clone();
+            }
+            catch (JsonException)
+            {
+                return Invalid(NotValidJsonMessage);
+            }
+
+            if (root.ValueKind != JsonValueKind.Object)
+            {
+                return Invalid("result file is not a JSON object");
+            }
+
+            if (MissingField(root, RequiredTopFields) is { } missingTop)
+            {
+                return Invalid($"missing required field '{missingTop}'");
+            }
+
+            var result = root.GetProperty("result");
+            if (result.ValueKind != JsonValueKind.Object)
+            {
+                return Invalid("field 'result' must be a JSON object");
+            }
+
+            if (MissingField(result, ["kind", "n", "value"]) is { } missingResult)
+            {
+                return Invalid($"missing required field 'result.{missingResult}'");
+            }
+
+            // n is read from the JSON, not the typed document, so 120.0 is "not an integer" rather than "not JSON".
+            var n = result.GetProperty("n");
+            if (n.ValueKind != JsonValueKind.Number || !n.TryGetInt64(out var count) || count < 0)
+            {
+                return Invalid("field 'result.n' must be a non-negative integer");
+            }
+
+            if (result.GetProperty("value").ValueKind != JsonValueKind.Object)
+            {
+                return Invalid("field 'result.value' must be a JSON object");
+            }
+
+            FederatedAnalysisResultDocument? doc;
+            try
+            {
+                // Rejects unknown and mistyped fields, as for a scalar document.
+                doc = JsonSerializer.Deserialize<FederatedAnalysisResultDocument>(bytes, ParseOptions);
+            }
+            catch (JsonException)
+            {
+                return Invalid(NotValidJsonMessage);
+            }
+
+            if (doc is null)
+            {
+                return Invalid("result file is not a JSON object");
+            }
+
+            if (doc.SchemaVersion != 1)
+            {
+                return Invalid("schemaVersion must be 1");
+            }
+
+            var strings = new (string Name, string? Value)[]
+            {
+                ("taskId", doc.TaskId), ("tre", doc.Tre), ("studyId", doc.StudyId), ("operation", doc.Operation),
+                ("dataset", doc.Dataset), ("datasetSha256", doc.DatasetSha256), ("result.kind", doc.Result.Kind)
+            };
+            if (TooLong(strings) is { } tooLong)
+            {
+                return Invalid(tooLong);
+            }
+
+            if (doc.Result.Kind != "analysis")
+            {
+                return Invalid("result.kind does not match the task");
+            }
+
+            if (!Sha256Pattern.IsMatch(doc.DatasetSha256!))
+            {
+                return Invalid("field 'datasetSha256' is not a lowercase hex SHA-256");
+            }
+
+            if (Mismatch(doc.TaskId, doc.Tre, doc.StudyId, doc.Operation, doc.Dataset, row) is { } mismatch)
+            {
+                return Invalid(mismatch);
+            }
+
+            return new FederatedResultValidation(null, null, doc);
+        }
+
+        /// <summary>The first of <paramref name="names"/> that is absent or null in <paramref name="obj"/>.</summary>
+        private static string? MissingField(JsonElement obj, IEnumerable<string> names) =>
+            names.FirstOrDefault(name => !obj.TryGetProperty(name, out var p) || p.ValueKind == JsonValueKind.Null);
+
+        private static string? TooLong(IEnumerable<(string Name, string? Value)> strings)
+        {
+            foreach (var (name, value) in strings)
+            {
+                if (value is { Length: > MaxStringLength })
+                {
+                    return $"field '{name}' is longer than {MaxStringLength} characters";
+                }
+            }
+
+            return null;
+        }
+
+        private static string? Mismatch(string taskIdText, string tre, string studyId, string operation, string dataset, FederatedTask row)
+        {
+            if (!Guid.TryParse(taskIdText, out var taskId) || taskId != row.TaskId)
+            {
+                return "field 'taskId' does not match the task";
+            }
+
+            if (tre != row.TreName)
+            {
+                return "field 'tre' does not match the task";
+            }
+
+            if (studyId != row.StudyId)
+            {
+                return "field 'studyId' does not match the task";
+            }
+
+            if (operation != row.Operation)
+            {
+                return "field 'operation' does not match the task";
+            }
+
+            if (dataset != row.Dataset)
+            {
+                return "field 'dataset' does not match the task";
+            }
+
+            return null;
         }
 
         private static FederatedResultValidation Invalid(string message) => new(null, message);

@@ -219,4 +219,92 @@ public class FederatedResultDocumentTests
         Assert.DoesNotMatch(FederatedResultLimits.ErrorCodePattern, "a-b");
         Assert.DoesNotMatch(FederatedResultLimits.ErrorCodePattern, new string('a', 65));
     }
+
+    // Code tasks: result kind "analysis".
+
+    private static FederatedTask CodeRow() => new()
+    {
+        TaskId = TaskGuid, TreName = "tre-a", StudyId = "study-1", Operation = "run-analysis", Dataset = "cohort_2024"
+    };
+
+    private const string AnalysisResult = "{\"kind\":\"analysis\",\"n\":120,\"value\":{\"mean_age\":41.2,\"n\":120}}";
+
+    private static FederatedResultValidation ValidateCode(string result) =>
+        FederatedResultDocumentJson.Validate(
+            Encoding.UTF8.GetBytes(Json(operation: "run-analysis", result: result)), CodeRow());
+
+    [Fact]
+    public void Valid_analysis_document_passes()
+    {
+        var result = ValidateCode(AnalysisResult);
+
+        Assert.True(result.IsValid, result.Message);
+        Assert.Null(result.Document);
+        var doc = result.AnalysisDocument!;
+        Assert.Equal("analysis", doc.Result.Kind);
+        Assert.Equal(120, doc.Result.N);
+        Assert.Equal(41.2, doc.Result.Value.GetProperty("mean_age").GetDouble());
+        Assert.Equal(ShaOk, result.DatasetSha256);
+    }
+
+    [Theory]
+    [InlineData("{\"kind\":\"analysis\",\"value\":{}}", "missing required field 'result.n'")]
+    [InlineData("{\"kind\":\"analysis\",\"n\":1}", "missing required field 'result.value'")]
+    [InlineData("{\"kind\":\"analysis\",\"n\":1,\"value\":null}", "missing required field 'result.value'")]
+    [InlineData("{\"kind\":\"analysis\",\"n\":-1,\"value\":{}}", "field 'result.n' must be a non-negative integer")]
+    [InlineData("{\"kind\":\"analysis\",\"n\":\"1\",\"value\":{}}", "field 'result.n' must be a non-negative integer")]
+    [InlineData("{\"kind\":\"analysis\",\"n\":1,\"value\":[1]}", "field 'result.value' must be a JSON object")]
+    [InlineData("{\"kind\":\"scalar\",\"n\":1,\"value\":{}}", "result.kind does not match the task")]
+    public void Invalid_analysis_documents_fail(string result, string message)
+    {
+        var validation = ValidateCode(result);
+
+        Assert.False(validation.IsValid);
+        Assert.Equal(message, validation.Message);
+    }
+
+    [Fact]
+    public void Unknown_field_in_analysis_result_fails()
+    {
+        var validation = ValidateCode("{\"kind\":\"analysis\",\"n\":1,\"value\":{},\"extra\":1}");
+
+        Assert.False(validation.IsValid);
+    }
+
+    [Theory]
+    [InlineData("120.0")]
+    [InlineData("1.2e2")]
+    public void Analysis_n_must_be_an_integer(string n)
+    {
+        var validation = ValidateCode($"{{\"kind\":\"analysis\",\"n\":{n},\"value\":{{}}}}");
+
+        Assert.False(validation.IsValid);
+        Assert.Equal("field 'result.n' must be a non-negative integer", validation.Message);
+    }
+
+    [Fact]
+    public void Scalar_document_for_code_task_fails()
+    {
+        var validation = ValidateCode("{\"kind\":\"scalar\",\"value\":1.5,\"rowCount\":3}");
+
+        Assert.False(validation.IsValid);
+    }
+
+    [Fact]
+    public void Analysis_document_for_count_task_fails()
+    {
+        var validation = Validate(Json(result: AnalysisResult));
+
+        Assert.False(validation.IsValid);
+    }
+
+    [Fact]
+    public void Analysis_document_operation_must_match_the_task()
+    {
+        var validation = FederatedResultDocumentJson.Validate(
+            Encoding.UTF8.GetBytes(Json(operation: "mean", result: AnalysisResult)), CodeRow());
+
+        Assert.False(validation.IsValid);
+        Assert.Equal("field 'operation' does not match the task", validation.Message);
+    }
 }
