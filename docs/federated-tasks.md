@@ -296,8 +296,9 @@ A code task runs the researcher's Python file with `run-analysis` in an approved
 |---|---|
 | `executors` | Exactly 1. `image` must be in Submission's `FederatedTaskSettings:ApprovedRunnerImages`. `env`, `workdir`, `stdin`, `stdout` and `stderr` must not be set. |
 | `executors[0].command` | Exactly `["run-analysis", "/code/analysis.py", "/data/<dataset>", "/outputs/result.json"]`. No other arguments, so `--debug` is refused: its traceback can contain data values. |
-| `inputs` | Exactly 2, in either order. The **code input**: `path` `/code/analysis.py`, `type` `FILE`, the code in `content`, no `url`, at most 262,144 bytes (256 KiB) in UTF-8. The **dataset input**: `url` `dataset://<name>`, `path` `/data/<name>`, `type` `DIRECTORY`. |
+| `inputs` | Exactly 2, in either order. The **code input**: `path` `/code/analysis.py`, `type` `FILE`, the code in `content`, no `url`, at most 262,144 bytes (256 KiB) in UTF-8. The **dataset input**: `url` `dataset://<name>`, `path` `/data/<name>`, `type` `DIRECTORY`, no `content` (in TES, `content` would replace the hospital's data). |
 | `outputs` | Exactly 1: `path` `/outputs/result.json`, `type` `FILE`. TES requires a `url`, but it is ignored: nothing is uploaded to it. The result goes through output approval at the hospital and back to Submission, as for every task. |
+| `volumes` | Must be null or empty. |
 | `resources` | May be left out. If given, `cpu_cores`, `ram_gb` and `disk_gb` must each be more than 0 and at most `MaxCpuCores`, `MaxRamGb` and `MaxDiskGb`. Other resource fields are ignored. |
 | `tags` | `fed.sites` and `fed.study_id` as for count/mean. `fed.code_sha256` is required: the lowercase hex SHA-256 of the code's UTF-8 bytes. It must match the code, so the hash the hospital reviews is the hash of the code that runs. |
 

@@ -138,6 +138,8 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             if (executor.Env is { Count: > 0 } || !string.IsNullOrEmpty(executor.Workdir) || !string.IsNullOrEmpty(executor.Stdin)
                 || !string.IsNullOrEmpty(executor.Stdout) || !string.IsNullOrEmpty(executor.Stderr))
                 return Fail(FederatedTaskErrorCodes.InvalidTask, "executor env, workdir, stdin, stdout and stderr must not be set");
+            if (task.Volumes is { Count: > 0 })
+                return Fail(FederatedTaskErrorCodes.InvalidTask, "task must not declare volumes");
 
             // Inputs: the code and the dataset, in either order. Checked before the command, which names the dataset path.
             var inputs = task.Inputs is { Count: 2 } && task.Inputs.All(i => i != null) ? task.Inputs : [];
@@ -165,6 +167,9 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
                 return Fail(FederatedTaskErrorCodes.InvalidTask, $"the dataset input path must be {dataPath}");
             if (data.Type != TesFileType.DIRECTORYEnum)
                 return Fail(FederatedTaskErrorCodes.InvalidTask, "the dataset input must be a DIRECTORY");
+            // In TES, content wins over url: a dataset input with content would bring its own data.
+            if (!string.IsNullOrEmpty(data.Content))
+                return Fail(FederatedTaskErrorCodes.InvalidTask, "the dataset input must not have content");
 
             // Command: exactly run-analysis and the three paths. No --debug: its traceback can hold data values.
             string[] expected = [RunAnalysisCommand, CodePath, dataPath, ResultPath];
@@ -188,7 +193,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             // Tags: as for count/mean, plus the hash of the code that runs.
             if (ReadTags(task, out var tags, out var tre, out var studyId) is { } tagFailure)
                 return tagFailure;
-            if (!tags.TryGetValue(CodeSha256Tag, out var codeSha) || !Sha256Pattern.IsMatch(codeSha))
+            if (!tags.TryGetValue(CodeSha256Tag, out var codeSha) || codeSha is null || !Sha256Pattern.IsMatch(codeSha))
                 return Fail(FederatedTaskErrorCodes.InvalidTask, $"tag '{CodeSha256Tag}' must be a lowercase hex SHA-256");
             if (codeSha != Convert.ToHexStringLower(SHA256.HashData(codeBytes)))
                 return Fail(FederatedTaskErrorCodes.InvalidTask, $"tag '{CodeSha256Tag}' does not match the code");

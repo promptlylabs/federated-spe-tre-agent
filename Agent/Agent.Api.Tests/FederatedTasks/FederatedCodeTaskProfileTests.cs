@@ -109,6 +109,10 @@ public class FederatedCodeTaskProfileTests
         { "hash of other code", t => t.Tags!["fed.code_sha256"] = Sha("print(1)\n"),
             "tag 'fed.code_sha256' does not match the code" },
         { "no study id", t => t.Tags!.Remove("fed.study_id"), "tag 'fed.study_id' is required" },
+        { "null code hash", t => t.Tags!["fed.code_sha256"] = null!,
+            "tag 'fed.code_sha256' must be a lowercase hex SHA-256" },
+        { "volumes", t => t.Volumes = ["/data/c1", "/outputs"], "task must not declare volumes" },
+        { "dataset input with content", t => t.Inputs[1].Content = "age\n1\n", "the dataset input must not have content" },
     };
 
     [Theory]
