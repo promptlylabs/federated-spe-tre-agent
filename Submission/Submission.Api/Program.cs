@@ -107,6 +107,7 @@ if (missingFederatedSettings.Count > 0 && !Microsoft.EntityFrameworkCore.EF.IsDe
         "Federated results storage is not configured. Set: " + string.Join(", ", missingFederatedSettings));
 }
 builder.Services.AddSingleton(federatedResultsStorageSettings);
+builder.Services.AddSingleton(FederatedTaskSettings.FromConfiguration(configuration));
 builder.Services.AddSingleton<IFederatedResultStore>(_ => new RustFsFederatedResultStore(federatedResultsStorageSettings));
 
 

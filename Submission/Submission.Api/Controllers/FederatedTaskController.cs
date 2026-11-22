@@ -37,10 +37,13 @@ namespace Submission.Api.Controllers
 
         private readonly IFederatedResultStore _resultStore;
 
-        public FederatedTaskController(ApplicationDbContext db, IFederatedResultStore resultStore)
+        private readonly FederatedTaskSettings _settings;
+
+        public FederatedTaskController(ApplicationDbContext db, IFederatedResultStore resultStore, FederatedTaskSettings settings)
         {
             _DbContext = db;
             _resultStore = resultStore;
+            _settings = settings;
         }
 
         [Authorize(Roles = "dare-control-admin")]
@@ -52,7 +55,7 @@ namespace Submission.Api.Controllers
         [SwaggerResponse(statusCode: 400, type: typeof(FederatedApiError), description: "")]
         public virtual async Task<IActionResult> Enqueue([FromBody] TesTask task, CancellationToken cancellationToken = default)
         {
-            var parsed = FederatedTesProfile.Parse(task);
+            var parsed = FederatedTesProfile.Parse(task, _settings.ToIntakeLimits());
             if (!parsed.IsSuccess)
             {
                 return Error(StatusCodes.Status400BadRequest, parsed.ErrorCode!, parsed.ErrorMessage!);
