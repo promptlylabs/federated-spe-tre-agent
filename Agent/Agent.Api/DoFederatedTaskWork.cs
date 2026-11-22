@@ -576,6 +576,11 @@ namespace Agent.Api
                 return new Prepared(null, null, true);
             }
 
+            // Code tasks pass the profile but cannot run here yet (2.4). Refused before the input checks, so the
+            // hospital never looks in its dataset bucket for a task it cannot run.
+            if (parsed.Spec.IsCodeTask)
+                return new Prepared(null, Error(taskId, FederatedTaskErrorCodes.InvalidTask, "this TRE does not run code tasks yet"), false);
+
             return new Prepared(parsed.Spec, null, false);
         }
 
