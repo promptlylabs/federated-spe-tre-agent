@@ -23,8 +23,11 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         public string Operation { get; set; } = string.Empty;
         public string Dataset { get; set; } = string.Empty;
 
-        /// <summary>The submitted TES task, Newtonsoft-serialized.</summary>
-        public string TesTaskJson { get; set; } = string.Empty;
+        /// <summary>
+        /// The submitted TES task, Newtonsoft-serialized. Written once, at intake: for a code task it holds the code the
+        /// hospital runs, so nothing may change it afterwards (init-only; ANZE-6045).
+        /// </summary>
+        public string TesTaskJson { get; init; } = string.Empty;
 
         public TesState State { get; set; }
 

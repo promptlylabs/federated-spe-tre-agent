@@ -134,7 +134,7 @@ namespace Submission.Api.Tests
 
         private const string Code = "def site_analysis(df):\n    return {'n': len(df)}\n";
 
-        private static TesTask CodeTask(double? ramGb = 8, long? cpuCores = 2, double? diskGb = 10) => new()
+        private static TesTask CodeTask(double? ramGb = 8, long? cpuCores = 2, double? diskGb = 10, string code = Code) => new()
         {
             Executors =
             [
@@ -146,7 +146,7 @@ namespace Submission.Api.Tests
             ],
             Inputs =
             [
-                new TesInput { Path = "/code/analysis.py", Type = TesFileType.FILEEnum, Content = Code },
+                new TesInput { Path = "/code/analysis.py", Type = TesFileType.FILEEnum, Content = code },
                 new TesInput { Url = "dataset://cohort_2024", Path = "/data/cohort_2024", Type = TesFileType.DIRECTORYEnum }
             ],
             Outputs = [new TesOutput { Path = "/outputs/result.json", Url = "result://", Type = TesFileType.FILEEnum }],
@@ -156,7 +156,7 @@ namespace Submission.Api.Tests
                 ["fed.sites"] = "tre-a",
                 ["fed.study_id"] = "study-1",
                 ["fed.code_sha256"] = Convert.ToHexStringLower(
-                    System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(Code)))
+                    System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(code)))
             }
         };
 
@@ -172,6 +172,51 @@ namespace Submission.Api.Tests
             Assert.Equal("cohort_2024", row.Dataset);
             Assert.Equal(FederatedTaskPhase.Queued, row.Phase);
             Assert.Contains("def site_analysis(df)", row.TesTaskJson);
+        }
+
+        // Non-ASCII, a tab and Windows line endings: the JSON serialisation round trip must not change a byte. (The
+        // in-memory database keeps the string as is; the Postgres round trip was checked on the dev stack.)
+        private const string AwkwardCode = "# é\tcafé\r\ndef site_analysis(df):\r\n    return {'n': len(df)}\r\n";
+
+        [Fact]
+        public async Task Agent_of_the_addressed_tre_receives_the_code_unchanged()
+        {
+            using var db = NewDb();
+            Assert.IsType<OkObjectResult>(await ControllerFor(db, "dare-admin").Enqueue(CodeTask(code: AwkwardCode)));
+
+            var result = await AgentControllerFor(db, "tre-a-client").GetPendingTasksForTre();
+
+            var task = Assert.Single(Assert.IsType<List<TesTask>>(Assert.IsType<OkObjectResult>(result).Value));
+            var code = Assert.Single(task.Inputs!, i => i.Path == "/code/analysis.py").Content;
+            Assert.Equal(AwkwardCode, code);
+            var sha = Convert.ToHexStringLower(
+                System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(code!)));
+            Assert.Equal(sha, task.Tags!["fed.code_sha256"]);
+        }
+
+        [Fact]
+        public async Task Stored_task_cannot_be_changed_after_intake()
+        {
+            using var db = NewDb();
+            Assert.IsType<OkObjectResult>(await ControllerFor(db, "dare-admin").Enqueue(CodeTask()));
+            var row = db.FederatedTasks.Single();
+
+            // Init-only stops plain assignments; this is the route EF would still allow.
+            db.Entry(row).Property(x => x.TesTaskJson).CurrentValue = "{}";
+
+            var error = Assert.Throws<InvalidOperationException>(() => db.SaveChanges());
+            Assert.Contains("TesTaskJson", error.Message);
+        }
+
+        [Fact]
+        public async Task Agent_of_another_tre_does_not_receive_the_code()
+        {
+            using var db = NewDb();
+            Assert.IsType<OkObjectResult>(await ControllerFor(db, "dare-admin").Enqueue(CodeTask(code: AwkwardCode)));
+
+            var result = await AgentControllerFor(db, "tre-b-client").GetPendingTasksForTre();
+
+            Assert.Empty(Assert.IsType<List<TesTask>>(Assert.IsType<OkObjectResult>(result).Value));
         }
 
         [Fact]

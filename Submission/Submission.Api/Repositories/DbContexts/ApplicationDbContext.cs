@@ -1,6 +1,7 @@
 using FiveSafesTes.Core.Models;
 using FiveSafesTes.Core.Models.FederatedTasks;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Metadata;
 
 namespace Submission.Api.Repositories.DbContexts
 {
@@ -48,6 +49,8 @@ namespace Submission.Api.Repositories.DbContexts
                 b.HasMany(x => x.PhaseChanges).WithOne().HasForeignKey(x => x.FederatedTaskId).OnDelete(DeleteBehavior.Cascade);
                 // Task history is the audit record of released results; deleting a TRE must not erase it.
                 b.HasOne(x => x.Tre).WithMany().HasForeignKey(x => x.TreId).OnDelete(DeleteBehavior.Restrict);
+                // The stored task holds the code a hospital runs: once saved, EF refuses to change it (ANZE-6045).
+                b.Property(x => x.TesTaskJson).Metadata.SetAfterSaveBehavior(PropertySaveBehavior.Throw);
             });
             modelBuilder.Entity<FederatedTaskPhaseChange>(b =>
             {
