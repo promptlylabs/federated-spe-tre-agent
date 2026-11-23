@@ -288,6 +288,50 @@ Example: the mean of `age` on dataset `cohort_2024`, for rows where `sex` is `F`
 }
 ```
 
+### Code tasks
+
+A code task runs the researcher's Python file with `run-analysis` in an approved runner image (see `runner/README.md`). Intake decides by the executor image: `5s-tes/federated-ops:1` is a count/mean task with the rules above, any other image is a code task with these rules.
+
+| TES field | Rule |
+|---|---|
+| `executors` | Exactly 1. `image` must be in Submission's `FederatedTaskSettings:ApprovedRunnerImages`. `env`, `workdir`, `stdin`, `stdout` and `stderr` must not be set (empty values are allowed). |
+| `executors[0].command` | Exactly `["run-analysis", "/code/analysis.py", "/data/<dataset>", "/outputs/result.json"]`. No other arguments, so `--debug` is refused: its traceback can contain data values. |
+| `inputs` | Exactly 2, in either order. The **code input**: `path` `/code/analysis.py`, `type` `FILE`, the code in `content`, no `url`, at most 262,144 bytes (256 KiB) in UTF-8. The **dataset input**: `url` `dataset://<name>`, `path` `/data/<name>`, `type` `DIRECTORY`, no `content` (in TES, `content` would replace the hospital's data). |
+| `outputs` | Exactly 1: `path` `/outputs/result.json`, `type` `FILE`, `url` `result://`. TES requires a `url`; any real address is refused, so no runtime can upload the result past output approval. The result goes through output approval at the hospital and back to Submission, as for every task. |
+| `volumes` | Must be null or empty. |
+| `resources` | May be left out. If given, `cpu_cores`, `ram_gb` and `disk_gb` must each be more than 0 and at most `MaxCpuCores`, `MaxRamGb` and `MaxDiskGb`. `zones`, `preemptible` and `backend_parameters` must not be set. |
+| `tags` | `fed.sites` and `fed.study_id` as for count/mean. `fed.code_sha256` is required: the lowercase hex SHA-256 of the code's UTF-8 bytes. It must match the code, so the hash the hospital reviews is the hash of the code that runs. |
+
+Every rule that fails gives `invalid_task` (or `invalid_dataset_name` for the name), and the message names the rule. Nothing is stored.
+
+The stored task has the operation `run-analysis`. The whole task, with the code, is kept as for every task.
+
+Example:
+
+```json
+{
+  "executors": [
+    {
+      "image": "python-runner:1",
+      "command": ["run-analysis", "/code/analysis.py", "/data/cohort_2024", "/outputs/result.json"]
+    }
+  ],
+  "inputs": [
+    { "path": "/code/analysis.py", "type": "FILE", "content": "def site_analysis(df):\n    return {'n': len(df), 'mean_age': float(df['age'].mean())}\n" },
+    { "url": "dataset://cohort_2024", "path": "/data/cohort_2024", "type": "DIRECTORY" }
+  ],
+  "outputs": [{ "path": "/outputs/result.json", "url": "result://", "type": "FILE" }],
+  "resources": { "cpu_cores": 2, "ram_gb": 8 },
+  "tags": {
+    "fed.sites": "my-tre",
+    "fed.study_id": "study-001",
+    "fed.code_sha256": "<lowercase hex SHA-256 of the content>"
+  }
+}
+```
+
+Until PoC task 2.4, a hospital refuses every code task before its input checks: phase `rejected_by_input_checks`, `invalid_task`, "this TRE does not run code tasks yet". It does not look in its dataset bucket for the task. Count/mean tasks and the `5s-tes/federated-ops:1` image are removed in 2.4.
+
 ### Task phases and state
 
 A task has a phase. It says where the task is, from intake to release. `GetTask` returns a valid TES task, so `state` is always a standard TES state. The phase is in the metadata.
@@ -344,7 +388,15 @@ The result file is one JSON document. The property names are camelCase. `schemaV
 }
 ```
 
-`result.value` is a decimal. It is `null` when there are no rows. `result.kind` is always `scalar` for now.
+`result.value` is a decimal. It is `null` when there are no rows. `result.kind` is `scalar` for a count/mean task.
+
+For a code task, `operation` is `run-analysis` and `result.kind` is `analysis`. `result.n` is the non-negative integer the researcher's code returned as `n` (it must equal `result.value.n`), and `result.value` is the dict it returned:
+
+```json
+"result": { "kind": "analysis", "n": 120, "value": { "n": 120, "mean_age": 41.2 } }
+```
+
+The kind must match the task. The whole file is at most 65,536 bytes, and JSON nesting at most 16 levels. The runner limits the researcher's dict to 61,440 bytes so that the document fits.
 
 The file is stored under the key `<treId>/<taskId>/<sha256>.json` in the orchestrator bucket `federated-results`. `treId` is the TRE id in Submission and `sha256` is the SHA-256 of the file.
 
@@ -516,6 +568,19 @@ Upgrading from inline results: the migration `FederatedResultFiles` drops the ol
 Upgrading to task phases: deploy Submission.Api before (or together with) the Agent. A new Agent gets 404 from an old Submission's `ReportProgress` and does not run tasks. The migration `AddFederatedTaskPhases` fills in the phase of existing rows from their TES state. Input-check errors reported before this change stay `failed`.
 
 TODO: store results in the project's output bucket once study_id → project mapping exists
+
+### Code-task intake settings
+
+What a code task may ask for is set in the section `FederatedTaskSettings`:
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `ApprovedRunnerImages` | `["python-runner:1"]` | The executor images a code task may use. Exact, case-sensitive match. A configured list replaces the default (for example `FederatedTaskSettings__ApprovedRunnerImages__0=python-runner:2`). An empty list, `"ApprovedRunnerImages": []` in an override file, refuses every code task. The default is set in code, not in `appsettings.json`, because configuration lists merge by index and a shipped list could never be shortened. |
+| `MaxCpuCores` | `4` | The largest `resources.cpu_cores`. |
+| `MaxRamGb` | `16` | The largest `resources.ram_gb`. |
+| `MaxDiskGb` | `20` | The largest `resources.disk_gb`. |
+
+The resource defaults are placeholders until the hospitals confirm their capacity. The 256 KiB limit on the code is fixed. Submission refuses to start if a maximum is 0 or less, or if `ApprovedRunnerImages` lists `5s-tes/federated-ops:1`.
 
 ## Security
 

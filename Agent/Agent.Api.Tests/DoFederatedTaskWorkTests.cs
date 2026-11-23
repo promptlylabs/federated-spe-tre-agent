@@ -341,6 +341,56 @@ public class DoFederatedTaskWorkTests
         Assert.Equal("invalid_task", report.ErrorCode);
     }
 
+    private static TesTask PendingCodeTask(string id)
+    {
+        const string code = "def site_analysis(df):\n    return {'n': len(df)}\n";
+        var task = new TesTask
+        {
+            Id = id,
+            State = TesState.QUEUEDEnum,
+            CreationTime = Now.AddMinutes(-1),
+            Executors =
+            [
+                new TesExecutor
+                {
+                    Image = "python-runner:1",
+                    Command = ["run-analysis", "/code/analysis.py", "/data/cohort_2024", "/outputs/result.json"]
+                }
+            ],
+            Inputs =
+            [
+                new TesInput { Path = "/code/analysis.py", Type = TesFileType.FILEEnum, Content = code },
+                new TesInput { Url = "dataset://cohort_2024", Path = "/data/cohort_2024", Type = TesFileType.DIRECTORYEnum }
+            ],
+            Outputs = [new TesOutput { Path = "/outputs/result.json", Url = "result://", Type = TesFileType.FILEEnum }],
+            Tags = new Dictionary<string, string>
+            {
+                ["fed.sites"] = "tre-a",
+                ["fed.study_id"] = "study-1",
+                ["fed.code_sha256"] = Convert.ToHexStringLower(
+                    System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(code)))
+            }
+        };
+        return task;
+    }
+
+    [Theory]
+    [InlineData("python-runner:1")]
+    [InlineData("5s-tes/federated-ops:1")]
+    public async Task Code_task_is_refused_before_input_checks(string approvedImage)
+    {
+        var client = new FakeClient();
+        client.Pending.Add(PendingCodeTask(T1));
+
+        // The dataset lookup throws, so a task that reached the input checks would not get this report.
+        await Work(client, new FailingResolveReader(), settings: Approving(approvedImage)).Execute();
+
+        var report = Assert.Single(client.Reports);
+        Assert.Equal("invalid_task", report.ErrorCode);
+        Assert.Equal("this TRE does not run code tasks yet", report.ErrorMessage);
+        Assert.Empty(client.ProgressCalls);
+    }
+
     [Fact]
     public async Task Execute_ValidMean_ReportsComplete()
     {

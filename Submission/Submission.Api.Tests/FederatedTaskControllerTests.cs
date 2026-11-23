@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Mvc.Abstractions;
 using Microsoft.AspNetCore.Mvc.Filters;
 using Microsoft.AspNetCore.Routing;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Configuration;
 using Newtonsoft.Json;
 using Submission.Api.Controllers;
 using Submission.Api.Repositories.DbContexts;
@@ -47,10 +48,11 @@ namespace Submission.Api.Tests
             FormData = ""
         };
 
-        private static FederatedTaskController ControllerFor(ApplicationDbContext db, string username, FakeResultStore? store = null)
+        private static FederatedTaskController ControllerFor(ApplicationDbContext db, string username, FakeResultStore? store = null,
+            FederatedTaskSettings? settings = null)
         {
             var identity = new ClaimsIdentity([new Claim("preferred_username", username)], "test");
-            return new FederatedTaskController(db, store ?? new FakeResultStore())
+            return new FederatedTaskController(db, store ?? new FakeResultStore(), settings ?? new FederatedTaskSettings())
             {
                 ControllerContext = new ControllerContext
                 {
@@ -66,7 +68,7 @@ namespace Submission.Api.Tests
             ControllerWithClaims(db, null, claims);
 
         private static FederatedTaskController ControllerWithClaims(ApplicationDbContext db, FakeResultStore? store, params Claim[] claims) =>
-            new(db, store ?? new FakeResultStore())
+            new(db, store ?? new FakeResultStore(), new FederatedTaskSettings())
             {
                 ControllerContext = new ControllerContext
                 {
@@ -128,6 +130,186 @@ namespace Submission.Api.Tests
             Assert.Equal(1, row.TreId);
             Assert.Equal("tre-a", row.TreName);
             Assert.Equal("cohort_2024", row.Dataset);
+        }
+
+        private const string Code = "def site_analysis(df):\n    return {'n': len(df)}\n";
+
+        private static TesTask CodeTask(double? ramGb = 8, long? cpuCores = 2, double? diskGb = 10) => new()
+        {
+            Executors =
+            [
+                new TesExecutor
+                {
+                    Image = "python-runner:1",
+                    Command = ["run-analysis", "/code/analysis.py", "/data/cohort_2024", "/outputs/result.json"]
+                }
+            ],
+            Inputs =
+            [
+                new TesInput { Path = "/code/analysis.py", Type = TesFileType.FILEEnum, Content = Code },
+                new TesInput { Url = "dataset://cohort_2024", Path = "/data/cohort_2024", Type = TesFileType.DIRECTORYEnum }
+            ],
+            Outputs = [new TesOutput { Path = "/outputs/result.json", Url = "result://", Type = TesFileType.FILEEnum }],
+            Resources = new TesResources { CpuCores = cpuCores, RamGb = ramGb, DiskGb = diskGb },
+            Tags = new Dictionary<string, string>
+            {
+                ["fed.sites"] = "tre-a",
+                ["fed.study_id"] = "study-1",
+                ["fed.code_sha256"] = Convert.ToHexStringLower(
+                    System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(Code)))
+            }
+        };
+
+        [Fact]
+        public async Task Enqueue_valid_code_task_is_stored_queued()
+        {
+            using var db = NewDb();
+            var result = await ControllerFor(db, "dare-admin").Enqueue(CodeTask());
+
+            Assert.IsType<OkObjectResult>(result);
+            var row = db.FederatedTasks.Single();
+            Assert.Equal("run-analysis", row.Operation);
+            Assert.Equal("cohort_2024", row.Dataset);
+            Assert.Equal(FederatedTaskPhase.Queued, row.Phase);
+            Assert.Contains("def site_analysis(df)", row.TesTaskJson);
+        }
+
+        [Fact]
+        public async Task Enqueue_code_task_with_unapproved_image_is_rejected_and_not_stored()
+        {
+            using var db = NewDb();
+            var settings = new FederatedTaskSettings { ApprovedRunnerImages = ["python-runner:2"] };
+
+            var result = await ControllerFor(db, "dare-admin", settings: settings).Enqueue(CodeTask());
+
+            AssertError(result, StatusCodes.Status400BadRequest, "invalid_task");
+            Assert.Empty(db.FederatedTasks);
+        }
+
+        [Fact]
+        public async Task Enqueue_code_task_over_resource_limits_is_rejected_and_not_stored()
+        {
+            using var db = NewDb();
+
+            var result = await ControllerFor(db, "dare-admin").Enqueue(CodeTask(ramGb: 32));
+
+            var error = AssertError(result, StatusCodes.Status400BadRequest, "invalid_task");
+            Assert.Contains("resources.ram_gb", error.ErrorMessage);
+            Assert.Empty(db.FederatedTasks);
+        }
+
+        [Theory]
+        [InlineData(0L, 8.0, 10.0)]
+        [InlineData(2L, -1.0, 10.0)]
+        [InlineData(2L, 8.0, double.NaN)]
+        public async Task Non_positive_or_nan_resources_are_rejected(long cpu, double ram, double disk)
+        {
+            using var db = NewDb();
+
+            var result = await ControllerFor(db, "dare-admin").Enqueue(CodeTask(ram, cpu, disk));
+
+            AssertError(result, StatusCodes.Status400BadRequest, "invalid_task");
+            Assert.Empty(db.FederatedTasks);
+        }
+
+        [Fact]
+        public void Settings_defaults_match_the_spec()
+        {
+            var empty = new Microsoft.Extensions.Configuration.ConfigurationBuilder().Build();
+
+            foreach (var settings in new[] { new FederatedTaskSettings(), FederatedTaskSettings.FromConfiguration(empty) })
+            {
+                Assert.Equal(["python-runner:1"], settings.ApprovedRunnerImages);
+                Assert.Equal(4, settings.MaxCpuCores);
+                Assert.Equal(16, settings.MaxRamGb);
+                Assert.Equal(20, settings.MaxDiskGb);
+            }
+        }
+
+        // The shipped appsettings.json, read from the source tree, layered with an override file as in a deployment.
+        private static FederatedTaskSettings SettingsWithOverride(string overrideJson)
+        {
+            var dir = new DirectoryInfo(AppContext.BaseDirectory);
+            while (dir != null && !File.Exists(Path.Combine(dir.FullName, "Submission", "Submission.Api", "appsettings.json")))
+            {
+                dir = dir.Parent;
+            }
+
+            Assert.NotNull(dir);
+            var config = new ConfigurationBuilder()
+                .AddJsonFile(Path.Combine(dir!.FullName, "Submission", "Submission.Api", "appsettings.json"))
+                .AddJsonStream(new MemoryStream(System.Text.Encoding.UTF8.GetBytes(overrideJson)))
+                .Build();
+            return FederatedTaskSettings.FromConfiguration(config);
+        }
+
+        [Fact]
+        public void An_override_with_an_empty_list_refuses_every_runner_image()
+        {
+            var settings = SettingsWithOverride("{\"FederatedTaskSettings\":{\"ApprovedRunnerImages\":[]}}");
+
+            Assert.Empty(settings.ApprovedRunnerImages);
+        }
+
+        [Fact]
+        public void An_override_list_replaces_the_shipped_one_whatever_its_length()
+        {
+            var settings = SettingsWithOverride("{\"FederatedTaskSettings\":{\"ApprovedRunnerImages\":[\"python-runner:2\"]}}");
+
+            Assert.Equal(["python-runner:2"], settings.ApprovedRunnerImages);
+        }
+
+        [Fact]
+        public void Without_an_override_the_default_runner_image_is_approved()
+        {
+            var settings = SettingsWithOverride("{}");
+
+            Assert.Equal(["python-runner:1"], settings.ApprovedRunnerImages);
+        }
+
+        [Fact]
+        public void Default_settings_have_no_problems()
+        {
+            Assert.Empty(new FederatedTaskSettings().Problems());
+        }
+
+        [Theory]
+        [InlineData(0L, 16.0, 20.0, "FederatedTaskSettings:MaxCpuCores must be more than 0")]
+        [InlineData(4L, -1.0, 20.0, "FederatedTaskSettings:MaxRamGb must be more than 0")]
+        [InlineData(4L, 16.0, double.NaN, "FederatedTaskSettings:MaxDiskGb must be more than 0")]
+        public void Non_positive_maximums_are_problems(long cpu, double ram, double disk, string problem)
+        {
+            var settings = new FederatedTaskSettings { MaxCpuCores = cpu, MaxRamGb = ram, MaxDiskGb = disk };
+
+            Assert.Equal([problem], settings.Problems());
+        }
+
+        [Fact]
+        public void The_operations_image_in_the_runner_list_is_a_problem()
+        {
+            var settings = new FederatedTaskSettings { ApprovedRunnerImages = ["5s-tes/federated-ops:1"] };
+
+            Assert.Equal(
+                ["FederatedTaskSettings:ApprovedRunnerImages must not list 5s-tes/federated-ops:1, the count/mean image"],
+                settings.Problems());
+        }
+
+        [Fact]
+        public void Configured_runner_images_replace_the_default()
+        {
+            var config = new Microsoft.Extensions.Configuration.ConfigurationBuilder()
+                .AddInMemoryCollection(new Dictionary<string, string?>
+                {
+                    ["FederatedTaskSettings:ApprovedRunnerImages:0"] = "python-runner:2",
+                    ["FederatedTaskSettings:MaxRamGb"] = "32"
+                })
+                .Build();
+
+            var settings = FederatedTaskSettings.FromConfiguration(config);
+
+            Assert.Equal(["python-runner:2"], settings.ApprovedRunnerImages);
+            Assert.Equal(32, settings.MaxRamGb);
+            Assert.Equal(4, settings.MaxCpuCores);
         }
 
         [Fact]
@@ -440,6 +622,27 @@ namespace Submission.Api.Tests
         {
             var result = await ControllerFor(db, "dare-admin").GetTask(id.ToString());
             return Assert.IsType<TesTask>(Assert.IsType<OkObjectResult>(result).Value);
+        }
+
+        [Fact]
+        public async Task Report_complete_of_code_task_releases_analysis_result_with_dataset_hash()
+        {
+            using var db = NewDb();
+            var seeded = SeededTask(db);
+            seeded.Operation = "run-analysis";
+            db.SaveChanges();
+            const string datasetSha = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+            var json = "{\"schemaVersion\":1,\"taskId\":\"" + seeded.TaskId.ToString("D") + "\",\"tre\":\"tre-a\"," +
+                "\"studyId\":\"study-1\",\"operation\":\"run-analysis\",\"dataset\":\"cohort_2024\"," +
+                "\"datasetSha256\":\"" + datasetSha + "\",\"completedAt\":\"2026-11-04T10:00:00+00:00\"," +
+                "\"result\":{\"kind\":\"analysis\",\"n\":3,\"value\":{\"mean_age\":40.0,\"n\":3}}}";
+
+            var result = await ReportComplete(AgentControllerFor(db, "tre-a-client"), seeded, System.Text.Encoding.UTF8.GetBytes(json));
+
+            Assert.IsType<OkObjectResult>(result);
+            var row = db.FederatedTasks.AsNoTracking().Single();
+            Assert.Equal(FederatedTaskPhase.Released, row.Phase);
+            Assert.Equal(datasetSha, row.DatasetSha256);
         }
 
         [Fact]

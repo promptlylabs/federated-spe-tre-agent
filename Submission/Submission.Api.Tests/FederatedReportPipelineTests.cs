@@ -4,6 +4,7 @@ using System.Security.Claims;
 using FiveSafesTes.Core.Models;
 using FiveSafesTes.Core.Models.FederatedTasks;
 using FiveSafesTes.Core.Models.Tes;
+using Submission.Api.Models;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -86,6 +87,7 @@ namespace Submission.Api.Tests
             var dbName = Guid.NewGuid().ToString();
             builder.Services.AddSingleton(store);
             builder.Services.AddSingleton<IFederatedResultStore>(store);
+            builder.Services.AddSingleton(new FederatedTaskSettings());
             builder.Services.AddDbContext<ApplicationDbContext>(o => o.UseInMemoryDatabase(dbName));
             builder.Services.AddAuthentication("Test").AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("Test", null);
             builder.Services.AddAuthorization();
