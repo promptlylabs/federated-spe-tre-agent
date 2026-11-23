@@ -17,12 +17,13 @@ fail() {
   exit 1
 }
 
-# Runs the image locked down the way the Agent will run it.
+# Runs the image locked down the way the pod will run it: no network, read-only root file system, the dataset
+# read-only at /in, /outputs writable, and a scratch /tmp (an emptyDir in the pod).
 # $1 = directory mounted read-only at /in, $2 = directory mounted at /outputs.
 run_locked() {
   in=$1 outputs=$2
   shift 2
-  docker run --rm --platform linux/amd64 --network none --read-only \
+  docker run --rm --platform linux/amd64 --network none --read-only --tmpfs /tmp \
     -v "$in:/in:ro" -v "$outputs:/outputs" "$IMAGE" "$@"
 }
 
@@ -85,6 +86,23 @@ EOF
   run_locked "$tmp/6in" "$tmp/6" run-analysis /in/analysis.py /in/cohort /outputs/result.json
   grep -q '"code":"code_error"' "$tmp/6/result.json" || fail "dataset write: $(cat "$tmp/6/result.json")"
   cmp -s "$examples/cohort/cohort.csv" "$tmp/6in/cohort/cohort.csv" || fail "the dataset was changed"
+
+  echo "7. the advertised libraries import under a read-only root file system"
+  mkdir -m 0777 "$tmp/7" "$tmp/7in"
+  cp -r "$examples/cohort" "$tmp/7in/cohort"
+  cat >"$tmp/7in/analysis.py" <<'EOF'
+import matplotlib.pyplot as plt
+import numpy
+import scipy.stats
+import sklearn.linear_model
+
+
+def site_analysis(df):
+    plt.figure()
+    return {"n": len(df)}
+EOF
+  run_locked "$tmp/7in" "$tmp/7" run-analysis /in/analysis.py /in/cohort /outputs/result.json
+  grep -q '"status":"ok"' "$tmp/7/result.json" || fail "libraries: $(cat "$tmp/7/result.json")"
 
   echo "image checks passed"
 }

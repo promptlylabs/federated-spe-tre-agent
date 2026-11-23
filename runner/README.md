@@ -28,10 +28,12 @@ The wrapper does these steps in order. If a step fails, it writes an error
 result and stops.
 
 1. Find the one `.csv` file and `schema.json` in the dataset directory.
-2. Check that the CSV is not larger than 1 GiB.
+2. Check that the CSV is not larger than 256 MiB.
 3. Read the CSV as UTF-8 with a header row. A byte-order mark (from Excel's
-   "CSV UTF-8" export) is allowed. Blank lines are skipped. Every row must
-   have as many fields as the header.
+   "CSV UTF-8" export) is allowed. Blank lines are skipped, except in a
+   one-column file, where an empty line is an empty cell (blank lines at the
+   end of the file are still skipped). Every row must have as many fields as
+   the header. A file that cannot be read gives `invalid_dataset`.
 4. Check the CSV against `schema.json`: the same column names in the same
    order, and every value is of the column's type. Then convert the columns
    to those types.
@@ -81,8 +83,8 @@ An error result has `datasetSha256` only when the CSV was read.
 |---|---|
 | `dataset_not_found` | No `.csv` file in the dataset directory, or no directory. |
 | `ambiguous_dataset` | More than one `.csv` file. |
-| `dataset_too_large` | The CSV is larger than 1 GiB. |
-| `invalid_dataset` | The CSV is empty, is not UTF-8 or is not valid CSV. |
+| `dataset_too_large` | The CSV is larger than 256 MiB. |
+| `invalid_dataset` | The CSV cannot be read, is empty, is not UTF-8, is not valid CSV, or a row has the wrong number of fields. |
 | `schema_not_found` | No `schema.json`. |
 | `invalid_schema` | `schema.json` is not valid, has an unknown type or names a column twice. |
 | `schema_mismatch` | The CSV columns are not the schema's, or a value is not of its column's type. |
@@ -91,9 +93,10 @@ An error result has `datasetSha256` only when the CSV was read.
 | `result_too_large` | The return value is larger than 61,440 bytes. |
 
 No message contains a value from the dataset. Messages name columns, line
-numbers, types, sizes and file names. If the CSV's first line has none of the
-schema's column names (no header row, or a line above it), the message does
-not repeat that line, because it may be data. Line numbers are lines in the
+numbers, types, sizes and file names. When the header differs from the
+schema, the message repeats only the names that are schema columns and counts
+the others (`found [age, +1 unknown]`): a file with no header row, or a line
+above it, would otherwise put data in the message. Line numbers are lines in the
 file, counting blank lines and lines inside quoted cells. For an exception, the message gives only
 its type and the line in the researcher's file
 (`site_analysis raised KeyError at analysis.py line 2`), because the
@@ -113,10 +116,19 @@ The pod must have:
 - `readOnlyRootFilesystem: true`, non-root, no privilege escalation;
 - a NetworkPolicy that denies all ingress and egress;
 - the dataset as a read-only volume;
-- `/outputs` as the only writable volume.
+- `/outputs` as the only writable volume that is kept;
+- a writable scratch `/tmp` (an `emptyDir`, discarded with the pod). matplotlib,
+  `tempfile` and joblib need it; the image points `TMPDIR` and `MPLCONFIGDIR`
+  there;
+- enough memory for the dataset: parsing peaks at about 25 times the CSV size
+  (1.5 GiB for 64 MiB), so about 6 GiB for a file at the 256 MiB limit.
 
 `runner/test.sh image` checks the same things with `docker run --network none
---read-only`, as a stand-in for the pod.
+--read-only --tmpfs /tmp`, as a stand-in for the pod.
+
+The researcher's code can write anything to stdout and stderr, for example
+`print(df)`. Only `result.json` is kept free of data values. Whatever runs the
+pod (2.4) must not return the container's logs to the researcher.
 
 pip, uv, micropipenv, virtualenv, and the pip and setuptools wheels that
 `ensurepip` uses are removed, so code cannot install packages. The list of

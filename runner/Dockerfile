@@ -40,6 +40,9 @@ RUN python3 -m pip uninstall -y -q uv micropipenv virtualenv pip \
 # OpenShift runs the pod as a random user ID in group 0, so /outputs is
 # writable by group 0, not only by user 1001.
 RUN mkdir -p /outputs && chown 1001:0 /outputs && chmod 0775 /outputs
+# The root file system is read-only in the pod, so libraries that need a scratch or cache directory (matplotlib,
+# tempfile, joblib) use /tmp, which the pod mounts as a writable emptyDir. It is never part of the output.
+ENV TMPDIR=/tmp MPLCONFIGDIR=/tmp/matplotlib
 USER 1001
 ENTRYPOINT []
 CMD ["run-analysis"]
