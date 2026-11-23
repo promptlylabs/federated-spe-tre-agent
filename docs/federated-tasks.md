@@ -312,7 +312,7 @@ Example:
 {
   "executors": [
     {
-      "image": "5s-tes/python-runner:1",
+      "image": "python-runner:1",
       "command": ["run-analysis", "/code/analysis.py", "/data/cohort_2024", "/outputs/result.json"]
     }
   ],
@@ -575,7 +575,7 @@ What a code task may ask for is set in the section `FederatedTaskSettings`:
 
 | Setting | Default | Meaning |
 |---|---|---|
-| `ApprovedRunnerImages` | `["5s-tes/python-runner:1"]` | The executor images a code task may use. Exact, case-sensitive match. A configured list replaces the default (for example `FederatedTaskSettings__ApprovedRunnerImages__0=5s-tes/python-runner:2`). An empty list, `"ApprovedRunnerImages": []` in an override file, refuses every code task. The default is set in code, not in `appsettings.json`, because configuration lists merge by index and a shipped list could never be shortened. |
+| `ApprovedRunnerImages` | `["python-runner:1"]` | The executor images a code task may use. Exact, case-sensitive match. A configured list replaces the default (for example `FederatedTaskSettings__ApprovedRunnerImages__0=python-runner:2`). An empty list, `"ApprovedRunnerImages": []` in an override file, refuses every code task. The default is set in code, not in `appsettings.json`, because configuration lists merge by index and a shipped list could never be shortened. |
 | `MaxCpuCores` | `4` | The largest `resources.cpu_cores`. |
 | `MaxRamGb` | `16` | The largest `resources.ram_gb`. |
 | `MaxDiskGb` | `20` | The largest `resources.disk_gb`. |

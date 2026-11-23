@@ -353,7 +353,7 @@ public class DoFederatedTaskWorkTests
             [
                 new TesExecutor
                 {
-                    Image = "5s-tes/python-runner:1",
+                    Image = "python-runner:1",
                     Command = ["run-analysis", "/code/analysis.py", "/data/cohort_2024", "/outputs/result.json"]
                 }
             ],
@@ -375,7 +375,7 @@ public class DoFederatedTaskWorkTests
     }
 
     [Theory]
-    [InlineData("5s-tes/python-runner:1")]
+    [InlineData("python-runner:1")]
     [InlineData("5s-tes/federated-ops:1")]
     public async Task Code_task_is_refused_before_input_checks(string approvedImage)
     {

@@ -10,7 +10,7 @@ namespace Submission.Api.Models
     {
         public const string SectionName = "FederatedTaskSettings";
 
-        public static readonly IReadOnlyList<string> DefaultRunnerImages = ["5s-tes/python-runner:1"];
+        public static readonly IReadOnlyList<string> DefaultRunnerImages = ["python-runner:1"];
 
         /// <summary>
         /// Executor images a code task may use. Exact, case-sensitive match. Empty rejects every code task. The default

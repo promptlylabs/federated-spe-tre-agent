@@ -13,7 +13,7 @@ public class FederatedCodeTaskProfileTests
     private static string Sha(string content) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(content)));
 
     private static FederatedIntakeLimits Limits(params string[] images) =>
-        new(images.Length == 0 ? ["5s-tes/python-runner:1"] : images, 4, 16, 20);
+        new(images.Length == 0 ? ["python-runner:1"] : images, 4, 16, 20);
 
     private static TesTask ValidCodeTask(string code = Code) => new()
     {
@@ -21,7 +21,7 @@ public class FederatedCodeTaskProfileTests
         [
             new TesExecutor
             {
-                Image = "5s-tes/python-runner:1",
+                Image = "python-runner:1",
                 Command = ["run-analysis", "/code/analysis.py", "/data/cohort_2024", "/outputs/result.json"]
             }
         ],
@@ -71,7 +71,7 @@ public class FederatedCodeTaskProfileTests
 
     public static TheoryData<string, Action<TesTask>, string> Violations => new()
     {
-        { "image not approved", t => t.Executors[0].Image = "5s-tes/python-runner:2",
+        { "image not approved", t => t.Executors[0].Image = "python-runner:2",
             "executor image must be 5s-tes/federated-ops:1 or an approved runner image" },
         { "env set", t => t.Executors[0].Env = new Dictionary<string, string> { ["PYTHONPATH"] = "/x" },
             "executor env, workdir, stdin, stdout and stderr must not be set" },
