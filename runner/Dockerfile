@@ -16,7 +16,7 @@ ENTRYPOINT []
 CMD ["python3", "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests"]
 
 FROM base AS runner
-LABEL org.opencontainers.image.title="5s-tes/python-runner" \
+LABEL org.opencontainers.image.title="python-runner" \
       org.opencontainers.image.base.name="quay.io/opendatahub/odh-pipeline-runtime-datascience-cpu-py311-ubi9:2025a-v1.35" \
       org.opencontainers.image.base.digest="sha256:62ceae2f54e06b7231027d1fed7392cfb7cbf5952929fc85b4342e3cb75fab75"
 USER 0

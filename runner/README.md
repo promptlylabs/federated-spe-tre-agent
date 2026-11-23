@@ -1,4 +1,4 @@
-# Runner image (`5s-tes/python-runner:1`)
+# Runner image (`python-runner:1`)
 
 The image that a researcher's Python code runs in at the hospital. The
 researcher writes and tests the code in their SPE, a Jupyter notebook that
@@ -144,10 +144,10 @@ hospital.
 ## Try it
 
 ```sh
-docker build --platform linux/amd64 -t 5s-tes/python-runner:1 runner
+docker build --platform linux/amd64 -t python-runner:1 runner
 docker run --rm --platform linux/amd64 --network none --read-only \
   -v "$PWD/runner/examples:/in:ro" -v "$PWD/out:/outputs" \
-  5s-tes/python-runner:1 run-analysis /in/analysis.py /in/cohort /outputs/result.json
+  python-runner:1 run-analysis /in/analysis.py /in/cohort /outputs/result.json
 ```
 
 `out/` must exist and be writable by user 1001 (for example `chmod 0777 out`).

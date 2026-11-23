@@ -4,11 +4,11 @@
 set -eu
 cd "$(dirname "$0")"
 
-IMAGE=5s-tes/python-runner:1
+IMAGE=python-runner:1
 
 unit() {
-  docker build --platform linux/amd64 --target test -t 5s-tes/python-runner:test .
-  docker run --rm --platform linux/amd64 --network none 5s-tes/python-runner:test \
+  docker build --platform linux/amd64 --target test -t python-runner:test .
+  docker run --rm --platform linux/amd64 --network none python-runner:test \
     python3 -m pytest -q -p no:cacheprovider tests "$@"
 }
 
