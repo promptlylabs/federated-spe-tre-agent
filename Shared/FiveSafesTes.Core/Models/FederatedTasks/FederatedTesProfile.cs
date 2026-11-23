@@ -24,6 +24,12 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         public const string CodePath = "/code/analysis.py";
         public const string DataPathPrefix = "/data/";
         public const string ResultPath = "/outputs/result.json";
+
+        /// <summary>
+        /// The only output url a code task may give. TES requires a url; a real address could let a runtime upload the
+        /// result past output approval, so none is accepted. The result leaves through output approval and ReportResult.
+        /// </summary>
+        public const string ResultUrl = "result://";
         public const int MaxCodeBytes = 262144;
 
         private static readonly Regex Sha256Pattern = new(@"^[0-9a-f]{64}\z", RegexOptions.Compiled);
@@ -177,10 +183,12 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
                 return Fail(FederatedTaskErrorCodes.InvalidTask,
                     $"executor command must be {RunAnalysisCommand} {CodePath} {DataPathPrefix}<dataset> {ResultPath}");
 
-            // Outputs: the one file the result may leave in. Its url is ignored; nothing is uploaded to it.
+            // Outputs: the one file the result may leave in, with a url that points nowhere.
             if (task.Outputs is not { Count: 1 } || task.Outputs[0] is not { } output
                 || output.Path != ResultPath || output.Type != TesFileType.FILEEnum)
                 return Fail(FederatedTaskErrorCodes.InvalidTask, $"task must have exactly one output, {ResultPath}");
+            if (output.Url != ResultUrl)
+                return Fail(FederatedTaskErrorCodes.InvalidTask, $"the output url must be {ResultUrl}");
 
             // Resources: checked at intake only, and only those given.
             if (intake != null && task.Resources is { } resources)
@@ -207,7 +215,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             if (value is not { } v || (double.IsFinite(v) && v > 0 && v <= max))
                 return null;
             return Fail(FederatedTaskErrorCodes.InvalidTask,
-                $"resources.{field} must be between 0 and {max.ToString(CultureInfo.InvariantCulture)}");
+                $"resources.{field} must be more than 0 and at most {max.ToString(CultureInfo.InvariantCulture)}");
         }
 
         /// <summary>

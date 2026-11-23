@@ -12,7 +12,11 @@ namespace Submission.Api.Models
 
         public static readonly IReadOnlyList<string> DefaultRunnerImages = ["5s-tes/python-runner:1"];
 
-        /// <summary>Executor images a code task may use. Exact, case-sensitive match. Empty rejects every code task.</summary>
+        /// <summary>
+        /// Executor images a code task may use. Exact, case-sensitive match. Empty rejects every code task. The default
+        /// lives here, not in appsettings.json: configuration lists merge by index, so a shipped list could never be
+        /// shortened or emptied by an override file or environment variables.
+        /// </summary>
         public string[] ApprovedRunnerImages { get; set; } = [.. DefaultRunnerImages];
 
         public long MaxCpuCores { get; set; } = 4;
