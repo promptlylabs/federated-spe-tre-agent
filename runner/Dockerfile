@@ -1,8 +1,8 @@
 # Base: Open Data Hub 2025a data-science runtime (Python 3.11), tag
 # odh-pipeline-runtime-datascience-cpu-py311-ubi9:2025a-v1.35. It is the stand-in
 # for the RHOAI ImageStream s2i-generic-data-science-notebook:2025.1 that
-# spms-spe-operator-go starts researcher notebooks from. Same libraries, without
-# Jupyter. When the cluster's digest for that ImageStream tag is known, change
+# spms-spe-operator-go starts researcher notebooks from. Same data-science libraries,
+# without Jupyter (a few infrastructure packages differ; see runner/README.md). When the cluster's digest for that ImageStream tag is known, change
 # only this line (and the labels below).
 FROM --platform=linux/amd64 quay.io/opendatahub/odh-pipeline-runtime-datascience-cpu-py311-ubi9@sha256:62ceae2f54e06b7231027d1fed7392cfb7cbf5952929fc85b4342e3cb75fab75 AS base
 

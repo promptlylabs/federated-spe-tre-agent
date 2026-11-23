@@ -70,7 +70,8 @@ any case). The pandas dtypes are `Int64`, `Float64`, `string` and `boolean`.
 An empty cell is allowed in every column and becomes a missing value. An
 `integer` is ASCII digits with an optional sign (`-12`, `+7`). A `number` is a
 plain decimal with an optional exponent (`3`, `-1.5`, `.5`, `2E-3`). Spaces,
-digit underscores (`1_000`), other digits and `nan` or `inf` are not accepted.
+digit underscores (`1_000`), a trailing dot (`5.`), other digits and `nan` or
+`inf` are not accepted. String cells may be as long as the file.
 
 ## `result.json`
 
@@ -88,7 +89,7 @@ An error result has `datasetSha256` only when the CSV was read.
 | `dataset_too_large` | The CSV is larger than 256 MiB. |
 | `invalid_dataset` | The CSV cannot be read, is empty, is not UTF-8, is not valid CSV, or a row has the wrong number of fields. |
 | `schema_not_found` | No `schema.json`. |
-| `invalid_schema` | `schema.json` is not valid, has an unknown type or names a column twice. |
+| `invalid_schema` | `schema.json` cannot be read, is not valid, has an unknown type or names a column twice. |
 | `schema_mismatch` | The CSV columns are not the schema's, or a value is not of its column's type. |
 | `code_error` | The researcher's file could not be imported, has no `site_analysis`, or `site_analysis` raised an exception (also `sys.exit`). |
 | `invalid_result` | The return value is not a dict, cannot be written as JSON, or has no valid `n`. |
@@ -105,7 +106,10 @@ its type and the line in the researcher's file
 exception text can contain data values.
 
 Exit code: 0 when `result.json` was written (ok or error), 2 for wrong
-arguments, 1 when `result.json` could not be written.
+arguments, 1 when `result.json` could not be written. A failure of the wrapper
+itself that it cannot report (for example running out of memory while parsing)
+also ends without `result.json`; whatever runs the image treats a missing file
+or a non-zero exit as a failure.
 
 ## Isolation
 
@@ -145,14 +149,16 @@ hospital.
 
 ```sh
 docker build --platform linux/amd64 -t python-runner:1 runner
-docker run --rm --platform linux/amd64 --network none --read-only \
+docker run --rm --platform linux/amd64 --network none --read-only --tmpfs /tmp \
   -v "$PWD/runner/examples:/in:ro" -v "$PWD/out:/outputs" \
   python-runner:1 run-analysis /in/analysis.py /in/cohort /outputs/result.json
 ```
 
 `out/` must exist and be writable by user 1001 (for example `chmod 0777 out`).
 
-In the researcher's SPE, the same command works against synthetic data:
+In the researcher's SPE, once `run-analysis` is installed in the notebook
+image (PoC task 2.7; nothing installs it there yet), the same command works
+against synthetic data:
 
 ```sh
 run-analysis analysis.py ./synthetic/cohort ./result.json
@@ -169,8 +175,9 @@ runner/test.sh image    # build the image and check isolation
 The unit tests run in a `test` stage of the Dockerfile, on the image's own
 Python and pandas. The image checks run the example locked down, and check
 that the installers are gone, the user is 1001, a random user in group 0 can
-write `/outputs`, Python is 3.11, and code can neither open a network
-connection nor change the dataset.
+write `/outputs`, Python is 3.11, code can neither open a network connection
+nor change the dataset, and matplotlib, numpy, scipy and scikit-learn import
+under a read-only root file system.
 
 The image is amd64 only. On Apple silicon, Docker runs it under emulation.
 

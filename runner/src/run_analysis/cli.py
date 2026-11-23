@@ -12,14 +12,20 @@ USAGE = "usage: run-analysis [--debug] <code.py> <dataset dir> <result.json>"
 def _run(code: Path, dataset_dir: Path, out: Path, debug: bool) -> None:
     sha = None
     try:
+        # A read failure (for example a file the pod user cannot read) is an error result, not "could not write".
         try:
             csv_path, schema_path = dataset.find_files(dataset_dir)
             dataset.check_size(csv_path)
             sha = dataset.file_sha256(csv_path)
+        except OSError as e:
+            raise AnalysisError("invalid_dataset", f"the dataset could not be read ({type(e).__name__})") from None
+        try:
             columns = dataset.load_schema(schema_path)
+        except OSError as e:
+            raise AnalysisError("invalid_schema", f"schema.json could not be read ({type(e).__name__})") from None
+        try:
             frame = dataset.read_dataset(csv_path, columns)
         except OSError as e:
-            # A read failure (for example a file the pod user cannot read) is an error result, not "could not write".
             raise AnalysisError("invalid_dataset", f"the dataset could not be read ({type(e).__name__})") from None
         result, n = check_result(call_site_analysis(code, frame, debug))
     except AnalysisError as e:

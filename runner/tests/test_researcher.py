@@ -138,3 +138,24 @@ def test_module_is_not_left_in_sys_modules(run):
 
     run("def site_analysis(df): return {'n': 1}\n")
     assert "analysis" not in sys.modules
+
+
+def test_researcher_cannot_raise_the_wrappers_own_error_to_choose_the_message(run):
+    r, text = run(
+        "from run_analysis.errors import AnalysisError\n"
+        "raise AnalysisError('code_error', 'SECRET')\n"
+    )
+    assert r["code"] == "code_error"
+    assert r["message"] == "importing analysis.py raised AnalysisError at line 2"
+    assert "SECRET" not in text
+
+
+def test_an_import_blocking_none_entry_is_put_back(run):
+    import sys
+
+    sys.modules["analysis"] = None
+    try:
+        run("def site_analysis(df): return {'n': 1}\n")
+        assert "analysis" in sys.modules and sys.modules["analysis"] is None
+    finally:
+        sys.modules.pop("analysis", None)

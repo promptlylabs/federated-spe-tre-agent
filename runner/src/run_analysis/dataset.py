@@ -99,6 +99,8 @@ def read_dataset(csv_path: Path, columns: list[Column]) -> pandas.DataFrame:
     # costs several times its size in memory.
     cells: list[list[str]] = [[] for _ in expected]
     lines = array.array("q")  # the physical line each row starts on
+    # The csv module limits one field to 131,072 characters by default; a cell may be as long as the file.
+    csv.field_size_limit(MAX_CSV_BYTES)
     reader = csv.reader(io.StringIO(text, newline=""), strict=True)
     last_line = 0
     trailing_blanks = 0  # blank lines at the end of a one-column file are not rows

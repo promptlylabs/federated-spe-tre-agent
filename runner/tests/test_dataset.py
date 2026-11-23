@@ -237,3 +237,19 @@ def test_plain_numbers_still_parse(make_dataset):
     frame = read_dataset(d / "cohort.csv", [Column("a", "integer"), Column("b", "number")])
     assert frame.a.tolist() == [-12, 7, 0, 7]
     assert frame.b.tolist() == [-1.5, 3.0, 0.5, 0.002]
+
+
+def test_long_string_cells_are_accepted(make_dataset):
+    d = make_dataset("note\n" + "x" * 200_000 + "\n", None)
+    frame = read_dataset(d / "cohort.csv", [Column("note", "string")])
+    assert len(frame.note[0]) == 200_000
+
+
+def test_unreadable_schema_is_invalid_schema(make_dataset, run, monkeypatch):
+    def denied(path):
+        raise PermissionError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr(dataset, "load_schema", denied)
+    r, _ = run(make_dataset("age\n1\n", [{"name": "age", "type": "integer"}]))
+    assert r["code"] == "invalid_schema"
+    assert r["message"] == "schema.json could not be read (PermissionError)"
