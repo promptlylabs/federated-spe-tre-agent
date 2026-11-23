@@ -330,6 +330,8 @@ Example:
 }
 ```
 
+The code reaches the hospital unchanged, and only the hospital the task is for. The code travels inside the task. Submission checks its hash at intake and stores the task once; nothing changes the stored task afterwards. Each Agent gets only its own TRE's tasks, through `GetPendingTasksForTre` with its service account. Before anything else, the Agent checks the hash again. If the code no longer matches `fed.code_sha256`, the task is rejected (`rejected_by_input_checks`, `invalid_task`, "tag 'fed.code_sha256' does not match the code"), and no data is read.
+
 Until PoC task 2.4, a hospital refuses every code task before its input checks: phase `rejected_by_input_checks`, `invalid_task`, "this TRE does not run code tasks yet". It does not look in its dataset bucket for the task. Count/mean tasks and the `5s-tes/federated-ops:1` image are removed in 2.4.
 
 ### Task phases and state

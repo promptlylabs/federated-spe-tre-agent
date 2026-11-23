@@ -391,6 +391,28 @@ public class DoFederatedTaskWorkTests
         Assert.Empty(client.ProgressCalls);
     }
 
+    [Theory]
+    [InlineData("code changed")]
+    [InlineData("tag changed")]
+    public async Task Code_whose_hash_no_longer_matches_is_refused_without_reading_data(string tampering)
+    {
+        var client = new FakeClient();
+        var task = PendingCodeTask(T1);
+        if (tampering == "code changed")
+            task.Inputs.Single(i => i.Path == "/code/analysis.py").Content += "\n# x";
+        else
+            task.Tags!["fed.code_sha256"] = new string('0', 64);
+        client.Pending.Add(task);
+
+        // The dataset lookup throws, so a task that got past the hash check would not get this report.
+        await Work(client, new FailingResolveReader(), settings: Approving("5s-tes/python-runner:1")).Execute();
+
+        var report = Assert.Single(client.Reports);
+        Assert.Equal("invalid_task", report.ErrorCode);
+        Assert.Equal("tag 'fed.code_sha256' does not match the code", report.ErrorMessage);
+        Assert.Empty(client.ProgressCalls);
+    }
+
     [Fact]
     public async Task Execute_ValidMean_ReportsComplete()
     {
