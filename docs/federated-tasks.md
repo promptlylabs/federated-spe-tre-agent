@@ -330,7 +330,9 @@ Example:
 }
 ```
 
-The code reaches the hospital unchanged, and only the hospital the task is for. The code travels inside the task. Submission checks its hash at intake and stores the task once; nothing changes the stored task afterwards. Each Agent gets only its own TRE's tasks, through `GetPendingTasksForTre` with its service account. Before anything else, the Agent checks the hash again. If the code no longer matches `fed.code_sha256`, the task is rejected (`rejected_by_input_checks`, `invalid_task`, "tag 'fed.code_sha256' does not match the code"), and no data is read.
+The code reaches only the hospital the task is for, as it was submitted. The code travels inside the task. Submission checks its hash at intake and stores the task once. The stored task is init-only in code and EF refuses to save a change to it; bulk updates and raw SQL are not covered by that guard, and Submission has none for these rows. Each Agent gets only its own TRE's tasks, through `GetPendingTasksForTre` with its service account. As part of its profile check, before any input check or data read, the Agent recomputes the hash. If the code no longer matches `fed.code_sha256`, the task is rejected (`rejected_by_input_checks`, `invalid_task`, "tag 'fed.code_sha256' does not match the code"), and no data is read.
+
+What the hash check catches: code changed on the way or in storage without its tag. What it does not catch: someone who can write to Submission's database could change both the code and its tag, because they are stored together. The orchestrator's database is trusted for the PoC. Closing that gap needs a signature made at intake that the Agent can verify, which is not built yet.
 
 Until PoC task 2.4, a hospital refuses every code task before its input checks: phase `rejected_by_input_checks`, `invalid_task`, "this TRE does not run code tasks yet". It does not look in its dataset bucket for the task. Count/mean tasks and the `5s-tes/federated-ops:1` image are removed in 2.4.
 

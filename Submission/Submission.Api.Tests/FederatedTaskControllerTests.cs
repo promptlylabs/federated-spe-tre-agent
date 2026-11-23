@@ -174,7 +174,8 @@ namespace Submission.Api.Tests
             Assert.Contains("def site_analysis(df)", row.TesTaskJson);
         }
 
-        // Non-ASCII, a tab and Windows line endings: the JSON round trip through the database must not change a byte.
+        // Non-ASCII, a tab and Windows line endings: the JSON serialisation round trip must not change a byte. (The
+        // in-memory database keeps the string as is; the Postgres round trip was checked on the dev stack.)
         private const string AwkwardCode = "# é\tcafé\r\ndef site_analysis(df):\r\n    return {'n': len(df)}\r\n";
 
         [Fact]
@@ -190,7 +191,7 @@ namespace Submission.Api.Tests
             Assert.Equal(AwkwardCode, code);
             var sha = Convert.ToHexStringLower(
                 System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(code!)));
-            Assert.Equal(task.Tags!["fed.code_sha256"], sha);
+            Assert.Equal(sha, task.Tags!["fed.code_sha256"]);
         }
 
         [Fact]
