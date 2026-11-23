@@ -399,6 +399,10 @@ There is no default, because the site approves the images. Only `appsettings.Dev
 
 The input checks run on every poll until the task's result file is saved, so a resumed `running` task is checked again. After the file is saved, the input checks don't run again: whether the result leaves is the decision of output approval, not of the input checks. If its image was removed from the list in the meantime, the Agent logs a warning and the result still goes on to output approval.
 
+### Runner image
+
+`python-runner:1` is the image that a researcher's Python code will run in at the hospital. The researcher's SPE is a notebook that `spms-spe-operator-go` starts from `s2i-generic-data-science-notebook:2025.2` (Open Data Hub 2025b, Python 3.12, plus ACRO with SPMS's thresholds). At the hospital, a version of the same operator on OpenShift will start a locked-down pod from this image. The image must have the same Python and libraries as the SPE notebook; today its base is a 2025a/Python 3.11 placeholder that must be aligned before PoC task 2.4 (see the runner README). It has no package installers, and one command: `run-analysis <code.py> <dataset dir> <result.json>`. The command checks the dataset against its `schema.json`, calls the researcher's `site_analysis(df)`, checks the return value and writes `result.json`. No error message contains a data value. Nothing starts the image yet (PoC task 2.4), so it is not in `ApprovedImages`. See [`runner/README.md`](../runner/README.md) for the command, the `result.json` format, the error codes, the pod settings and the tests.
+
 ### Output approval
 
 Every result waits for a reviewer, so a site must run the Data Egress app (`Egress/Data-Egress-API` and `Egress/Data-Egress-UI`) and connect it to the Agent in both directions. `dev/federated/docker-compose.yml` and its realm files are a working example.

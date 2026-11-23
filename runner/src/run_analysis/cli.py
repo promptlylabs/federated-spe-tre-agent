@@ -1,0 +1,53 @@
+import sys
+from pathlib import Path
+
+from run_analysis import dataset
+from run_analysis.errors import AnalysisError
+from run_analysis.researcher import call_site_analysis
+from run_analysis.result import check_result, write_error, write_ok
+
+USAGE = "usage: run-analysis [--debug] <code.py> <dataset dir> <result.json>"
+
+
+def _run(code: Path, dataset_dir: Path, out: Path, debug: bool) -> None:
+    sha = None
+    try:
+        # A read failure (for example a file the pod user cannot read) is an error result, not "could not write".
+        try:
+            csv_path, schema_path = dataset.find_files(dataset_dir)
+            dataset.check_size(csv_path)
+            sha = dataset.file_sha256(csv_path)
+        except OSError as e:
+            raise AnalysisError("invalid_dataset", f"the dataset could not be read ({type(e).__name__})") from None
+        try:
+            columns = dataset.load_schema(schema_path)
+        except OSError as e:
+            raise AnalysisError("invalid_schema", f"schema.json could not be read ({type(e).__name__})") from None
+        try:
+            frame = dataset.read_dataset(csv_path, columns)
+        except OSError as e:
+            raise AnalysisError("invalid_dataset", f"the dataset could not be read ({type(e).__name__})") from None
+        result, n = check_result(call_site_analysis(code, frame, debug))
+    except AnalysisError as e:
+        write_error(out, e.code, e.message, sha)
+        return
+    write_ok(out, sha, n, result)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = list(sys.argv[1:] if argv is None else argv)
+    # --debug prints the researcher's full traceback to stderr. Only for the
+    # SPE with synthetic data: the traceback can hold data values.
+    debug = bool(args) and args[0] == "--debug"
+    if debug:
+        args = args[1:]
+    if len(args) != 3:
+        print(USAGE, file=sys.stderr)
+        return 2
+    code, dataset_dir, out = (Path(a) for a in args)
+    try:
+        _run(code, dataset_dir, out, debug)
+    except OSError as e:
+        print(f"run-analysis: could not write {out}: {type(e).__name__}", file=sys.stderr)
+        return 1
+    return 0
