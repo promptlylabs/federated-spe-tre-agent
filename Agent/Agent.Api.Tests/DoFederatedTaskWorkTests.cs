@@ -399,12 +399,13 @@ public class DoFederatedTaskWorkTests
         var client = new FakeClient();
         var task = PendingCodeTask(T1);
         if (tampering == "code changed")
-            task.Inputs.Single(i => i.Path == "/code/analysis.py").Content += "\n# x";
+            task.Inputs!.Single(i => i.Path == "/code/analysis.py").Content += "\n# x";
         else
             task.Tags!["fed.code_sha256"] = new string('0', 64);
         client.Pending.Add(task);
 
-        // The dataset lookup throws, so a task that got past the hash check would not get this report.
+        // A task that got past the hash check would be refused with "does not run code tasks yet" instead, and the
+        // dataset lookup throws, so the exact message below proves the hash check stopped it before any data access.
         await Work(client, new FailingResolveReader(), settings: Approving("python-runner:1")).Execute();
 
         var report = Assert.Single(client.Reports);

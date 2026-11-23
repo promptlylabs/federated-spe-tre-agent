@@ -204,7 +204,8 @@ namespace Submission.Api.Tests
             // Init-only stops plain assignments; this is the route EF would still allow.
             db.Entry(row).Property(x => x.TesTaskJson).CurrentValue = "{}";
 
-            Assert.Throws<InvalidOperationException>(() => db.SaveChanges());
+            var error = Assert.Throws<InvalidOperationException>(() => db.SaveChanges());
+            Assert.Contains("TesTaskJson", error.Message);
         }
 
         [Fact]
