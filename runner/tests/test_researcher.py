@@ -97,3 +97,44 @@ def test_without_debug_nothing_reaches_stderr(tmp_path, make_code, make_dataset,
 def test_debug_with_wrong_argument_count_is_usage(capsys):
     assert main(["--debug", "a", "b"]) == 2
     assert "usage: run-analysis [--debug]" in capsys.readouterr().err
+
+
+# Code-review fixes (PR #15)
+
+
+def test_dataclass_with_postponed_annotations_works(run):
+    r, _ = run(
+        "from __future__ import annotations\n"
+        "from dataclasses import dataclass\n\n"
+        "@dataclass\n"
+        "class Summary:\n"
+        "    n: int\n\n"
+        "def site_analysis(df):\n"
+        "    return {'n': Summary(len(df)).n}\n"
+    )
+    assert r["status"] == "ok", r
+
+
+def test_relative_code_path_keeps_the_line_number(tmp_path, make_code, make_dataset, monkeypatch):
+    d = make_dataset("age,sex\n30,SECRET\n40,F\n", AGE_SEX)
+    make_code("def site_analysis(df):\n    raise KeyError('k')\n")
+    monkeypatch.chdir(tmp_path)
+    assert main(["analysis.py", str(d), "result.json"]) == 0
+    r = json.loads((tmp_path / "result.json").read_text())
+    assert r["message"] == "site_analysis raised KeyError at analysis.py line 2"
+
+
+def test_relative_code_path_syntax_error_keeps_the_line_number(tmp_path, make_code, make_dataset, monkeypatch):
+    d = make_dataset("age,sex\n30,SECRET\n40,F\n", AGE_SEX)
+    make_code("x = 1\ndef site_analysis(df)\n")
+    monkeypatch.chdir(tmp_path)
+    main(["analysis.py", str(d), "result.json"])
+    r = json.loads((tmp_path / "result.json").read_text())
+    assert r["message"] == "importing analysis.py raised SyntaxError at line 2"
+
+
+def test_module_is_not_left_in_sys_modules(run):
+    import sys
+
+    run("def site_analysis(df): return {'n': 1}\n")
+    assert "analysis" not in sys.modules
