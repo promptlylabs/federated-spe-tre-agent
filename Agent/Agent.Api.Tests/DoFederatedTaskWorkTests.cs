@@ -405,7 +405,7 @@ public class DoFederatedTaskWorkTests
         client.Pending.Add(task);
 
         // The dataset lookup throws, so a task that got past the hash check would not get this report.
-        await Work(client, new FailingResolveReader(), settings: Approving("5s-tes/python-runner:1")).Execute();
+        await Work(client, new FailingResolveReader(), settings: Approving("python-runner:1")).Execute();
 
         var report = Assert.Single(client.Reports);
         Assert.Equal("invalid_task", report.ErrorCode);
