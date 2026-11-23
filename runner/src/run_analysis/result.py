@@ -56,7 +56,11 @@ def check_result(value: object) -> tuple[dict, int]:
         raise AnalysisError("invalid_result", "the returned dict has no n")
     if not isinstance(n, int) or isinstance(n, bool) or n < 0:
         raise AnalysisError("invalid_result", "n must be a non-negative integer")
-    size = len(encode(result))
+    try:
+        size = len(encode(result))
+    except (ValueError, RecursionError):
+        # For example an int of more than 4300 digits, which Python refuses to turn into text.
+        raise AnalysisError("invalid_result", "the returned dict is not JSON-serialisable") from None
     if size > MAX_RESULT_BYTES:
         raise AnalysisError("result_too_large", f"the returned dict is {size} bytes; the limit is {MAX_RESULT_BYTES}")
     return result, n

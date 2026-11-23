@@ -86,3 +86,12 @@ def test_ok_result_has_n_from_the_dict(tmp_path, make_code, make_dataset):
     r = json.loads(out.read_text())
     assert r["status"] == "ok"
     assert r["n"] == 7
+
+
+# Code-review fixes (PR #15)
+
+
+def test_huge_integer_is_invalid_result():
+    with pytest.raises(AnalysisError) as e:
+        check_result({"n": 1, "x": 10**5000})
+    assert e.value.code == "invalid_result"

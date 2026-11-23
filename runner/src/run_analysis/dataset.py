@@ -4,6 +4,7 @@ No message raised here holds a cell value: only column names, line numbers,
 types, sizes and file names.
 """
 
+import array
 import csv
 import hashlib
 import io
@@ -16,9 +17,10 @@ import pandas
 
 from run_analysis.errors import AnalysisError
 
-MAX_CSV_BYTES = 1073741824
+# 256 MiB: parsing keeps every cell as a Python string, so memory use is several times the file size.
+MAX_CSV_BYTES = 268435456
 TYPES = ("integer", "number", "string", "boolean")
-_GIB = 1024**3
+_MIB = 1024**2
 
 
 @dataclass(frozen=True)
@@ -47,7 +49,7 @@ def check_size(csv_path: Path) -> None:
     if size > MAX_CSV_BYTES:
         raise AnalysisError(
             "dataset_too_large",
-            f"the dataset file is {size / _GIB:.1f} GiB; the limit is {MAX_CSV_BYTES / _GIB:g} GiB",
+            f"the dataset file is {size / _MIB:.1f} MiB; the limit is {MAX_CSV_BYTES / _MIB:g} MiB",
         )
 
 
@@ -62,7 +64,7 @@ def file_sha256(path: Path) -> str:
 def load_schema(path: Path) -> list[Column]:
     try:
         doc = json.loads(path.read_text(encoding="utf-8"))
-    except (UnicodeDecodeError, json.JSONDecodeError):
+    except (UnicodeDecodeError, json.JSONDecodeError, RecursionError):
         raise AnalysisError("invalid_schema", "schema.json is not valid JSON") from None
     if not isinstance(doc, dict) or not isinstance(doc.get("columns"), list):
         raise AnalysisError("invalid_schema", "schema.json has no columns list")
@@ -92,14 +94,23 @@ def read_dataset(csv_path: Path, columns: list[Column]) -> pandas.DataFrame:
 
     expected = [c.name for c in columns]
     header: list[str] | None = None
-    rows: list[list[str]] = []
-    lines: list[int] = []  # the physical line each row starts on
+    # Values are collected per column, and line numbers in a compact array: a row-of-lists copy of a large file
+    # costs several times its size in memory.
+    cells: list[list[str]] = [[] for _ in expected]
+    lines = array.array("q")  # the physical line each row starts on
     reader = csv.reader(io.StringIO(text, newline=""), strict=True)
     last_line = 0
+    trailing_blanks = 0  # blank lines at the end of a one-column file are not rows
     try:
         for record in reader:
             start_line, last_line = last_line + 1, reader.line_num
             if not record:  # a blank line
+                # In a one-column file an empty cell is an empty line: keep it as a missing value. Blank lines at the
+                # end of the file are dropped below.
+                if header is not None and len(header) == 1:
+                    cells[0].append("")
+                    lines.append(start_line)
+                    trailing_blanks += 1
                 continue
             if header is None:
                 header = record
@@ -109,28 +120,40 @@ def read_dataset(csv_path: Path, columns: list[Column]) -> pandas.DataFrame:
                 raise AnalysisError(
                     "invalid_dataset", f"line {start_line} has {len(record)} fields; the header has {len(header)}"
                 )
-            rows.append(record)
+            for column, value in zip(cells, record):
+                column.append(value)
             lines.append(start_line)
+            trailing_blanks = 0
     except csv.Error:
         raise AnalysisError("invalid_dataset", f"the dataset file is not valid CSV at line {reader.line_num}") from None
+    del reader, text  # the parsed cells are all that is needed from here
 
-    cells = list(zip(*rows)) if rows else [()] * len(columns)
-    return pandas.DataFrame(
-        {c.name: _convert(c, list(cells[i]), lines) for i, c in enumerate(columns)},
-        index=pandas.RangeIndex(len(rows)),
-    )
+    if trailing_blanks:
+        for column in cells:
+            del column[-trailing_blanks:]
+        del lines[-trailing_blanks:]
+
+    n_rows = len(lines)
+    data = {}
+    for i, column in enumerate(columns):
+        data[column.name] = _convert(column, cells[i], lines)
+        cells[i] = []  # free each column's strings once converted
+    return pandas.DataFrame(data, index=pandas.RangeIndex(n_rows))
 
 
 def _check_header(header: list[str], expected: list[str]) -> None:
     if header == expected:
         return
     message = f"columns differ from schema.json: expected [{', '.join(expected)}]"
-    # Name what was found only when it looks like a header. A file with no header
-    # row, or a line above it, would otherwise put data values in the message.
-    if any(name in expected for name in header):
-        message += f", found [{', '.join(header)}]"
-    else:
+    # Only names that are schema columns are repeated. Any other cell may be data: a file with no header row, or a
+    # line above it, would otherwise put a data value in the message.
+    known = [name for name in header if name in expected]
+    if not known:
         message += "; the first line has none of these names (is the header row missing?)"
+    else:
+        unknown = len(header) - len(known)
+        found = known + ([f"+{unknown} unknown"] if unknown else [])
+        message += f", found [{', '.join(found)}]"
     raise AnalysisError("schema_mismatch", message)
 
 
@@ -167,7 +190,7 @@ _PARSERS = {
 }
 
 
-def _convert(column: Column, cells: list[str], lines: list[int]) -> pandas.Series:
+def _convert(column: Column, cells: list[str], lines: array.array) -> pandas.Series:
     if column.type == "string":
         return pandas.Series([None if v == "" else v for v in cells], dtype="string")
     parse, dtype, what = _PARSERS[column.type]

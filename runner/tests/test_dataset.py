@@ -68,7 +68,7 @@ def test_invalid_schema(make_dataset, run, schema_text):
 def test_columns_differ_is_schema_mismatch(make_dataset, run):
     r, _ = run(make_dataset("age,gender\n1,F\n", AGE_SEX))
     assert r["code"] == "schema_mismatch"
-    assert r["message"] == "columns differ from schema.json: expected [age, sex], found [age, gender]"
+    assert r["message"] == "columns differ from schema.json: expected [age, sex], found [age, +1 unknown]"
     assert "datasetSha256" in r
 
 
@@ -166,3 +166,53 @@ def test_utf8_bom_is_accepted(make_dataset):
 def test_line_numbers_count_blank_lines_and_multiline_cells(make_dataset, run):
     r, _ = run(make_dataset('age,sex\n\n30,"F\nX"\nbad,F\n', AGE_SEX))
     assert r["message"] == "column 'age', line 5: not an integer"
+
+
+# Code-review fixes (PR #15)
+
+
+def test_unknown_header_names_are_never_echoed(make_dataset, run):
+    # No header row; one data cell happens to equal a column name.
+    schema = [{"name": "name", "type": "string"}, {"name": "diagnosis", "type": "string"}]
+    r, text = run(make_dataset("diagnosis,John Smith\nx,y\n", schema))
+    assert r["code"] == "schema_mismatch"
+    assert "John Smith" not in text
+    assert r["message"] == "columns differ from schema.json: expected [name, diagnosis], found [diagnosis, +1 unknown]"
+
+
+def test_single_column_empty_line_is_a_missing_value(make_dataset):
+    d = make_dataset("age\n30\n\n40\n", None)
+    frame = read_dataset(d / "cohort.csv", [Column("age", "integer")])
+    assert frame.age.isna().tolist() == [False, True, False]
+
+
+def test_single_column_trailing_blank_lines_are_not_rows(make_dataset):
+    d = make_dataset("age\n30\n40\n\n\n", None)
+    frame = read_dataset(d / "cohort.csv", [Column("age", "integer")])
+    assert frame.age.tolist() == [30, 40]
+
+
+def test_multi_column_blank_lines_are_still_skipped(make_dataset):
+    d = make_dataset("age,sex\n30,F\n\n40,M\n", None)
+    frame = read_dataset(d / "cohort.csv", [Column("age", "integer"), Column("sex", "string")])
+    assert frame.age.tolist() == [30, 40]
+
+
+def test_unreadable_dataset_is_an_error_result(make_dataset, run, monkeypatch):
+    def denied(path):
+        raise PermissionError(13, "Permission denied", str(path))
+
+    monkeypatch.setattr(dataset, "file_sha256", denied)
+    r, _ = run(make_dataset("age\n1\n", [{"name": "age", "type": "integer"}]))
+    assert r["code"] == "invalid_dataset"
+    assert r["message"] == "the dataset could not be read (PermissionError)"
+
+
+def test_deeply_nested_schema_is_invalid_schema(make_dataset, run):
+    d = make_dataset("age\n1\n", None)
+    (d / "schema.json").write_text("[" * 100000 + "]" * 100000)
+    assert run(d)[0]["code"] == "invalid_schema"
+
+
+def test_size_limit_is_256_mib():
+    assert dataset.MAX_CSV_BYTES == 256 * 1024 * 1024
