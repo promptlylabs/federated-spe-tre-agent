@@ -194,6 +194,19 @@ namespace Submission.Api.Tests
         }
 
         [Fact]
+        public async Task Stored_task_cannot_be_changed_after_intake()
+        {
+            using var db = NewDb();
+            Assert.IsType<OkObjectResult>(await ControllerFor(db, "dare-admin").Enqueue(CodeTask()));
+            var row = db.FederatedTasks.Single();
+
+            // Init-only stops plain assignments; this is the route EF would still allow.
+            db.Entry(row).Property(x => x.TesTaskJson).CurrentValue = "{}";
+
+            Assert.Throws<InvalidOperationException>(() => db.SaveChanges());
+        }
+
+        [Fact]
         public async Task Agent_of_another_tre_does_not_receive_the_code()
         {
             using var db = NewDb();
