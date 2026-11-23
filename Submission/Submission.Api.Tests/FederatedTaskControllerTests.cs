@@ -140,7 +140,7 @@ namespace Submission.Api.Tests
             [
                 new TesExecutor
                 {
-                    Image = "5s-tes/python-runner:1",
+                    Image = "python-runner:1",
                     Command = ["run-analysis", "/code/analysis.py", "/data/cohort_2024", "/outputs/result.json"]
                 }
             ],
@@ -178,7 +178,7 @@ namespace Submission.Api.Tests
         public async Task Enqueue_code_task_with_unapproved_image_is_rejected_and_not_stored()
         {
             using var db = NewDb();
-            var settings = new FederatedTaskSettings { ApprovedRunnerImages = ["5s-tes/python-runner:2"] };
+            var settings = new FederatedTaskSettings { ApprovedRunnerImages = ["python-runner:2"] };
 
             var result = await ControllerFor(db, "dare-admin", settings: settings).Enqueue(CodeTask());
 
@@ -219,7 +219,7 @@ namespace Submission.Api.Tests
 
             foreach (var settings in new[] { new FederatedTaskSettings(), FederatedTaskSettings.FromConfiguration(empty) })
             {
-                Assert.Equal(["5s-tes/python-runner:1"], settings.ApprovedRunnerImages);
+                Assert.Equal(["python-runner:1"], settings.ApprovedRunnerImages);
                 Assert.Equal(4, settings.MaxCpuCores);
                 Assert.Equal(16, settings.MaxRamGb);
                 Assert.Equal(20, settings.MaxDiskGb);
@@ -254,9 +254,9 @@ namespace Submission.Api.Tests
         [Fact]
         public void An_override_list_replaces_the_shipped_one_whatever_its_length()
         {
-            var settings = SettingsWithOverride("{\"FederatedTaskSettings\":{\"ApprovedRunnerImages\":[\"5s-tes/python-runner:2\"]}}");
+            var settings = SettingsWithOverride("{\"FederatedTaskSettings\":{\"ApprovedRunnerImages\":[\"python-runner:2\"]}}");
 
-            Assert.Equal(["5s-tes/python-runner:2"], settings.ApprovedRunnerImages);
+            Assert.Equal(["python-runner:2"], settings.ApprovedRunnerImages);
         }
 
         [Fact]
@@ -264,7 +264,7 @@ namespace Submission.Api.Tests
         {
             var settings = SettingsWithOverride("{}");
 
-            Assert.Equal(["5s-tes/python-runner:1"], settings.ApprovedRunnerImages);
+            Assert.Equal(["python-runner:1"], settings.ApprovedRunnerImages);
         }
 
         [Fact]
@@ -273,14 +273,14 @@ namespace Submission.Api.Tests
             var config = new Microsoft.Extensions.Configuration.ConfigurationBuilder()
                 .AddInMemoryCollection(new Dictionary<string, string?>
                 {
-                    ["FederatedTaskSettings:ApprovedRunnerImages:0"] = "5s-tes/python-runner:2",
+                    ["FederatedTaskSettings:ApprovedRunnerImages:0"] = "python-runner:2",
                     ["FederatedTaskSettings:MaxRamGb"] = "32"
                 })
                 .Build();
 
             var settings = FederatedTaskSettings.FromConfiguration(config);
 
-            Assert.Equal(["5s-tes/python-runner:2"], settings.ApprovedRunnerImages);
+            Assert.Equal(["python-runner:2"], settings.ApprovedRunnerImages);
             Assert.Equal(32, settings.MaxRamGb);
             Assert.Equal(4, settings.MaxCpuCores);
         }
