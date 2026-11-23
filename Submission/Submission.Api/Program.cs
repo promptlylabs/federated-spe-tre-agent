@@ -107,7 +107,13 @@ if (missingFederatedSettings.Count > 0 && !Microsoft.EntityFrameworkCore.EF.IsDe
         "Federated results storage is not configured. Set: " + string.Join(", ", missingFederatedSettings));
 }
 builder.Services.AddSingleton(federatedResultsStorageSettings);
-builder.Services.AddSingleton(FederatedTaskSettings.FromConfiguration(configuration));
+var federatedTaskSettings = FederatedTaskSettings.FromConfiguration(configuration);
+var federatedTaskSettingsProblems = federatedTaskSettings.Problems();
+if (federatedTaskSettingsProblems.Count > 0 && !Microsoft.EntityFrameworkCore.EF.IsDesignTime)
+{
+    throw new InvalidOperationException("Federated task settings are wrong: " + string.Join("; ", federatedTaskSettingsProblems));
+}
+builder.Services.AddSingleton(federatedTaskSettings);
 builder.Services.AddSingleton<IFederatedResultStore>(_ => new RustFsFederatedResultStore(federatedResultsStorageSettings));
 
 

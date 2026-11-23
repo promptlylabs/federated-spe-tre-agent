@@ -268,6 +268,33 @@ namespace Submission.Api.Tests
         }
 
         [Fact]
+        public void Default_settings_have_no_problems()
+        {
+            Assert.Empty(new FederatedTaskSettings().Problems());
+        }
+
+        [Theory]
+        [InlineData(0L, 16.0, 20.0, "FederatedTaskSettings:MaxCpuCores must be more than 0")]
+        [InlineData(4L, -1.0, 20.0, "FederatedTaskSettings:MaxRamGb must be more than 0")]
+        [InlineData(4L, 16.0, double.NaN, "FederatedTaskSettings:MaxDiskGb must be more than 0")]
+        public void Non_positive_maximums_are_problems(long cpu, double ram, double disk, string problem)
+        {
+            var settings = new FederatedTaskSettings { MaxCpuCores = cpu, MaxRamGb = ram, MaxDiskGb = disk };
+
+            Assert.Equal([problem], settings.Problems());
+        }
+
+        [Fact]
+        public void The_operations_image_in_the_runner_list_is_a_problem()
+        {
+            var settings = new FederatedTaskSettings { ApprovedRunnerImages = ["5s-tes/federated-ops:1"] };
+
+            Assert.Equal(
+                ["FederatedTaskSettings:ApprovedRunnerImages must not list 5s-tes/federated-ops:1, the count/mean image"],
+                settings.Problems());
+        }
+
+        [Fact]
         public void Configured_runner_images_replace_the_default()
         {
             var config = new Microsoft.Extensions.Configuration.ConfigurationBuilder()

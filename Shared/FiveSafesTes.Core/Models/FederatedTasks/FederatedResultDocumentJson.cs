@@ -196,6 +196,13 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
                 return Invalid("field 'result.value' must be a JSON object");
             }
 
+            // The runner copies n from the researcher's dict; a different value would misstate how many people it covers.
+            if (result.GetProperty("value").TryGetProperty("n", out var valueN)
+                && !(valueN.ValueKind == JsonValueKind.Number && valueN.TryGetInt64(out var dictN) && dictN == count))
+            {
+                return Invalid("field 'result.n' does not match result.value.n");
+            }
+
             FederatedAnalysisResultDocument? doc;
             try
             {
