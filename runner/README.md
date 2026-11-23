@@ -2,12 +2,19 @@
 
 The image that a researcher's Python code runs in at the hospital. The
 researcher writes and tests the code in their SPE, a Jupyter notebook that
-`spms-spe-operator-go` starts from the RHOAI image
-`s2i-generic-data-science-notebook:2025.1`. At the hospital, a version of the
-same operator, on OpenShift, starts a locked-down pod from this image to run
-the code. So the image has the same Python and libraries as the SPE notebook
-(Python 3.11, pandas, numpy, scipy, scikit-learn, matplotlib), plus one
-command, `run-analysis`, and without pip.
+`spms-spe-operator-go` starts. At the hospital, a version of the same operator,
+on OpenShift, starts a locked-down pod from this image to run the code. The
+image must have the same Python and libraries as the SPE notebook, plus one
+command, `run-analysis`, and no package installers.
+
+**The base is a placeholder and does not match the SPE yet.** This image is
+built on Open Data Hub 2025a with Python 3.11. The SPE actually runs Open Data
+Hub 2025b with Python 3.12 (`s2i-generic-data-science-notebook:2025.2`, public
+build `odh-workbench-jupyter-datascience-cpu-py312-ubi9:2025b-v1.40`), plus
+ACRO 1.1.0 with SPMS's disclosure thresholds. The image must be moved to that
+base, with ACRO and the same thresholds, before PoC task 2.4 runs researcher
+code with it. Until then, code that works in the SPE may fail here, for example
+any code that uses `acro`. See "Base image" below.
 
 The image is not yet used. Starting the pod from a federated task is PoC
 task 2.4.
@@ -183,24 +190,32 @@ The image is amd64 only. On Apple silicon, Docker runs it under emulation.
 
 ## Base image
 
-`quay.io/opendatahub/odh-pipeline-runtime-datascience-cpu-py311-ubi9:2025a-v1.35`,
+Today: `quay.io/opendatahub/odh-pipeline-runtime-datascience-cpu-py311-ubi9:2025a-v1.35`,
 pinned by digest in the `Dockerfile`. It is the Open Data Hub data-science
-runtime image, which has the notebook's libraries without Jupyter. It stands
-in for the RHOAI ImageStream `s2i-generic-data-science-notebook:2025.1` that
-the SPE notebooks use. RHOAI builds its 2025.1 images from Open Data Hub
-2025a. The ImageStream is in the cluster, so its registry digest is not in
-any repository. To find it:
+runtime image, which has the notebook's libraries without Jupyter. It was
+chosen before the SPE's image was known, and is a placeholder.
 
-```sh
-oc get imagestream s2i-generic-data-science-notebook -n redhat-ods-applications \
-  -o jsonpath='{.spec.tags[?(@.name=="2025.1")].from.name}'
-```
+The SPE's notebook image is Open Data Hub 2025b with Python 3.12, which the
+cluster offers as `s2i-generic-data-science-notebook:2025.2`:
+`quay.io/opendatahub/odh-workbench-jupyter-datascience-cpu-py312-ubi9@sha256:ac55e1d640664318b4d6a5d4bf76557a7c9f2e805d91266e103e0e9459dbb4ca`
+(`2025b-v1.40`). SPMS's build adds ACRO 1.1.0, installed with the base's
+package versions as constraints, with SPMS's thresholds applied and its
+folder made read-only.
 
-Then change only the `FROM` line (and the labels), and run `runner/test.sh`.
-Pulling from `registry.redhat.io` needs a Red Hat login.
+To match it, before PoC task 2.4:
 
-The runtime image has the same data-science libraries as the Open Data Hub
-2025a notebook image (`odh-workbench-jupyter-datascience-cpu-py311-ubi9:2025a-v1.35`):
+1. Change `FROM` to the 2025b runtime image with Python 3.12:
+   `quay.io/opendatahub/odh-pipeline-runtime-datascience-cpu-py312-ubi9@sha256:293512b01037b87ed095a56f1bebdc45ed1c6025ed55ff6f3517e59f95a16fa3`
+   (`2025b-v1.40`).
+2. Install `acro==1.1.0` the same way, apply the same SPMS `thresholds.yaml`,
+   and make the ACRO folder read-only, before pip is removed.
+3. Update the Python check in `runner/test.sh` to 3.12, check that the
+   installer removal still covers the new image, add an image check that
+   `import acro` works with SPMS's thresholds, and redo the library comparison
+   below against the 2025b notebook image.
+
+For the placeholder: the runtime image has the same data-science libraries as
+the Open Data Hub 2025a notebook image (`odh-workbench-jupyter-datascience-cpu-py311-ubi9:2025a-v1.35`):
 pandas 2.2.3, numpy 2.2.6, scipy 1.15.3, scikit-learn 1.6.1, matplotlib
 3.10.5, pyarrow 21.0.0. statsmodels and seaborn are in neither. The packages
 that differ are Jupyter and infrastructure packages (ipython, ipykernel,
