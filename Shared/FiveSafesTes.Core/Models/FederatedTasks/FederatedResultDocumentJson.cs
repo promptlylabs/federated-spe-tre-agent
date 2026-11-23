@@ -167,7 +167,19 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
                 return Invalid("field 'result' must be a JSON object");
             }
 
-            if (MissingField(result, ["kind", "n", "value"]) is { } missingResult)
+            // The kind first, so a document of the wrong kind is reported as that and not as a missing field.
+            if (MissingField(result, ["kind"]) is not null)
+            {
+                return Invalid("missing required field 'result.kind'");
+            }
+
+            var kind = result.GetProperty("kind");
+            if (kind.ValueKind != JsonValueKind.String || kind.GetString() != "analysis")
+            {
+                return Invalid("result.kind does not match the task");
+            }
+
+            if (MissingField(result, ["n", "value"]) is { } missingResult)
             {
                 return Invalid($"missing required field 'result.{missingResult}'");
             }

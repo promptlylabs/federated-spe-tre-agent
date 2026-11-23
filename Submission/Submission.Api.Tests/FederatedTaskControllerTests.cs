@@ -226,6 +226,47 @@ namespace Submission.Api.Tests
             }
         }
 
+        // The shipped appsettings.json, read from the source tree, layered with an override file as in a deployment.
+        private static FederatedTaskSettings SettingsWithOverride(string overrideJson)
+        {
+            var dir = new DirectoryInfo(AppContext.BaseDirectory);
+            while (dir != null && !File.Exists(Path.Combine(dir.FullName, "Submission", "Submission.Api", "appsettings.json")))
+            {
+                dir = dir.Parent;
+            }
+
+            Assert.NotNull(dir);
+            var config = new ConfigurationBuilder()
+                .AddJsonFile(Path.Combine(dir!.FullName, "Submission", "Submission.Api", "appsettings.json"))
+                .AddJsonStream(new MemoryStream(System.Text.Encoding.UTF8.GetBytes(overrideJson)))
+                .Build();
+            return FederatedTaskSettings.FromConfiguration(config);
+        }
+
+        [Fact]
+        public void An_override_with_an_empty_list_refuses_every_runner_image()
+        {
+            var settings = SettingsWithOverride("{\"FederatedTaskSettings\":{\"ApprovedRunnerImages\":[]}}");
+
+            Assert.Empty(settings.ApprovedRunnerImages);
+        }
+
+        [Fact]
+        public void An_override_list_replaces_the_shipped_one_whatever_its_length()
+        {
+            var settings = SettingsWithOverride("{\"FederatedTaskSettings\":{\"ApprovedRunnerImages\":[\"5s-tes/python-runner:2\"]}}");
+
+            Assert.Equal(["5s-tes/python-runner:2"], settings.ApprovedRunnerImages);
+        }
+
+        [Fact]
+        public void Without_an_override_the_default_runner_image_is_approved()
+        {
+            var settings = SettingsWithOverride("{}");
+
+            Assert.Equal(["5s-tes/python-runner:1"], settings.ApprovedRunnerImages);
+        }
+
         [Fact]
         public void Configured_runner_images_replace_the_default()
         {

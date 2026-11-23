@@ -288,6 +288,7 @@ public class FederatedResultDocumentTests
         var validation = ValidateCode("{\"kind\":\"scalar\",\"value\":1.5,\"rowCount\":3}");
 
         Assert.False(validation.IsValid);
+        Assert.Equal("result.kind does not match the task", validation.Message);
     }
 
     [Fact]
