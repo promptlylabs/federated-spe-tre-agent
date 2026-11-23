@@ -264,6 +264,15 @@ public class FederatedResultDocumentTests
     }
 
     [Fact]
+    public void Analysis_n_must_match_the_dicts_own_n()
+    {
+        var validation = ValidateCode("{\"kind\":\"analysis\",\"n\":1000,\"value\":{\"n\":3,\"mean_age\":40}}");
+
+        Assert.False(validation.IsValid);
+        Assert.Equal("field 'result.n' does not match result.value.n", validation.Message);
+    }
+
+    [Fact]
     public void Unknown_field_in_analysis_result_fails()
     {
         var validation = ValidateCode("{\"kind\":\"analysis\",\"n\":1,\"value\":{},\"extra\":1}");

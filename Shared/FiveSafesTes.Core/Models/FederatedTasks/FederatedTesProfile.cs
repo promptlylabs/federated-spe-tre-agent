@@ -190,7 +190,12 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             if (output.Url != ResultUrl)
                 return Fail(FederatedTaskErrorCodes.InvalidTask, $"the output url must be {ResultUrl}");
 
-            // Resources: checked at intake only, and only those given.
+            // Resources: only cpu, memory and disk; the rest would be passed to a runtime unchecked.
+            if (task.Resources is { } given && (given.Zones is { Count: > 0 } || given.BackendParameters is { Count: > 0 }
+                    || given.Preemptible != null || given.BackendParametersStrict != null))
+                return Fail(FederatedTaskErrorCodes.InvalidTask, "resources may only set cpu_cores, ram_gb and disk_gb");
+
+            // Resource limits: checked at intake only, and only those given.
             if (intake != null && task.Resources is { } resources)
             {
                 if (OutOfRange("cpu_cores", resources.CpuCores, intake.MaxCpuCores) is { } cpu) return cpu;

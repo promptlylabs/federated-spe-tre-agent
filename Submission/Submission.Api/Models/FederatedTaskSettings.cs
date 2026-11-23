@@ -23,6 +23,19 @@ namespace Submission.Api.Models
         public double MaxRamGb { get; set; } = 16;
         public double MaxDiskGb { get; set; } = 20;
 
+        /// <summary>Settings that would make intake behave wrongly; Submission refuses to start with any.</summary>
+        public IReadOnlyList<string> Problems()
+        {
+            var problems = new List<string>();
+            if (MaxCpuCores <= 0) problems.Add($"{SectionName}:{nameof(MaxCpuCores)} must be more than 0");
+            if (!(MaxRamGb > 0) || !double.IsFinite(MaxRamGb)) problems.Add($"{SectionName}:{nameof(MaxRamGb)} must be more than 0");
+            if (!(MaxDiskGb > 0) || !double.IsFinite(MaxDiskGb)) problems.Add($"{SectionName}:{nameof(MaxDiskGb)} must be more than 0");
+            // That image always takes the count/mean rules, so listing it here would silently do nothing.
+            if (ApprovedRunnerImages.Contains(FederatedTesProfile.ExecutorImage, StringComparer.Ordinal))
+                problems.Add($"{SectionName}:{nameof(ApprovedRunnerImages)} must not list {FederatedTesProfile.ExecutorImage}, the count/mean image");
+            return problems;
+        }
+
         public FederatedIntakeLimits ToIntakeLimits() => new(
             ApprovedRunnerImages.Select(i => i.Trim()).Where(i => i.Length > 0).ToArray(),
             MaxCpuCores, MaxRamGb, MaxDiskGb);

@@ -294,12 +294,12 @@ A code task runs the researcher's Python file with `run-analysis` in an approved
 
 | TES field | Rule |
 |---|---|
-| `executors` | Exactly 1. `image` must be in Submission's `FederatedTaskSettings:ApprovedRunnerImages`. `env`, `workdir`, `stdin`, `stdout` and `stderr` must not be set. |
+| `executors` | Exactly 1. `image` must be in Submission's `FederatedTaskSettings:ApprovedRunnerImages`. `env`, `workdir`, `stdin`, `stdout` and `stderr` must not be set (empty values are allowed). |
 | `executors[0].command` | Exactly `["run-analysis", "/code/analysis.py", "/data/<dataset>", "/outputs/result.json"]`. No other arguments, so `--debug` is refused: its traceback can contain data values. |
 | `inputs` | Exactly 2, in either order. The **code input**: `path` `/code/analysis.py`, `type` `FILE`, the code in `content`, no `url`, at most 262,144 bytes (256 KiB) in UTF-8. The **dataset input**: `url` `dataset://<name>`, `path` `/data/<name>`, `type` `DIRECTORY`, no `content` (in TES, `content` would replace the hospital's data). |
 | `outputs` | Exactly 1: `path` `/outputs/result.json`, `type` `FILE`, `url` `result://`. TES requires a `url`; any real address is refused, so no runtime can upload the result past output approval. The result goes through output approval at the hospital and back to Submission, as for every task. |
 | `volumes` | Must be null or empty. |
-| `resources` | May be left out. If given, `cpu_cores`, `ram_gb` and `disk_gb` must each be more than 0 and at most `MaxCpuCores`, `MaxRamGb` and `MaxDiskGb`. Other resource fields are ignored. |
+| `resources` | May be left out. If given, `cpu_cores`, `ram_gb` and `disk_gb` must each be more than 0 and at most `MaxCpuCores`, `MaxRamGb` and `MaxDiskGb`. `zones`, `preemptible` and `backend_parameters` must not be set. |
 | `tags` | `fed.sites` and `fed.study_id` as for count/mean. `fed.code_sha256` is required: the lowercase hex SHA-256 of the code's UTF-8 bytes. It must match the code, so the hash the hospital reviews is the hash of the code that runs. |
 
 Every rule that fails gives `invalid_task` (or `invalid_dataset_name` for the name), and the message names the rule. Nothing is stored.
@@ -394,7 +394,7 @@ The result file is one JSON document. The property names are camelCase. `schemaV
 
 `result.value` is a decimal. It is `null` when there are no rows. `result.kind` is `scalar` for a count/mean task.
 
-For a code task, `operation` is `run-analysis` and `result.kind` is `analysis`. `result.n` is the non-negative integer the researcher's code returned as `n`, and `result.value` is the dict it returned:
+For a code task, `operation` is `run-analysis` and `result.kind` is `analysis`. `result.n` is the non-negative integer the researcher's code returned as `n` (it must equal `result.value.n`), and `result.value` is the dict it returned:
 
 ```json
 "result": { "kind": "analysis", "n": 120, "value": { "n": 120, "mean_age": 41.2 } }
@@ -580,7 +580,7 @@ What a code task may ask for is set in the section `FederatedTaskSettings`:
 | `MaxRamGb` | `16` | The largest `resources.ram_gb`. |
 | `MaxDiskGb` | `20` | The largest `resources.disk_gb`. |
 
-The resource defaults are placeholders until the hospitals confirm their capacity. The 256 KiB limit on the code is fixed.
+The resource defaults are placeholders until the hospitals confirm their capacity. The 256 KiB limit on the code is fixed. Submission refuses to start if a maximum is 0 or less, or if `ApprovedRunnerImages` lists `5s-tes/federated-ops:1`.
 
 ## Security
 
