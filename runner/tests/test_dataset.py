@@ -216,3 +216,24 @@ def test_deeply_nested_schema_is_invalid_schema(make_dataset, run):
 
 def test_size_limit_is_256_mib():
     assert dataset.MAX_CSV_BYTES == 256 * 1024 * 1024
+
+
+@pytest.mark.parametrize("cell", ["1_000", " 42", "42 ", "٣٠", "+", "0x1A", "1e3", "1.0"])
+def test_integer_cells_must_be_plain_ascii_digits(make_dataset, run, cell):
+    r, _ = run(make_dataset(f"age\n{cell}\n", [{"name": "age", "type": "integer"}]))
+    assert r["code"] == "schema_mismatch"
+    assert r["message"] == "column 'age', line 2: not an integer"
+
+
+@pytest.mark.parametrize("cell", ["1_000.5", " 1.5", "1.5 ", "١.٥", "0x1p3", ".", "1.", "infinity"])
+def test_number_cells_must_be_plain_ascii_decimals(make_dataset, run, cell):
+    r, _ = run(make_dataset(f"bmi\n{cell}\n", [{"name": "bmi", "type": "number"}]))
+    assert r["code"] == "schema_mismatch"
+    assert r["message"] == "column 'bmi', line 2: not a finite number"
+
+
+def test_plain_numbers_still_parse(make_dataset):
+    d = make_dataset("a,b\n-12,-1.5\n+7,3\n0,.5\n007,2E-3\n", None)
+    frame = read_dataset(d / "cohort.csv", [Column("a", "integer"), Column("b", "number")])
+    assert frame.a.tolist() == [-12, 7, 0, 7]
+    assert frame.b.tolist() == [-1.5, 3.0, 0.5, 0.002]

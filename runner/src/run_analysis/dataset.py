@@ -10,6 +10,7 @@ import hashlib
 import io
 import json
 import math
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -160,7 +161,14 @@ def _check_header(header: list[str], expected: list[str]) -> None:
 _INT64_MIN, _INT64_MAX = -(2**63), 2**63 - 1
 
 
+# Plain ASCII only: Python's int() and float() also accept spaces, digit underscores (1_000) and non-ASCII digits.
+_INTEGER = re.compile(r"[+-]?[0-9]+")
+_NUMBER = re.compile(r"[+-]?(?:[0-9]+(?:\.[0-9]+)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?")
+
+
 def _parse_integer(v: str) -> int:
+    if not _INTEGER.fullmatch(v):
+        raise ValueError
     i = int(v)
     if not _INT64_MIN <= i <= _INT64_MAX:
         raise ValueError
@@ -168,6 +176,8 @@ def _parse_integer(v: str) -> int:
 
 
 def _parse_number(v: str) -> float:
+    if not _NUMBER.fullmatch(v):
+        raise ValueError
     f = float(v)
     if not math.isfinite(f):
         raise ValueError

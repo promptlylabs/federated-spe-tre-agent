@@ -67,8 +67,10 @@ lists.
 
 The types are `integer`, `number`, `string` and `boolean` (`true` or `false`,
 any case). The pandas dtypes are `Int64`, `Float64`, `string` and `boolean`.
-An empty cell is allowed in every column and becomes a missing value. `nan`
-and `inf` are not numbers.
+An empty cell is allowed in every column and becomes a missing value. An
+`integer` is ASCII digits with an optional sign (`-12`, `+7`). A `number` is a
+plain decimal with an optional exponent (`3`, `-1.5`, `.5`, `2E-3`). Spaces,
+digit underscores (`1_000`), other digits and `nan` or `inf` are not accepted.
 
 ## `result.json`
 
