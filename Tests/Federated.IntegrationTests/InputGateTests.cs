@@ -15,10 +15,10 @@ public class InputGateTests
     public async Task Hospital_input_checks_stop_a_task_for_a_dataset_the_hospital_does_not_hold()
     {
         stack.EnsureReady();
-        var queued = await stack.Submission.EnqueueAsync($"missing_{Guid.NewGuid():N}", "count");
+        var queued = await stack.Submission.EnqueueCodeAsync($"missing_{Guid.NewGuid():N}", Code.CountRows);
         Assert.Equal(200, queued.Status);
 
-        var end = await Await.UntilSettledAsync(stack, queued.Id!, TimeSpan.FromSeconds(120));
+        var end = await Await.UntilSettledAsync(stack, queued.Id!, Await.PhaseWait);
 
         Assert.Equal("CANCELED", end.State);
         Assert.Equal("rejected_by_input_checks", end.Phase);
@@ -36,10 +36,10 @@ public class InputGateTests
         {
             await stack.Storage.PutDatasetFileAsync(dataset, "a.csv", "age,sex\n30,F\n");
             await stack.Storage.PutDatasetFileAsync(dataset, "b.csv", "age,sex\n40,M\n");
-            var queued = await stack.Submission.EnqueueAsync(dataset, "count");
+            var queued = await stack.Submission.EnqueueCodeAsync(dataset, Code.CountRows);
             Assert.Equal(200, queued.Status);
 
-            var end = await Await.UntilSettledAsync(stack, queued.Id!, TimeSpan.FromSeconds(120));
+            var end = await Await.UntilSettledAsync(stack, queued.Id!, Await.PhaseWait);
 
             Assert.Equal("CANCELED", end.State);
             Assert.Equal("rejected_by_input_checks", end.Phase);
@@ -54,24 +54,46 @@ public class InputGateTests
     }
 
     [SkippableTheory]
-    [InlineData("unknown operation", "unknown_operation")]
-    [InlineData("invalid filter", "invalid_filter")]
-    [InlineData("foreign image", "invalid_task")]
-    [InlineData("old tag names", "invalid_task")]
-    public async Task Submission_refuses_a_task_outside_the_federated_profile(string kind, string expectedCode)
+    [InlineData("old count task")]
+    [InlineData("foreign image")]
+    [InlineData("old tag names")]
+    [InlineData("code that does not match its hash")]
+    public async Task Submission_refuses_a_task_outside_the_federated_profile(string kind)
     {
         stack.EnsureReady();
-        var outcome = kind switch
+        var body = kind switch
         {
-            "unknown operation" => await stack.Submission.EnqueueAsync("cohort_2024", "median"),
-            "invalid filter" => await stack.Submission.EnqueueAsync("cohort_2024", "count", "--filter", "sex:like:F"),
-            "foreign image" => await stack.Submission.EnqueueWithImageAsync("python:3.12", "cohort_2024", "count"),
-            _ => await stack.Submission.EnqueueWithTagsAsync(
-                new JsonObject { ["tres"] = StackSettings.Tre, ["study_id"] = "study-001" }, "cohort_2024", "count")
+            "old count task" => OldCountTask("cohort_2024"),
+            "foreign image" => SubmissionClient.CodeTask("cohort_2024", Code.CountRows, image: "python:3.12"),
+            "old tag names" => WithTags(SubmissionClient.CodeTask("cohort_2024", Code.CountRows), new JsonObject
+            {
+                ["tres"] = StackSettings.Tre, ["study_id"] = "study-001", ["fed.code_sha256"] = SubmissionClient.CodeSha256(Code.CountRows)
+            }),
+            _ => WithTags(SubmissionClient.CodeTask("cohort_2024", Code.CountRows), new JsonObject
+            {
+                ["fed.sites"] = StackSettings.Tre, ["fed.study_id"] = "study-001", ["fed.code_sha256"] = SubmissionClient.CodeSha256(Code.MeanAge)
+            })
         };
 
+        var outcome = await stack.Submission.EnqueueBodyAsync(body);
+
         Assert.Equal(400, outcome.Status);
-        Assert.Equal(expectedCode, outcome.ErrorCode);
+        Assert.Equal("invalid_task", outcome.ErrorCode);
         Assert.Null(outcome.Id);
     }
+
+    private static JsonObject WithTags(JsonObject task, JsonObject tags)
+    {
+        task["tags"] = tags;
+        return task;
+    }
+
+    /// <summary>A count task as Submission accepted it before every task became a code task.</summary>
+    private static JsonObject OldCountTask(string dataset) => new()
+    {
+        ["executors"] = new JsonArray(new JsonObject { ["image"] = "5s-tes/federated-ops:1", ["command"] = new JsonArray("count") }),
+        ["inputs"] = new JsonArray(new JsonObject { ["url"] = $"dataset://{dataset}", ["path"] = $"/data/{dataset}", ["type"] = "DIRECTORY" }),
+        ["outputs"] = new JsonArray(),
+        ["tags"] = SubmissionClient.FederationTags()
+    };
 }

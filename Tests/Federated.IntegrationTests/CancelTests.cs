@@ -6,22 +6,20 @@ namespace Federated.IntegrationTests;
 [Collection(StackCollection.Name)]
 public class CancelTests
 {
-    private static readonly TimeSpan Pickup = TimeSpan.FromSeconds(120);
-    private static readonly TimeSpan Cleanup = TimeSpan.FromSeconds(90);
     private readonly StackFixture stack;
 
     public CancelTests(StackFixture stack) => this.stack = stack;
 
     private async Task<string> WaitingForReviewAsync()
     {
-        var queued = await stack.Submission.EnqueueAsync("cohort_2024", "count");
+        var queued = await stack.Submission.EnqueueCodeAsync("cohort_2024", Code.CountRows);
         Assert.Equal(200, queued.Status);
-        var waiting = await Await.UntilSettledAsync(stack, queued.Id!, Pickup);
+        var waiting = await Await.UntilSettledAsync(stack, queued.Id!, Await.PhaseWait);
         Assert.Equal("waiting_for_output_approval", waiting.Phase);
         return queued.Id!;
     }
 
-    private Task<TaskView> CanceledAsync(string id) => Await.UntilAsync(stack, id, t => t.Phase != "canceling", Cleanup);
+    private Task<TaskView> CanceledAsync(string id) => Await.UntilAsync(stack, id, t => t.Phase != "canceling", Await.PhaseWait);
 
     private async Task AssertNothingLeftAsync(string id)
     {
@@ -45,6 +43,24 @@ public class CancelTests
         Assert.Equal("CANCELED", end.State);
         Assert.Equal("canceled", end.Phase);
         await AssertNothingLeftAsync(id);
+    }
+
+    [SkippableFact]
+    public async Task Cancel_while_the_code_runs_stops_the_run_and_ends_the_task()
+    {
+        stack.EnsureReady();
+        var queued = await stack.Submission.EnqueueCodeAsync("cohort_2024", Code.Sleep);
+        Assert.Equal(200, queued.Status);
+        var running = await Await.UntilAsync(stack, queued.Id!, t => t.Phase != "queued", Await.PhaseWait);
+        Assert.Equal("running", running.Phase);
+
+        var cancel = await stack.Submission.CancelAsync(queued.Id!);
+        var end = await CanceledAsync(queued.Id!);
+
+        Assert.Equal((200, "canceling"), cancel);
+        Assert.Equal("CANCELED", end.State);
+        Assert.Equal("canceled", end.Phase);
+        await AssertNothingLeftAsync(queued.Id!);
     }
 
     [SkippableFact]
@@ -73,7 +89,7 @@ public class CancelTests
     public async Task Cancel_of_a_queued_task_ends_it_before_any_hospital_picks_it_up()
     {
         stack.EnsureReady();
-        var queued = await stack.Submission.EnqueueAsync("cohort_2024", "count");
+        var queued = await stack.Submission.EnqueueCodeAsync("cohort_2024", Code.CountRows);
         Assert.Equal(200, queued.Status);
 
         var cancel = await stack.Submission.CancelAsync(queued.Id!);

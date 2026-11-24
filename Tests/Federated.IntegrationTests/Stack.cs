@@ -26,7 +26,7 @@ public sealed class StackSettings
     public string RustFs => $"http://{Host}:9000";
     public string ResultsStore => $"http://{Host}:9100";
     public const string Tre = "my-tre";
-    public const string Image = "5s-tes/federated-ops:1";
+    public const string Image = "python-runner:1";
 }
 
 /// <summary>Fetches a password-grant token from the dev Keycloak, and reuses it until shortly before it expires.</summary>
@@ -66,33 +66,41 @@ public sealed class SubmissionClient
         token = new TokenSource(http, s.Keycloak, "Dare-Control", "Dare-Control-API", "dev-dare-control-api-secret", "control-admin", "ControlAdmin1!");
     }
 
-    public Task<EnqueueOutcome> EnqueueAsync(string dataset, string operation, params string[] args) =>
-        EnqueueWithImageAsync(StackSettings.Image, dataset, operation, args);
-
-    public Task<EnqueueOutcome> EnqueueWithImageAsync(string image, string dataset, string operation, params string[] args) =>
-        SendTaskAsync(image, FederationTags(), dataset, operation, args);
-
-    public Task<EnqueueOutcome> EnqueueWithTagsAsync(JsonObject tags, string dataset, string operation, params string[] args) =>
-        SendTaskAsync(StackSettings.Image, tags, dataset, operation, args);
+    /// <summary>Queues a code task that runs <paramref name="code"/> on the dataset, in the approved runner image by default.</summary>
+    public Task<EnqueueOutcome> EnqueueCodeAsync(string dataset, string code, string? image = null) =>
+        EnqueueBodyAsync(CodeTask(dataset, code, image ?? StackSettings.Image));
 
     public static JsonObject FederationTags() => new() { ["fed.sites"] = StackSettings.Tre, ["fed.study_id"] = "study-001" };
 
-    private async Task<EnqueueOutcome> SendTaskAsync(string image, JsonObject tags, string dataset, string operation, string[] args)
+    /// <summary>The lowercase hex SHA-256 of the code's UTF-8 bytes, as the tag fed.code_sha256 must hold.</summary>
+    public static string CodeSha256(string code) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(code)));
+
+    /// <summary>
+    /// A code task in the shape FederatedTesProfile.BuildCodeTask builds (see docs/federated-tasks.md, "Code tasks"):
+    /// the exact run-analysis command, the code inline, the dataset, the result:// output and the fed.* tags.
+    /// </summary>
+    public static JsonObject CodeTask(string dataset, string code, string image = StackSettings.Image)
     {
-        var body = new JsonObject
+        var tags = FederationTags();
+        tags["fed.code_sha256"] = CodeSha256(code);
+        return new JsonObject
         {
             ["executors"] = new JsonArray(new JsonObject
             {
                 ["image"] = image,
-                ["command"] = new JsonArray(new[] { operation }.Concat(args).Select(a => (JsonNode)JsonValue.Create(a)!).ToArray())
+                ["command"] = new JsonArray("run-analysis", "/code/analysis.py", $"/data/{dataset}", "/outputs/result.json")
             }),
-            ["inputs"] = new JsonArray(new JsonObject
-            {
-                ["url"] = $"dataset://{dataset}", ["path"] = $"/data/{dataset}", ["type"] = "DIRECTORY"
-            }),
-            ["outputs"] = new JsonArray(),
+            ["inputs"] = new JsonArray(
+                new JsonObject { ["path"] = "/code/analysis.py", ["type"] = "FILE", ["content"] = code },
+                new JsonObject { ["url"] = $"dataset://{dataset}", ["path"] = $"/data/{dataset}", ["type"] = "DIRECTORY" }),
+            ["outputs"] = new JsonArray(new JsonObject { ["path"] = "/outputs/result.json", ["url"] = "result://", ["type"] = "FILE" }),
             ["tags"] = tags
         };
+    }
+
+    /// <summary>Posts any task body as it is, for the tasks Submission must refuse.</summary>
+    public async Task<EnqueueOutcome> EnqueueBodyAsync(JsonObject body)
+    {
         using var response = await SendAsync(HttpMethod.Post, "/api/FederatedTask/Enqueue",
             new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json"));
         var json = TryParse(await response.Content.ReadAsStringAsync());
@@ -325,6 +333,12 @@ public sealed class ResultStore : IDisposable
 
 public static class Await
 {
+    /// <summary>
+    /// How long a test waits for a task to leave a phase. A code task needs one Agent poll to start and a later one to
+    /// collect, and the runner image may run under emulation (amd64 on Apple silicon), so this is well over a minute.
+    /// </summary>
+    public static readonly TimeSpan PhaseWait = TimeSpan.FromMinutes(6);
+
     private static readonly TimeSpan PollEvery = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan TriggerEvery = TimeSpan.FromSeconds(15);
 
