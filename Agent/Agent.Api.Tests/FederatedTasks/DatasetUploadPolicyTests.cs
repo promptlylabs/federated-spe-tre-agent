@@ -63,4 +63,17 @@ public class DatasetUploadPolicyTests
         var actions = statements.Values.SelectMany(s => Strings(s, "Action"));
         Assert.DoesNotContain(actions, a => a.StartsWith("s3:Delete", StringComparison.OrdinalIgnoreCase));
     }
+
+    [Fact]
+    public void Policy_AllowsSchemaJsonUploadOnly()
+    {
+        var statements = StatementsBySid(DatasetUploadPolicy.Build("federated-datasets", "dataset/", ["csv"]));
+
+        var schema = statements["UploadDatasetSchemas"];
+        Assert.Equal(
+            ["s3:PutObject", "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts"],
+            Strings(schema, "Action"));
+        Assert.Equal(["arn:aws:s3:::federated-datasets/dataset/*/schema.json"], Strings(schema, "Resource"));
+        Assert.Equal(["arn:aws:s3:::federated-datasets/dataset/*.csv"], Strings(statements["UploadDatasets"], "Resource"));
+    }
 }
