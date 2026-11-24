@@ -56,6 +56,28 @@ public class FederatedTesProfileTests
     }
 
     [Fact]
+    public void Parse_SeveralSites_ReturnsNormalisedList()
+    {
+        var task = ValidTask();
+        task.Tags!["fed.sites"] = " TRE-A |tre-b";
+
+        Assert.Equal(["tre-a", "tre-b"], FederatedTesProfile.Parse(task).Spec!.Sites);
+    }
+
+    [Theory]
+    [InlineData("tre-a||tre-b")]
+    [InlineData("tre-a|")]
+    [InlineData("TRE-A | tre-a")]
+    [InlineData("t01|t02|t03|t04|t05|t06|t07|t08|t09|t10|t11|t12|t13|t14|t15|t16|t17|t18|t19|t20|t21")]
+    public void Parse_InvalidSites_Refused(string sites)
+    {
+        var task = ValidTask();
+        task.Tags!["fed.sites"] = sites;
+
+        Assert.Equal(FederatedTaskErrorCodes.InvalidTask, FederatedTesProfile.Parse(task).ErrorCode);
+    }
+
+    [Fact]
     public void Parse_with_only_the_old_tags_is_rejected_naming_the_missing_tag()
     {
         var task = ValidTask();
@@ -102,7 +124,6 @@ public class FederatedTesProfileTests
         { "uppercase dataset", t => DatasetInput(t).Url = "dataset://Cohort", FederatedTaskErrorCodes.InvalidDatasetName },
         { "trailing newline dataset", t => DatasetInput(t).Url = "dataset://cohort\n", FederatedTaskErrorCodes.InvalidDatasetName },
         { "output elsewhere", t => t.Outputs = [new TesOutput { Url = "s3://b/o", Path = "/o" }], FederatedTaskErrorCodes.InvalidTask },
-        { "multiple sites", t => t.Tags!["fed.sites"] = "tre-a|tre-b", FederatedTaskErrorCodes.InvalidTask },
         { "study id missing", t => t.Tags!.Remove("fed.study_id"), FederatedTaskErrorCodes.InvalidTask },
         { "study id too long", t => t.Tags!["fed.study_id"] = new string('s', 1025), FederatedTaskErrorCodes.InvalidTask },
         { "sites too long", t => t.Tags!["fed.sites"] = new string('t', 1025), FederatedTaskErrorCodes.InvalidTask },

@@ -659,10 +659,12 @@ namespace Agent.Api
 
             // Tasks are polled per TRE, so a mismatch means this agent's TreName disagrees with the TRE's name
             // in Submission. Don't read data, and don't report: the task stays as it is and runs once config is fixed.
-            if (!string.Equals(parsed.Spec!.TreName, treName, StringComparison.OrdinalIgnoreCase))
+            // A task for several hospitals is not a part of one hospital: it is not run here either.
+            var sites = parsed.Spec!.Sites;
+            if (sites.Count != 1 || !string.Equals(sites[0], treName, StringComparison.OrdinalIgnoreCase))
             {
-                Log.Error("Federated tasks: task {TaskId} is for TRE '{TaskTre}' but this agent's TreName is '{TreName}'; not running it",
-                    taskId, parsed.Spec.TreName, treName);
+                Log.Error("Federated tasks: task {TaskId} is for TRE(s) '{TaskTre}' but this agent's TreName is '{TreName}'; not running it",
+                    taskId, string.Join("|", sites), treName);
                 return new Prepared(null, null, true);
             }
 

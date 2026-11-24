@@ -469,6 +469,21 @@ public class DoFederatedTaskWorkTests
     }
 
     [Fact]
+    public async Task Execute_TaskForSeveralSites_IsNotRun()
+    {
+        var store = Store();
+        var client = new FakeClient();
+        var task = PendingTask(T1);
+        task.Tags!["fed.sites"] = "tre-a|tre-b";
+        client.Pending.Add(task);
+
+        await Work(client, store).Execute();
+
+        Assert.Empty(client.Reports);
+        Assert.Equal(0, store.ListCalls);
+    }
+
+    [Fact]
     public async Task Execute_TreNameMatchesCaseInsensitively()
     {
         var client = new FakeClient();

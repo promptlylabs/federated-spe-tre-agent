@@ -62,6 +62,12 @@ namespace Submission.Api.Controllers
             }
 
             var spec = parsed.Spec!;
+            // One TRE per task until a study can be sent to several hospitals.
+            if (spec.Sites.Count != 1)
+            {
+                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "tag 'fed.sites' must name exactly one TRE");
+            }
+
             var tre = await _DbContext.Tres
                 .AsNoTracking()
                 .FirstOrDefaultAsync(x => x.Name.ToLower() == spec.TreName, cancellationToken);
