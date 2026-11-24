@@ -107,6 +107,10 @@ namespace Submission.Api.Tests
                 db.Tres.Add(new Tre { Id = 1, Name = "tre-a", AdminUsername = "tre-a-admin", KeycloakClientId = "tre-a-client", About = "", FormData = "" });
                 db.FederatedTasks.Add(new FederatedTask
                 {
+                    StudyVersion = new FederatedStudyVersion
+                    {
+                        VersionId = Guid.NewGuid(), StudyId = "study-1", Version = 1, TesTaskJson = "{}", SubmittedAt = DateTime.UtcNow
+                    },
                     TaskId = taskId,
                     TreId = 1,
                     TreName = "tre-a",

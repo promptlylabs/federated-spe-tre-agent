@@ -82,6 +82,12 @@ namespace Submission.Api.Controllers
             task.Logs = null;
             task.CreationTime = null;
 
+            var submittedAt = DateTime.UtcNow;
+            var tesTaskJson = JsonConvert.SerializeObject(task);
+            // Until Task 4 fans a study out, a submission is a version holding its one part.
+            var latest = await _DbContext.FederatedStudyVersions
+                .Where(x => x.StudyId == spec.StudyId)
+                .MaxAsync(x => (int?)x.Version, cancellationToken) ?? 0;
             var entity = new FederatedTask
             {
                 TaskId = Guid.NewGuid(),
@@ -90,11 +96,21 @@ namespace Submission.Api.Controllers
                 StudyId = spec.StudyId,
                 Operation = spec.Operation,
                 Dataset = spec.Dataset,
-                TesTaskJson = JsonConvert.SerializeObject(task),
-                SubmittedAt = DateTime.UtcNow
+                TesTaskJson = tesTaskJson,
+                SubmittedAt = submittedAt
             };
             entity.MoveTo(FederatedTaskPhase.Queued, entity.SubmittedAt);
-            _DbContext.FederatedTasks.Add(entity);
+            _DbContext.FederatedStudyVersions.Add(new FederatedStudyVersion
+            {
+                VersionId = Guid.NewGuid(),
+                StudyId = spec.StudyId,
+                Version = latest + 1,
+                Sites = string.Join('|', spec.Sites),
+                CodeSha256 = spec.CodeSha256,
+                TesTaskJson = tesTaskJson,
+                SubmittedAt = submittedAt,
+                Parts = [entity]
+            });
             await _DbContext.SaveChangesAsync(cancellationToken);
 
             return Ok(new TesCreateTaskResponse { Id = entity.TaskId.ToString() });

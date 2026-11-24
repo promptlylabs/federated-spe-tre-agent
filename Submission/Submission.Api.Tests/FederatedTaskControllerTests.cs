@@ -89,10 +89,22 @@ namespace Submission.Api.Tests
         private static TesTask AnalysisTask(string tre = "tre-a", string dataset = "cohort_2024") =>
             FederatedTesProfile.BuildCodeTask(dataset, Code, "study-1", tre);
 
-        private static FederatedTask SeedTask(ApplicationDbContext db, int treId, TesState state, TesTask? task = null, string? treName = null)
+        private static FederatedStudyVersion NewVersion(ApplicationDbContext db, string studyId = "study-1") =>
+            new()
+            {
+                VersionId = Guid.NewGuid(),
+                StudyId = studyId,
+                Version = db.FederatedStudyVersions.Where(v => v.StudyId == studyId).Max(v => (int?)v.Version) + 1 ?? 1,
+                TesTaskJson = "{}",
+                SubmittedAt = DateTime.UtcNow
+            };
+
+        private static FederatedTask SeedTask(ApplicationDbContext db, int treId, TesState state, TesTask? task = null, string? treName = null, FederatedStudyVersion? version = null)
         {
+            version ??= NewVersion(db);
             var entity = new FederatedTask
             {
+                StudyVersion = version,
                 TaskId = Guid.NewGuid(),
                 TreId = treId,
                 TreName = treName ?? (treId == 1 ? "tre-a" : "tre-b"),

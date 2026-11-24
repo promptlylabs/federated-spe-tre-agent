@@ -20,10 +20,14 @@ namespace Submission.Api.Tests
             return db;
         }
 
+        private static FederatedStudyVersion Version() =>
+            new() { VersionId = Guid.NewGuid(), StudyId = "s", Version = 1, TesTaskJson = "{}", SubmittedAt = DateTime.UtcNow };
+
         private static FederatedTask Seed(ApplicationDbContext db, int treId, string treName, TesState state)
         {
             var task = new FederatedTask
             {
+                StudyVersion = Version(),
                 TaskId = Guid.NewGuid(), TreId = treId, TreName = treName, StudyId = "s", Operation = "run-analysis",
                 Dataset = "d", TesTaskJson = "{}", State = state, SubmittedAt = DateTime.UtcNow,
                 Phase = state == TesState.COMPLETEEnum ? FederatedTaskPhase.Released : FederatedTaskPhase.Queued
@@ -124,6 +128,7 @@ namespace Submission.Api.Tests
             db.Tres.Add(new Tre { Id = 1, Name = "tre-a", AdminUsername = "a", About = "", FormData = "" });
             var task = new FederatedTask
             {
+                StudyVersion = Version(),
                 TaskId = Guid.NewGuid(), TreId = 1, TreName = "tre-a", StudyId = "s", Operation = "run-analysis",
                 Dataset = "d", TesTaskJson = "{}", State = TesState.QUEUEDEnum, SubmittedAt = DateTime.UtcNow,
                 Phase = FederatedTaskPhase.Queued

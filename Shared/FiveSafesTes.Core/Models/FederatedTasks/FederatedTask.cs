@@ -19,6 +19,8 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         /// longer matches its TRE and is not handed to the Agent.
         /// </summary>
         public string TreName { get; set; } = string.Empty;
+        public int StudyVersionId { get; set; }
+        public virtual FederatedStudyVersion? StudyVersion { get; set; }
         public string StudyId { get; set; } = string.Empty;
         public string Operation { get; set; } = string.Empty;
         public string Dataset { get; set; } = string.Empty;
