@@ -37,7 +37,7 @@ namespace Agent.Api.FederatedTasks
         /// <param name="taskId">The task id in its canonical form.</param>
         Task RemoveRunAsync(string taskId, CancellationToken ct);
 
-        /// <summary>Removes the runs that are provably finished.</summary>
+        /// <summary>Removes the runs that are provably finished, and staged data left without a run.</summary>
         /// <param name="pendingTaskIds">The canonical ids of the tasks this poll was handed.</param>
         Task SweepAsync(IReadOnlyCollection<string> pendingTaskIds, CancellationToken ct);
     }

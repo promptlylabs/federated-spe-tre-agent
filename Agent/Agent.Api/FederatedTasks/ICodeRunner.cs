@@ -48,6 +48,12 @@ namespace Agent.Api.FederatedTasks
 
         Task<IReadOnlyList<CodeRunInfo>> ListAsync(CancellationToken ct);
 
+        /// <summary>
+        /// The task ids that have a volume or container labelled with a task id but no run container: what a removal
+        /// or failed start cut short leaves behind, such as a copy of the dataset in a volume.
+        /// </summary>
+        Task<IReadOnlyList<string>> ListOrphanedTaskIdsAsync(CancellationToken ct);
+
         /// <summary>Stages the files, then starts the run. Removes any earlier run for the task first.</summary>
         Task StartAsync(CodeRunRequest request, CancellationToken ct);
 

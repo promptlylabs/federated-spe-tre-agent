@@ -100,6 +100,28 @@ namespace Agent.Api.FederatedTasks
                 .ToList();
         }
 
+        public async Task<IReadOnlyList<string>> ListOrphanedTaskIdsAsync(CancellationToken ct)
+        {
+            var filter = LabelFilter(TaskIdLabel);
+            var containers = await _docker.Containers.ListContainersAsync(new ContainersListParameters
+            {
+                All = true,
+                Filters = filter
+            }, ct);
+            var volumes = await _docker.Volumes.ListAsync(new VolumesListParameters { Filters = filter }, ct);
+
+            var runs = containers
+                .Where(c => c.Labels.TryGetValue(RoleLabel, out var role) && role == RunRole)
+                .Select(c => c.Labels[TaskIdLabel])
+                .ToHashSet(StringComparer.Ordinal);
+            // Only ids in the canonical form the Agent writes: the names to remove are built from them.
+            return containers.Select(c => c.Labels[TaskIdLabel])
+                .Concat((volumes.Volumes ?? []).Select(v => v.Labels[TaskIdLabel]))
+                .Where(id => Guid.TryParse(id, out var guid) && guid.ToString("D") == id && !runs.Contains(id))
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+        }
+
         public async Task StartAsync(CodeRunRequest request, CancellationToken ct)
         {
             CheckLimits(request);

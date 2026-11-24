@@ -428,6 +428,44 @@ public class CodeExecutionTests
         Assert.Equal(new[] { saved, stale }.Order(), _runner.Removed.Order());
     }
 
+    [Fact]
+    public async Task Sweep_RemovesOrphanedStagedData_LeavesActiveRunAlone()
+    {
+        // A run removed part-way (its container gone, a volume or stage container left) is an orphan.
+        const string orphan = "66666666-6666-4666-8666-666666666666";
+        _runner.States[T1] = new CodeRunState(CodeRunStatus.Running, Now, null, null, false, CsvSha);
+        _runner.CreatedAt[T1] = Now.AddMinutes(-1);
+        _runner.Orphans.Add(orphan);
+
+        await Execution().SweepAsync([T1], CancellationToken.None);
+
+        Assert.Equal(new[] { orphan }, _runner.Removed);
+        Assert.Empty(_runner.Orphans);
+        Assert.True(_runner.States.ContainsKey(T1));
+    }
+
+    [Fact]
+    public async Task Sweep_OneFailingRemoval_DoesNotStopTheOthers()
+    {
+        const string stale = "33333333-3333-4333-8333-333333333333";
+        const string staleToo = "77777777-7777-4777-8777-777777777777";
+        const string orphan = "66666666-6666-4666-8666-666666666666";
+        const string orphanToo = "88888888-8888-4888-8888-888888888888";
+        var running = new CodeRunState(CodeRunStatus.Running, Now, null, null, false, CsvSha);
+        _runner.States[stale] = running;
+        _runner.States[staleToo] = running;
+        _runner.CreatedAt[stale] = Now.AddMinutes(-61);
+        _runner.CreatedAt[staleToo] = Now.AddMinutes(-61);
+        _runner.Orphans.Add(orphan);
+        _runner.Orphans.Add(orphanToo);
+        _runner.FailRemove.Add(stale);
+        _runner.FailRemove.Add(orphan);
+
+        await Execution().SweepAsync([], CancellationToken.None);
+
+        Assert.Equal(new[] { orphanToo, staleToo }.Order(), _runner.Removed.Order());
+    }
+
     private sealed class FakeOutputs : IResultOutputStore
     {
         public Dictionary<string, byte[]> Saved { get; } = new();

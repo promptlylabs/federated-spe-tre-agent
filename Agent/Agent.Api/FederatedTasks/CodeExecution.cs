@@ -54,6 +54,11 @@ namespace Agent.Api.FederatedTasks
 
         public Task RemoveRunAsync(string taskId, CancellationToken ct) => _runner.RemoveAsync(taskId, ct);
 
+        /// <remarks>
+        /// Runs at the start of the poll, under the job's lock, so no start is in progress: staged data with no run
+        /// container is left over from a removal or a failed start that was cut short, and is removed too. One removal
+        /// that fails does not stop the others; the next sweep tries it again.
+        /// </remarks>
         public async Task SweepAsync(IReadOnlyCollection<string> pendingTaskIds, CancellationToken ct)
         {
             var now = _clock.GetUtcNow();
@@ -77,9 +82,29 @@ namespace Agent.Api.FederatedTasks
                     continue;
                 }
 
-                await _runner.RemoveAsync(run.TaskId, ct);
-                Log.Information("Federated tasks: removed the code run of task {TaskId}: {Reason}", run.TaskId, reason);
+                await SweepRemoveAsync(run.TaskId, "code run", reason, ct);
             }
+
+            foreach (var taskId in await _runner.ListOrphanedTaskIdsAsync(ct))
+            {
+                await SweepRemoveAsync(taskId, "staged data", "it has no run", ct);
+            }
+        }
+
+        private async Task SweepRemoveAsync(string taskId, string what, string reason, CancellationToken ct)
+        {
+            try
+            {
+                await _runner.RemoveAsync(taskId, ct);
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                Log.Warning(ex, "Federated tasks: could not remove the {What} of task {TaskId} ({Reason}); the next sweep tries again",
+                    what, taskId, reason);
+                return;
+            }
+
+            Log.Information("Federated tasks: removed the {What} of task {TaskId}: {Reason}", what, taskId, reason);
         }
 
         public async Task<ExecutionResult> RunAsync(TesTask task, FederatedTaskSpec spec, string? fileKey, CancellationToken ct)
@@ -152,7 +177,6 @@ namespace Agent.Api.FederatedTasks
             }
         }
 
-        /// <summary>The task's value, or the default when it gives none; never more than the TRE's maximum.</summary>
         /// <summary>The value, raised to the floor when it is below it.</summary>
         private static double AtLeast(string taskId, string field, double value, double floor)
         {
@@ -166,6 +190,10 @@ namespace Agent.Api.FederatedTasks
             return floor;
         }
 
+        /// <summary>
+        /// The task's value, or the default when it gives none or one that is 0 or less or not finite; never more than
+        /// the TRE's maximum.
+        /// </summary>
         private static double Limit(string taskId, string field, double? requested, double fallback, double max)
         {
             if (requested is not { } value || !double.IsFinite(value) || value <= 0)

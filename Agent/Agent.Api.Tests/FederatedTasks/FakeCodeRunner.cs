@@ -22,6 +22,12 @@ public sealed class FakeCodeRunner : ICodeRunner
 
     public List<(string TaskId, int MaxBytes)> Reads { get; } = [];
 
+    /// <summary>Task ids with staged data (volumes or a stage container) but no run, as a removal cut short leaves.</summary>
+    public HashSet<string> Orphans { get; } = [];
+
+    /// <summary>Task ids whose removal throws, as Docker does when it cannot remove a volume.</summary>
+    public HashSet<string> FailRemove { get; } = [];
+
     public Task<CodeRunState> GetAsync(string taskId, CancellationToken ct) =>
         Task.FromResult(States.TryGetValue(taskId, out var state) ? state : CodeRunState.None);
 
@@ -31,6 +37,12 @@ public sealed class FakeCodeRunner : ICodeRunner
             .Select(id => new CodeRunInfo(id, CreatedAt.TryGetValue(id, out var at) ? at : DateTimeOffset.MinValue))
             .ToList();
         return Task.FromResult(runs);
+    }
+
+    public Task<IReadOnlyList<string>> ListOrphanedTaskIdsAsync(CancellationToken ct)
+    {
+        IReadOnlyList<string> ids = Orphans.Where(id => !States.ContainsKey(id)).ToList();
+        return Task.FromResult(ids);
     }
 
     public async Task StartAsync(CodeRunRequest request, CancellationToken ct)
@@ -61,7 +73,13 @@ public sealed class FakeCodeRunner : ICodeRunner
 
     public Task RemoveAsync(string taskId, CancellationToken ct)
     {
+        if (FailRemove.Contains(taskId))
+        {
+            throw new InvalidOperationException($"cannot remove the run of {taskId}");
+        }
+
         Removed.Add(taskId);
+        Orphans.Remove(taskId);
         States.Remove(taskId);
         CreatedAt.Remove(taskId);
         return Task.CompletedTask;

@@ -362,6 +362,58 @@ public class DockerCodeRunnerTests
     }
 
     [DockerFact]
+    public async Task OrphanedVolumesAndStageContainer_AreListedAndRemoved_ActiveRunIsNot()
+    {
+        // What a removal or failed start cut short leaves: volumes (a copy of the dataset) and a stage container, but
+        // no run container. Created directly, so nothing is started.
+        var runner = Runner();
+        var orphan = NewTaskId();
+        var active = NewTaskId();
+        try
+        {
+            foreach (var (name, role) in new[] { ($"fed-data-{orphan}", "data"), ($"fed-out-{orphan}", "outputs") })
+            {
+                await _docker.Volumes.CreateAsync(new VolumesCreateParameters
+                {
+                    Name = name,
+                    Labels = new Dictionary<string, string> { ["fed.task-id"] = orphan, ["fed.role"] = role }
+                });
+            }
+
+            await CreateLabelledContainerAsync($"fed-stage-{orphan}", orphan, "stage");
+            await _docker.Volumes.CreateAsync(new VolumesCreateParameters
+            {
+                Name = $"fed-data-{active}",
+                Labels = new Dictionary<string, string> { ["fed.task-id"] = active, ["fed.role"] = "data" }
+            });
+            await CreateLabelledContainerAsync($"fed-run-{active}", active, "run");
+
+            var orphans = await runner.ListOrphanedTaskIdsAsync(CancellationToken.None);
+            Assert.Contains(orphan, orphans);
+            Assert.DoesNotContain(active, orphans);
+
+            await runner.RemoveAsync(orphan, CancellationToken.None);
+            await AssertNothingLabelledAsync(orphan);
+            Assert.DoesNotContain(orphan, await runner.ListOrphanedTaskIdsAsync(CancellationToken.None));
+        }
+        finally
+        {
+            await RemoveAndAssertNothingLeftAsync(runner, orphan);
+            await RemoveAndAssertNothingLeftAsync(runner, active);
+        }
+    }
+
+    private Task CreateLabelledContainerAsync(string name, string taskId, string role) =>
+        _docker.Containers.CreateContainerAsync(new CreateContainerParameters
+        {
+            Name = name,
+            Image = DockerFactAttribute.RunnerImage,
+            Labels = new Dictionary<string, string> { ["fed.task-id"] = taskId, ["fed.role"] = role },
+            NetworkDisabled = true,
+            HostConfig = new HostConfig { NetworkMode = "none", LogConfig = new LogConfig { Type = "none" } }
+        });
+
+    [DockerFact]
     public async Task FileLargerThanDiskLimit_WriteFails()
     {
         // The request's /tmp allowance is 256 MiB; the file size limit is the same on the outputs volume.
