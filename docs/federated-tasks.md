@@ -383,7 +383,7 @@ The Agent maps `result.json` (format in `runner/README.md`) as follows. It never
 
 **Known limitation:** at the hospital, a researcher sees only which kind of failure happened, not the column, line or exception. To find the cause, reproduce it in the SPE with synthetic data (`run-analysis --debug` there), or ask the TRE admin, who sees the runner's full message in the Agent log. The reason: an error report does not go through output approval, and the code can write `result.json` itself, so the Agent cannot pass on any text from it.
 
-Count/mean tasks and the `5s-tes/federated-ops:1` image are removed in PoC task 2.4.
+Count/mean tasks and the `5s-tes/federated-ops:1` image are still supported and are to be removed later.
 
 ### Task phases and state
 
@@ -515,7 +515,7 @@ The input checks run on every poll until the task's result file is saved, so a r
 
 ### Runner image
 
-`python-runner:1` is the image that a researcher's Python code will run in at the hospital. The researcher's SPE is a notebook that `spms-spe-operator-go` starts from `s2i-generic-data-science-notebook:2025.2` (Open Data Hub 2025b, Python 3.12, plus ACRO with SPMS's thresholds). At the hospital, a version of the same operator on OpenShift will start a locked-down pod from this image. The image must have the same Python and libraries as the SPE notebook; today its base is a 2025a/Python 3.11 placeholder that must be aligned before researchers rely on it (see the runner README). It has no package installers, and one command: `run-analysis <code.py> <dataset dir> <result.json>`. The command checks the dataset against its `schema.json`, calls the researcher's `site_analysis(df)`, checks the return value and writes `result.json`. No error message contains a data value. The Agent starts it for a code task (see "Running a code task"), so `ApprovedImages` must list it. See [`runner/README.md`](../runner/README.md) for the command, the `result.json` format, the error codes, the pod settings and the tests.
+`python-runner:1` is the image that a researcher's Python code will run in at the hospital. The researcher's SPE is a notebook that `spms-spe-operator-go` starts from `s2i-generic-data-science-notebook:2025.2` (Open Data Hub 2025b, Python 3.12, plus ACRO with SPMS's thresholds). At the hospital, a version of the same operator on OpenShift will start a locked-down pod from this image. The image must have the same Python and libraries as the SPE notebook; today its base is a 2025a/Python 3.11 placeholder. Code tasks run on it now, so code that works in the SPE (for example code that uses `acro`) may fail at the hospital until the base is moved; that move is still to do (see the runner README). It has no package installers, and one command: `run-analysis <code.py> <dataset dir> <result.json>`. The command checks the dataset against its `schema.json`, calls the researcher's `site_analysis(df)`, checks the return value and writes `result.json`. No error message contains a data value. The Agent starts it for a code task (see "Running a code task"), so `ApprovedImages` must list it. See [`runner/README.md`](../runner/README.md) for the command, the `result.json` format, the error codes, the pod settings and the tests.
 
 ### Output approval
 

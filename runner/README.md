@@ -12,9 +12,10 @@ built on Open Data Hub 2025a with Python 3.11. The SPE actually runs Open Data
 Hub 2025b with Python 3.12 (`s2i-generic-data-science-notebook:2025.2`, public
 build `odh-workbench-jupyter-datascience-cpu-py312-ubi9:2025b-v1.40`), plus
 ACRO 1.1.0 with SPMS's disclosure thresholds. The image must be moved to that
-base, with ACRO and the same thresholds, before PoC task 2.4 runs researcher
-code with it. Until then, code that works in the SPE may fail here, for example
-any code that uses `acro`. See "Base image" below.
+base, with ACRO and the same thresholds. That move is still to do. Code tasks
+already run on the placeholder base, so until it is done, code that works in the
+SPE may fail at the hospital, for example any code that uses `acro`. See "Base
+image" below.
 
 The Agent runs this image for a federated code task. On the dev stack it
 starts a Docker container with the restrictions under "Isolation" (see
@@ -216,7 +217,7 @@ cluster offers as `s2i-generic-data-science-notebook:2025.2`:
 package versions as constraints, with SPMS's thresholds applied and its
 folder made read-only.
 
-To match it, before PoC task 2.4:
+To match it (still to do; code tasks run on the placeholder base until then):
 
 1. Change `FROM` to the 2025b runtime image with Python 3.12:
    `quay.io/opendatahub/odh-pipeline-runtime-datascience-cpu-py312-ubi9@sha256:293512b01037b87ed095a56f1bebdc45ed1c6025ed55ff6f3517e59f95a16fa3`
