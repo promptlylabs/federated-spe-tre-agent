@@ -525,65 +525,115 @@ namespace Submission.Api.Controllers
         }
 
         /// <summary>
-        /// Cancels a task. A queued task, which no hospital has picked up, is cancelled at once. A task a hospital has
-        /// picked up waits in canceling until that hospital confirms it withdrew the review and removed the result.
+        /// Cancels a study version. A queued part, which no hospital has picked up, is cancelled at once. A part a hospital
+        /// has picked up waits in canceling until that hospital confirms it withdrew the review and removed the result.
         /// </summary>
         [Authorize(Roles = "dare-control-admin")]
         [HttpPost]
         [Route("Cancel")]
         [ValidateModelState]
         [SwaggerOperation("Cancel")]
-        [SwaggerResponse(statusCode: 200, type: typeof(FederatedProgressResponse), description: "")]
+        [SwaggerResponse(statusCode: 200, type: typeof(FederatedStudyVersionView), description: "")]
         [SwaggerResponse(statusCode: 404, type: typeof(FederatedApiError), description: "")]
         [SwaggerResponse(statusCode: 409, type: typeof(FederatedApiError), description: "")]
         public virtual async Task<IActionResult> Cancel([FromQuery] string id, CancellationToken cancellationToken = default)
         {
-            if (!Guid.TryParse(id, out var taskId))
+            if (!Guid.TryParse(id, out var versionId))
             {
-                return TaskNotFound();
+                return StudyNotFound();
             }
 
             for (var attempt = 0; attempt < MaxReportAttempts; attempt++)
             {
-                var task = await _DbContext.FederatedTasks
-                    .Include(x => x.PhaseChanges)
-                    .FirstOrDefaultAsync(x => x.TaskId == taskId, cancellationToken);
-                if (task == null)
+                var version = await _DbContext.FederatedStudyVersions
+                    .Include(x => x.Parts).ThenInclude(x => x.PhaseChanges)
+                    .FirstOrDefaultAsync(x => x.VersionId == versionId, cancellationToken);
+                if (version == null)
                 {
-                    return TaskNotFound();
+                    return StudyNotFound();
                 }
 
-                switch (task.RequestCancel(DateTime.UtcNow))
+                if (version.CanceledAt is not null)
                 {
-                    case FederatedTaskTransition.Apply:
-                        break;
-                    case FederatedTaskTransition.NoChange:
-                        return Ok(new FederatedProgressResponse { Phase = FederatedTaskPhases.ToWire(task.Phase) });
-                    case FederatedTaskTransition.AlreadyFinal:
-                        return Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.TaskAlreadyFinished,
-                            $"the task already finished at phase '{FederatedTaskPhases.ToWire(task.Phase)}'");
-                    default:
-                        return Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.InvalidTransition,
-                            $"a task at phase '{FederatedTaskPhases.ToWire(task.Phase)}' cannot be cancelled");
+                    return Ok(FederatedStudyVersions.ToView(version));
                 }
 
-                var next = task.Phase;
+                if (version.State == FederatedStudyVersionState.Ended)
+                {
+                    return Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.TaskAlreadyFinished,
+                        $"version {version.Version} of study '{version.StudyId}' already ended");
+                }
+
+                FederatedStudyVersions.RequestCancel(version, DateTime.UtcNow);
                 try
                 {
                     await _DbContext.SaveChangesAsync(cancellationToken);
-                    Log.Information("Federated task {TaskId} cancelled by {User}: now {Phase}", taskId, User.FindFirst("preferred_username")?.Value,
-                        FederatedTaskPhases.ToWire(next));
-                    return Ok(new FederatedProgressResponse { Phase = FederatedTaskPhases.ToWire(next) });
+                    Log.Information("Federated study version {VersionId} cancelled by {User}: now {State}", versionId,
+                        User.FindFirst("preferred_username")?.Value, version.State.ToWire());
+                    return Ok(FederatedStudyVersions.ToView(version));
                 }
                 catch (DbUpdateConcurrencyException)
                 {
-                    // An Agent report moved the task after it was read here: decide again against the phase it left.
+                    // An Agent report moved a part after it was read here: decide again against the phases it left.
                     _DbContext.ChangeTracker.Clear();
                 }
             }
 
             return Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.TaskBusy,
-                "the task is being updated by other reports, try again");
+                "the study version is being updated by other reports, try again");
+        }
+
+        /// <summary>A version of a study (the latest unless <paramref name="version"/> is given) with each hospital's progress.</summary>
+        [Authorize(Roles = "dare-control-admin")]
+        [HttpGet]
+        [Route("GetStudy")]
+        [ValidateModelState]
+        [SwaggerOperation("GetStudy")]
+        [SwaggerResponse(statusCode: 200, type: typeof(FederatedStudyVersionView), description: "")]
+        [SwaggerResponse(statusCode: 404, type: typeof(FederatedApiError), description: "")]
+        public virtual async Task<IActionResult> GetStudy([FromQuery] string studyId, [FromQuery] int? version = null, CancellationToken cancellationToken = default)
+        {
+            var versions = await _DbContext.FederatedStudyVersions
+                .AsNoTracking()
+                .Where(x => x.StudyId == studyId)
+                .Select(x => x.Version)
+                .OrderBy(x => x)
+                .ToArrayAsync(cancellationToken);
+            var wanted = version ?? versions.LastOrDefault();
+            if (versions.Length == 0 || !versions.Contains(wanted))
+            {
+                return StudyNotFound();
+            }
+
+            var found = await _DbContext.FederatedStudyVersions
+                .AsNoTracking()
+                .Include(x => x.Parts).ThenInclude(x => x.PhaseChanges)
+                .FirstAsync(x => x.StudyId == studyId && x.Version == wanted, cancellationToken);
+            var view = FederatedStudyVersions.ToView(found);
+            view.Versions = versions;
+            return Ok(view);
+        }
+
+        /// <summary>One study version by its id, with each hospital's progress.</summary>
+        [Authorize(Roles = "dare-control-admin")]
+        [HttpGet]
+        [Route("GetStudyVersion")]
+        [ValidateModelState]
+        [SwaggerOperation("GetStudyVersion")]
+        [SwaggerResponse(statusCode: 200, type: typeof(FederatedStudyVersionView), description: "")]
+        [SwaggerResponse(statusCode: 404, type: typeof(FederatedApiError), description: "")]
+        public virtual async Task<IActionResult> GetStudyVersion([FromQuery] string id, CancellationToken cancellationToken = default)
+        {
+            if (!Guid.TryParse(id, out var versionId))
+            {
+                return StudyNotFound();
+            }
+
+            var found = await _DbContext.FederatedStudyVersions
+                .AsNoTracking()
+                .Include(x => x.Parts).ThenInclude(x => x.PhaseChanges)
+                .FirstOrDefaultAsync(x => x.VersionId == versionId, cancellationToken);
+            return found == null ? StudyNotFound() : Ok(FederatedStudyVersions.ToView(found));
         }
 
         [Authorize(Roles = "dare-control-admin")]
@@ -698,6 +748,9 @@ namespace Submission.Api.Controllers
 
         private static ObjectResult TaskNotFound() =>
             Error(StatusCodes.Status404NotFound, FederatedTaskErrorCodes.TaskNotFound, "task not found");
+
+        private static ObjectResult StudyNotFound() =>
+            Error(StatusCodes.Status404NotFound, FederatedTaskErrorCodes.StudyNotFound, "study or version not found");
 
         private static ObjectResult NotCancelled(FederatedTask task) =>
             Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.InvalidTransition,

@@ -1423,79 +1423,131 @@ namespace Submission.Api.Tests
             Assert.Equal("{\"error_code\":\"task_not_found\",\"error_message\":\"task not found\"}", json);
         }
 
-        private static Task<IActionResult> Cancel(ApplicationDbContext db, Guid taskId) =>
-            ControllerFor(db, "dare-admin").Cancel(taskId.ToString());
+        private static Task<IActionResult> Cancel(ApplicationDbContext db, Guid versionId) =>
+            ControllerFor(db, "dare-admin").Cancel(versionId.ToString());
 
-        [Fact]
-        public async Task Cancel_queued_task_is_canceled_at_once_and_never_handed_out()
+        private static FederatedStudyVersion NewTwoSiteVersion(ApplicationDbContext db)
         {
-            using var db = NewDb();
-            var seeded = SeedAtPhase(db, FederatedTaskPhase.Queued);
-
-            var result = await Cancel(db, seeded.TaskId);
-
-            Assert.Equal("canceled", Assert.IsType<FederatedProgressResponse>(Assert.IsType<OkObjectResult>(result).Value).Phase);
-            var row = Reload(db, seeded.TaskId);
-            Assert.Equal(FederatedTaskPhase.Canceled, row.Phase);
-            Assert.Equal(TesState.CANCELEDEnum, row.State);
-            var pending = await AgentControllerFor(db, "tre-a-client").GetPendingTasksForTre();
-            Assert.Empty(Assert.IsType<List<TesTask>>(Assert.IsType<OkObjectResult>(pending).Value));
+            var version = NewVersion(db);
+            version.Sites = "tre-a|tre-b";
+            return version;
         }
 
-        [Theory]
-        [InlineData(FederatedTaskPhase.Running)]
-        [InlineData(FederatedTaskPhase.WaitingForOutputApproval)]
-        public async Task Cancel_picked_up_task_moves_to_canceling_and_is_handed_out_first(FederatedTaskPhase phase)
+        private static FederatedStudyVersionView ViewOf(IActionResult result) =>
+            Assert.IsType<FederatedStudyVersionView>(Assert.IsType<OkObjectResult>(result).Value);
+
+        [Fact]
+        public async Task GetStudy_Latest_ShowsEachHospitalsPhase()
         {
             using var db = NewDb();
-            SeedAtPhase(db, FederatedTaskPhase.Running, submittedAt: DateTime.UtcNow.AddHours(-2));
-            var seeded = SeedAtPhase(db, phase, submittedAt: DateTime.UtcNow.AddHours(-1));
+            var version = NewTwoSiteVersion(db);
+            var released = SeedAtPhase(db, FederatedTaskPhase.Released, treId: 1, version: version);
+            released.ResultSha256 = new string('a', 64);
+            SeedAtPhase(db, FederatedTaskPhase.WaitingForOutputApproval, treId: 2, version: version);
+            db.SaveChanges();
 
-            var result = await Cancel(db, seeded.TaskId);
+            var view = ViewOf(await ControllerFor(db, "dare-admin").GetStudy("study-1"));
 
-            Assert.Equal("canceling", Assert.IsType<FederatedProgressResponse>(Assert.IsType<OkObjectResult>(result).Value).Phase);
-            var row = Reload(db, seeded.TaskId);
-            Assert.Equal(FederatedTaskPhase.Canceling, row.Phase);
-            Assert.Equal(TesState.CANCELINGEnum, row.State);
-            var pending = Assert.IsType<List<TesTask>>(Assert.IsType<OkObjectResult>(
-                await AgentControllerFor(db, "tre-a-client").GetPendingTasksForTre()).Value);
-            Assert.Equal(seeded.TaskId.ToString(), pending[0].Id);
-            Assert.Equal(FederatedTaskPhase.Canceling, FederatedTaskPhases.PhaseOf(pending[0]));
+            Assert.Equal("open", view.State);
+            Assert.Equal(new[] { 1 }, view.Versions);
+            Assert.Equal(new[] { "tre-a", "tre-b" }, view.Hospitals.Select(h => h.Tre).ToArray());
+            Assert.Equal(new[] { "released", "waiting_for_output_approval" }, view.Hospitals.Select(h => h.Phase).ToArray());
+            Assert.Equal(new string('a', 64), view.Hospitals[0].ResultSha256);
+            Assert.Null(view.Hospitals[1].ResultSha256);
+            Assert.True(view.Hospitals[1].Times.ContainsKey("waiting_for_output_approval_at"));
         }
 
         [Fact]
-        public async Task Cancel_of_a_canceling_task_changes_nothing()
+        public async Task GetStudy_ByNumberAndById_SameVersion()
         {
             using var db = NewDb();
-            var seeded = SeedAtPhase(db, FederatedTaskPhase.Canceling);
+            var first = NewTwoSiteVersion(db);
+            SeedAtPhase(db, FederatedTaskPhase.Released, version: first);
+            var second = NewTwoSiteVersion(db);
+            second.Version = 2;
+            SeedAtPhase(db, FederatedTaskPhase.Running, version: second);
+            var controller = ControllerFor(db, "dare-admin");
 
-            var result = await Cancel(db, seeded.TaskId);
+            var byNumber = ViewOf(await controller.GetStudy("study-1", 1));
+            var byId = ViewOf(await controller.GetStudyVersion(first.VersionId.ToString()));
 
-            Assert.IsType<OkObjectResult>(result);
-            AssertUnchanged(db, seeded);
-        }
-
-        [Theory]
-        [InlineData(FederatedTaskPhase.Released)]
-        [InlineData(FederatedTaskPhase.Canceled)]
-        public async Task Cancel_of_a_finished_task_is_refused(FederatedTaskPhase phase)
-        {
-            using var db = NewDb();
-            var seeded = SeedAtPhase(db, phase);
-
-            var result = await Cancel(db, seeded.TaskId);
-
-            AssertError(result, 409, FederatedTaskErrorCodes.TaskAlreadyFinished);
-            AssertUnchanged(db, seeded);
+            Assert.Equal(first.VersionId, byNumber.VersionId);
+            Assert.Equal(first.VersionId, byId.VersionId);
+            Assert.Equal(new[] { 1, 2 }, byNumber.Versions);
+            Assert.Null(byId.Versions);
+            Assert.Equal(2, ViewOf(await controller.GetStudy("study-1")).Version);
         }
 
         [Fact]
-        public async Task Cancel_of_an_unknown_task_is_not_found()
+        public async Task GetStudy_Unknown_404()
         {
             using var db = NewDb();
+            var controller = ControllerFor(db, "dare-admin");
+            SeedAtPhase(db, FederatedTaskPhase.Queued);
 
-            AssertError(await Cancel(db, Guid.NewGuid()), 404, FederatedTaskErrorCodes.TaskNotFound);
-            AssertError(await ControllerFor(db, "dare-admin").Cancel("nope"), 404, FederatedTaskErrorCodes.TaskNotFound);
+            AssertError(await controller.GetStudy("nope"), 404, FederatedTaskErrorCodes.StudyNotFound);
+            AssertError(await controller.GetStudy("study-1", 7), 404, FederatedTaskErrorCodes.StudyNotFound);
+            AssertError(await controller.GetStudyVersion(Guid.NewGuid().ToString()), 404, FederatedTaskErrorCodes.StudyNotFound);
+            AssertError(await controller.GetStudyVersion("nope"), 404, FederatedTaskErrorCodes.StudyNotFound);
+        }
+
+        [Fact]
+        public async Task GetTask_WithVersionId_NotFound()
+        {
+            using var db = NewDb();
+            var version = NewTwoSiteVersion(db);
+            SeedAtPhase(db, FederatedTaskPhase.Queued, version: version);
+
+            AssertError(await ControllerFor(db, "dare-admin").GetTask(version.VersionId.ToString()), 404, FederatedTaskErrorCodes.TaskNotFound);
+        }
+
+        [Fact]
+        public async Task Cancel_Version_MixedPhases()
+        {
+            using var db = NewDb();
+            var version = NewTwoSiteVersion(db);
+            var released = SeedAtPhase(db, FederatedTaskPhase.Released, treId: 1, version: version);
+            var queued = SeedAtPhase(db, FederatedTaskPhase.Queued, treId: 1, version: version);
+            var running = SeedAtPhase(db, FederatedTaskPhase.Running, treId: 2, version: version);
+
+            var view = ViewOf(await Cancel(db, version.VersionId));
+
+            Assert.Equal("canceling", view.State);
+            Assert.NotNull(view.CanceledAt);
+            Assert.Equal(FederatedTaskPhase.Released, Reload(db, released.TaskId).Phase);
+            Assert.Equal(FederatedTaskPhase.Canceled, Reload(db, queued.TaskId).Phase);
+            Assert.Equal(FederatedTaskPhase.Canceling, Reload(db, running.TaskId).Phase);
+
+            await AgentControllerFor(db, "tre-b-client").ReportProgress(
+                new FederatedTaskProgressReport { TaskId = running.TaskId.ToString(), Phase = "canceled" });
+
+            Assert.Equal("ended", ViewOf(await ControllerFor(db, "dare-admin").GetStudyVersion(version.VersionId.ToString())).State);
+        }
+
+        [Fact]
+        public async Task Cancel_Twice_NoChange()
+        {
+            using var db = NewDb();
+            var version = NewTwoSiteVersion(db);
+            var running = SeedAtPhase(db, FederatedTaskPhase.Running, version: version);
+            var first = ViewOf(await Cancel(db, version.VersionId));
+
+            var second = ViewOf(await Cancel(db, version.VersionId));
+
+            Assert.Equal(first.CanceledAt, second.CanceledAt);
+            Assert.Single(Reload(db, running.TaskId).PhaseChanges, c => c.Phase == FederatedTaskPhase.Canceling);
+        }
+
+        [Fact]
+        public async Task Cancel_EndedVersion_409()
+        {
+            using var db = NewDb();
+            var version = NewTwoSiteVersion(db);
+            SeedAtPhase(db, FederatedTaskPhase.Released, version: version);
+
+            AssertError(await Cancel(db, version.VersionId), 409, FederatedTaskErrorCodes.TaskAlreadyFinished);
+            Assert.Null(db.FederatedStudyVersions.Single().CanceledAt);
+            AssertError(await Cancel(db, Guid.NewGuid()), 404, FederatedTaskErrorCodes.StudyNotFound);
         }
 
         [Fact]
@@ -1579,9 +1631,9 @@ namespace Submission.Api.Tests
             AssertUnchanged(db, seeded);
         }
 
-        private static FederatedTask SeedAtPhase(ApplicationDbContext db, FederatedTaskPhase phase, int treId = 1, DateTime? submittedAt = null)
+        private static FederatedTask SeedAtPhase(ApplicationDbContext db, FederatedTaskPhase phase, int treId = 1, DateTime? submittedAt = null, FederatedStudyVersion? version = null)
         {
-            var task = SeedTask(db, treId, TesState.QUEUEDEnum);
+            var task = SeedTask(db, treId, TesState.QUEUEDEnum, version: version);
             task.SubmittedAt = submittedAt ?? task.SubmittedAt;
             task.MoveTo(FederatedTaskPhase.Queued, task.SubmittedAt);
             if (phase is FederatedTaskPhase.Canceling or FederatedTaskPhase.Canceled)
