@@ -375,23 +375,6 @@ public class DoFederatedTaskWorkTests
     }
 
     [Theory]
-    [InlineData("python-runner:1")]
-    [InlineData("5s-tes/federated-ops:1")]
-    public async Task Code_task_is_refused_before_input_checks(string approvedImage)
-    {
-        var client = new FakeClient();
-        client.Pending.Add(PendingCodeTask(T1));
-
-        // The dataset lookup throws, so a task that reached the input checks would not get this report.
-        await Work(client, new FailingResolveReader(), settings: Approving(approvedImage)).Execute();
-
-        var report = Assert.Single(client.Reports);
-        Assert.Equal("invalid_task", report.ErrorCode);
-        Assert.Equal("this TRE does not run code tasks yet", report.ErrorMessage);
-        Assert.Empty(client.ProgressCalls);
-    }
-
-    [Theory]
     [InlineData("code changed")]
     [InlineData("tag changed")]
     public async Task Code_whose_hash_no_longer_matches_is_refused_without_reading_data(string tampering)
@@ -404,8 +387,8 @@ public class DoFederatedTaskWorkTests
             task.Tags!["fed.code_sha256"] = new string('0', 64);
         client.Pending.Add(task);
 
-        // A task that got past the hash check would be refused with "does not run code tasks yet" instead, and the
-        // dataset lookup throws, so the exact message below proves the hash check stopped it before any data access.
+        // The dataset lookup throws, so a task that got past the hash check would not get this report: the exact
+        // message below proves the hash check stopped it before any data access.
         await Work(client, new FailingResolveReader(), settings: Approving("python-runner:1")).Execute();
 
         var report = Assert.Single(client.Reports);
@@ -1802,15 +1785,61 @@ public class DoFederatedTaskWorkTests
         Assert.Equal("internal_error", report.ErrorCode);
     }
 
-    /// <summary>Stands in for the task execution; records what it was asked to run.</summary>
+    /// <summary>
+    /// Stands in for the task execution; records what it was asked to do. By default no run exists and a run can
+    /// start. Queued results are returned first, then <c>run</c>.
+    /// </summary>
     private sealed class FakeExecution(Func<ExecutionResult> run) : IFederatedTaskExecution
     {
-        public List<(string? TaskId, FederatedTaskSpec Spec, string FileKey)> Runs { get; } = new();
+        public FakeExecution(params ExecutionResult[] results) : this(() => throw new InvalidOperationException("no result queued"))
+        {
+            foreach (var r in results) Results.Enqueue(r);
+        }
 
-        public Task<ExecutionResult> RunAsync(TesTask task, FederatedTaskSpec spec, string fileKey, CancellationToken ct)
+        public Queue<ExecutionResult> Results { get; } = new();
+        public bool HasRun { get; set; }
+        public bool CanStart { get; set; } = true;
+        public bool ThrowOnSweep { get; set; }
+        /// <summary>When set, each removal records whether the task's result was saved at that moment.</summary>
+        public FakeResultOutputStore? Outputs { get; set; }
+
+        public List<(string? TaskId, FederatedTaskSpec Spec, string? FileKey)> Runs { get; } = new();
+        public List<string> HasRunCalls { get; } = new();
+        public int CanStartCalls { get; private set; }
+        public List<string> Removed { get; } = new();
+        public List<bool> SavedWhenRemoved { get; } = new();
+        public List<IReadOnlyCollection<string>> Sweeps { get; } = new();
+
+        public Task<bool> HasRunAsync(string taskId, CancellationToken ct)
+        {
+            HasRunCalls.Add(taskId);
+            return Task.FromResult(HasRun);
+        }
+
+        public Task<bool> CanStartAsync(FederatedTaskSpec spec, CancellationToken ct)
+        {
+            CanStartCalls++;
+            return Task.FromResult(CanStart);
+        }
+
+        public Task<ExecutionResult> RunAsync(TesTask task, FederatedTaskSpec spec, string? fileKey, CancellationToken ct)
         {
             Runs.Add((task.Id, spec, fileKey));
-            return Task.FromResult(run());
+            return Task.FromResult(Results.Count > 0 ? Results.Dequeue() : run());
+        }
+
+        public Task RemoveRunAsync(string taskId, CancellationToken ct)
+        {
+            Removed.Add(taskId);
+            if (Outputs != null) SavedWhenRemoved.Add(Outputs.Files.ContainsKey(taskId));
+            return Task.CompletedTask;
+        }
+
+        public Task SweepAsync(IReadOnlyCollection<string> pendingTaskIds, CancellationToken ct)
+        {
+            Sweeps.Add(pendingTaskIds.ToList());
+            if (ThrowOnSweep) throw new HttpRequestException("docker down");
+            return Task.CompletedTask;
         }
     }
 
@@ -1904,6 +1933,263 @@ public class DoFederatedTaskWorkTests
         var report = Assert.Single(client.Reports);
         Assert.Equal(TesState.SYSTEMERROREnum, report.State);
         Assert.Equal("internal_error", report.ErrorCode);
+    }
+
+    // Code tasks: the poll moves the run one step per poll (start, check, collect) and never waits for it.
+
+    /// <summary>Finds the dataset and its schema.json, but throws if its data is read.</summary>
+    private sealed class CodeDatasetReader : IDatasetReader
+    {
+        public Task<DatasetResolveResult> ResolveAsync(string datasetName, CancellationToken ct) =>
+            Task.FromResult(DatasetResolveResult.Ok($"dataset/{datasetName}/data.csv", $"dataset/{datasetName}/schema.json"));
+
+        public Task<DatasetReadResult> ReadAsync(string fileKey, CancellationToken ct) => throw new InvalidOperationException("reader must not be called");
+    }
+
+    private static DoFederatedTaskWork CodeWork(FakeClient client, FakeExecution execution, IDatasetReader? reader = null,
+        FakeResultOutputStore? outputs = null, FakeOutputApproval? approval = null) =>
+        Work(client, reader ?? new CodeDatasetReader(), outputs: outputs, settings: Approving("python-runner:1"),
+            execution: execution, approval: approval);
+
+    private static FakeClient OneCodeTask(TesState state = TesState.QUEUEDEnum)
+    {
+        var client = new FakeClient();
+        var task = PendingCodeTask(T1);
+        task.State = state;
+        client.Pending.Add(task);
+        return client;
+    }
+
+    private static FederatedAnalysisResultDocument AnalysisDocument() => new()
+    {
+        TaskId = T1,
+        Tre = "tre-a",
+        StudyId = "study-1",
+        Operation = FederatedTesProfile.RunAnalysisCommand,
+        Dataset = "cohort_2024",
+        DatasetSha256 = new string('a', 64),
+        CompletedAt = Now,
+        Result = new FederatedAnalysisResult { N = 3, Value = JsonDocument.Parse("{\"n\":3}").RootElement.Clone() }
+    };
+
+    [Fact]
+    public async Task CodeTask_IsNoLongerRefused()
+    {
+        var client = OneCodeTask();
+        var execution = new FakeExecution(ExecutionResult.InProgress());
+
+        await CodeWork(client, execution).Execute();
+
+        var run = Assert.Single(execution.Runs);
+        Assert.Equal(T1, run.TaskId);
+        Assert.True(run.Spec.IsCodeTask);
+        Assert.Equal("dataset/cohort_2024/data.csv", run.FileKey);
+        Assert.Equal(new[] { (T1, FederatedTaskPhase.Running) }, client.ProgressCalls);
+        Assert.Empty(client.Calls);
+    }
+
+    [Fact]
+    public async Task InProgress_KeepsPhaseAndSendsNoReport()
+    {
+        var client = OneCodeTask(TesState.RUNNINGEnum);
+        var outputs = new FakeResultOutputStore();
+        var execution = new FakeExecution(ExecutionResult.InProgress()) { HasRun = true };
+
+        await CodeWork(client, execution, outputs: outputs).Execute();
+
+        Assert.Single(execution.Runs);
+        Assert.Empty(client.Calls);
+        Assert.Empty(client.ProgressCalls);
+        Assert.Empty(outputs.Files);
+        Assert.Empty(execution.Removed);
+    }
+
+    [Fact]
+    public async Task ExistingRun_SkipsInputChecksAndRunningReport()
+    {
+        var client = OneCodeTask(TesState.RUNNINGEnum);
+        var execution = new FakeExecution(ExecutionResult.InProgress()) { HasRun = true };
+        var store = new FakeDatasetStore();
+
+        // The dataset store is empty: input checks that ran would reject the task with dataset_not_found.
+        await CodeWork(client, execution, new DatasetReader(store, new FederatedTaskSettings())).Execute();
+
+        Assert.Equal(new[] { T1 }, execution.HasRunCalls);
+        var run = Assert.Single(execution.Runs);
+        Assert.Null(run.FileKey);
+        Assert.Equal(0, execution.CanStartCalls);
+        Assert.Equal(0, store.ListCalls);
+        Assert.Empty(client.ProgressCalls);
+        Assert.Empty(client.Calls);
+    }
+
+    [Fact]
+    public async Task AtCapacity_NoRunningReportAndNoStart()
+    {
+        var client = OneCodeTask();
+        var execution = new FakeExecution(ExecutionResult.InProgress()) { CanStart = false };
+
+        await CodeWork(client, execution).Execute();
+
+        Assert.Equal(1, execution.CanStartCalls);
+        Assert.Empty(execution.Runs);
+        Assert.Empty(client.ProgressCalls);
+        Assert.Empty(client.Calls);
+    }
+
+    [Fact]
+    public async Task RunFailure_WithInputCheckCode_IsExecutorError()
+    {
+        var client = OneCodeTask(TesState.RUNNINGEnum);
+        var execution = new FakeExecution(ExecutionResult.RunFailed("dataset_not_found", "the runner found no dataset")) { HasRun = true };
+
+        await CodeWork(client, execution).Execute();
+
+        var report = Assert.Single(client.Reports);
+        Assert.Equal(TesState.EXECUTORERROREnum, report.State);
+        Assert.Null(report.RejectedAt);
+        Assert.Equal("dataset_not_found", report.ErrorCode);
+    }
+
+    [Fact]
+    public async Task ErrorReportNotAccepted_KeepsRun()
+    {
+        var client = OneCodeTask(TesState.RUNNINGEnum);
+        client.Outcomes.Enqueue(new FederatedReportOutcome(503, null, null, null, null));
+        var execution = new FakeExecution(ExecutionResult.RunFailed(FederatedTaskErrorCodes.Timeout, "the run took too long")) { HasRun = true };
+
+        await CodeWork(client, execution).Execute();
+
+        Assert.Single(client.Reports);
+        Assert.Empty(execution.Removed);
+    }
+
+    [Theory]
+    [InlineData(200, null)]
+    [InlineData(409, FederatedTaskErrorCodes.TaskAlreadyReported)]
+    [InlineData(409, FederatedTaskErrorCodes.TaskCanceling)]
+    public async Task ErrorReportAccepted_RemovesRun(int status, string? errorCode)
+    {
+        var client = OneCodeTask(TesState.RUNNINGEnum);
+        client.Outcomes.Enqueue(new FederatedReportOutcome(status, errorCode, null, null, null));
+        var execution = new FakeExecution(ExecutionResult.RunFailed(FederatedTaskErrorCodes.Timeout, "the run took too long")) { HasRun = true };
+
+        await CodeWork(client, execution).Execute();
+
+        Assert.Equal(TesState.EXECUTORERROREnum, Assert.Single(client.Reports).State);
+        Assert.Equal(new[] { T1 }, execution.Removed);
+    }
+
+    [Fact]
+    public async Task ErrorReportBusy_KeepsRun()
+    {
+        var client = OneCodeTask(TesState.RUNNINGEnum);
+        client.Outcomes.Enqueue(new FederatedReportOutcome(409, FederatedTaskErrorCodes.TaskBusy, null, null, null));
+        var execution = new FakeExecution(ExecutionResult.RunFailed(FederatedTaskErrorCodes.RunFailed, "the code failed")) { HasRun = true };
+
+        await CodeWork(client, execution).Execute();
+
+        Assert.Empty(execution.Removed);
+    }
+
+    [Fact]
+    public async Task AnalysisSuccess_SavedThenRunRemoved()
+    {
+        var client = OneCodeTask(TesState.RUNNINGEnum);
+        var outputs = new FakeResultOutputStore();
+        var document = AnalysisDocument();
+        var execution = new FakeExecution(ExecutionResult.Ok(document)) { HasRun = true, Outputs = outputs };
+
+        await CodeWork(client, execution, outputs: outputs).Execute();
+
+        var expected = FederatedResultDocumentJson.SerializeAnalysis(document);
+        Assert.Equal(expected, outputs.Files[T1]);
+        Assert.Equal(new[] { T1 }, execution.Removed);
+        Assert.Equal(new[] { true }, execution.SavedWhenRemoved);
+        var call = Assert.Single(client.Calls);
+        Assert.Equal(TesState.COMPLETEEnum, call.Report.State);
+        Assert.Equal(expected, call.Bytes);
+    }
+
+    [Fact]
+    public async Task Cancel_RemovesRun()
+    {
+        var client = OneCodeTask(TesState.RUNNINGEnum);
+        Canceling(client.Pending[0]);
+        var outputs = new FakeResultOutputStore();
+        outputs.Files[T1] = Encoding.UTF8.GetBytes("{\"schemaVersion\":1}");
+        var execution = new FakeExecution { HasRun = true, Outputs = outputs };
+
+        await CodeWork(client, execution, outputs: outputs).Execute();
+
+        Assert.Equal(new[] { T1 }, execution.Removed);
+        // The run is removed before the result.
+        Assert.Equal(new[] { true }, execution.SavedWhenRemoved);
+        Assert.Empty(outputs.Files);
+        Assert.Empty(execution.Runs);
+        Assert.Equal(new[] { (T1, FederatedTaskPhase.Canceled) }, client.ProgressCalls);
+    }
+
+    [Fact]
+    public async Task Sweep_GetsThePendingTaskIdsInCanonicalForm()
+    {
+        var client = new FakeClient();
+        var task = PendingCodeTask(T1.ToUpperInvariant());
+        client.Pending.Add(task);
+        var bad = PendingCodeTask("not-a-guid");
+        client.Pending.Add(bad);
+        var execution = new FakeExecution(ExecutionResult.InProgress());
+
+        await CodeWork(client, execution).Execute();
+
+        Assert.Equal(new[] { T1 }, Assert.Single(execution.Sweeps));
+    }
+
+    [Fact]
+    public async Task Sweep_RunsWhenNothingIsPending()
+    {
+        var client = new FakeClient();
+        var execution = new FakeExecution();
+
+        await CodeWork(client, execution).Execute();
+
+        Assert.Empty(Assert.Single(execution.Sweeps));
+    }
+
+    [Fact]
+    public async Task SweepFailure_DoesNotStopPoll()
+    {
+        var client = OneCodeTask();
+        var execution = new FakeExecution(ExecutionResult.InProgress()) { ThrowOnSweep = true };
+
+        await CodeWork(client, execution).Execute();
+
+        Assert.Single(execution.Sweeps);
+        Assert.Single(execution.Runs);
+    }
+
+    [Fact]
+    public async Task EgressRegistration_IncludesCodeSha()
+    {
+        var client = OneCodeTask(TesState.RUNNINGEnum);
+        var approval = new FakeOutputApproval();
+        var execution = new FakeExecution(ExecutionResult.Ok(AnalysisDocument())) { HasRun = true };
+
+        await CodeWork(client, execution, approval: approval).Execute();
+
+        var codeSha = client.Pending[0].Tags!["fed.code_sha256"];
+        Assert.EndsWith($" code sha256 {codeSha}", approval.Registered[T1].Name);
+    }
+
+    [Fact]
+    public async Task EgressRegistration_OfOperationTask_HasNoCodeSha()
+    {
+        var client = OneMean();
+        var approval = new FakeOutputApproval();
+
+        await Work(client, new DatasetReader(Store(), new FederatedTaskSettings()), approval: approval).Execute();
+
+        Assert.DoesNotContain("code sha256", approval.Registered[T1].Name);
     }
 
     /// <summary>

@@ -71,6 +71,23 @@ namespace Agent.Api
             }
 
             var pending = await _client.GetPendingAsync() ?? new List<TesTask>();
+
+            // Runs of researcher code outlive the poll that starts them. Those that are provably finished are removed
+            // first, even when nothing is pending; a run still in use is left alone. A failure here must not stop the
+            // poll: the next sweep tries again.
+            try
+            {
+                var pendingIds = pending
+                    .Select(t => Guid.TryParse(t.Id, out var g) ? g.ToString("D") : null)
+                    .OfType<string>()
+                    .ToList();
+                await _execution.SweepAsync(pendingIds, CancellationToken.None);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Federated tasks: finished code runs could not be removed this poll; they are tried again at the next poll");
+            }
+
             if (pending.Count == 0) return;
 
             Log.Information("Federated tasks: {Count} pending task(s)", pending.Count);
@@ -181,30 +198,47 @@ namespace Agent.Api
                     return Hold.None;
                 }
 
-                // The hospital's input checks run before the task is marked running and before any data is read.
-                // A task that fails one is rejected; one the TRE cannot judge now keeps its phase.
-                InputCheckOutcome checkOutcome;
-                try
+                // A run of researcher code started by an earlier poll passed the input checks and was marked running
+                // then; it is only checked now. Without a run, the task is checked and started.
+                string? fileKey = null;
+                if (!await _execution.HasRunAsync(storeKey, CancellationToken.None))
                 {
-                    checkOutcome = await _checks.RunAsync(task, prepared.Spec!, CancellationToken.None);
-                }
-                catch (Exception ex)
-                {
-                    await RetryOrGiveUpAsync(task, taskId, ex, "listed");
-                    return Hold.None;
-                }
+                    // The hospital's input checks run before the task is marked running and before any data is read.
+                    // A task that fails one is rejected; one the TRE cannot judge now keeps its phase.
+                    InputCheckOutcome checkOutcome;
+                    try
+                    {
+                        checkOutcome = await _checks.RunAsync(task, prepared.Spec!, CancellationToken.None);
+                    }
+                    catch (Exception ex)
+                    {
+                        await RetryOrGiveUpAsync(task, taskId, ex, "listed");
+                        return Hold.None;
+                    }
 
-                if (checkOutcome.Kind == InputCheckKind.Held) return Hold.InputChecks;
-                if (checkOutcome.Kind == InputCheckKind.Rejected)
-                {
-                    await ReportErrorAsync(Error(taskId, checkOutcome.ErrorCode!, checkOutcome.ErrorMessage));
-                    return Hold.None;
-                }
+                    if (checkOutcome.Kind == InputCheckKind.Held) return Hold.InputChecks;
+                    if (checkOutcome.Kind == InputCheckKind.Rejected)
+                    {
+                        await ReportErrorAsync(Error(taskId, checkOutcome.ErrorCode!, checkOutcome.ErrorMessage));
+                        return Hold.None;
+                    }
 
-                // A QUEUED task is marked running before its data is read. A RUNNING one was marked by an earlier
-                // poll and is resumed. A transport failure here throws and leaves the task for the next poll.
-                if (task.State == TesState.QUEUEDEnum && !await ReportRunningAsync(taskId))
-                    return Hold.None;
+                    fileKey = checkOutcome.FileKey!;
+
+                    // At the TRE's limit of runs at the same time, the task is not started and keeps its phase. This
+                    // comes before the running report, so a QUEUED task stays QUEUED while it waits.
+                    if (!await _execution.CanStartAsync(prepared.Spec!, CancellationToken.None))
+                    {
+                        Log.Information("Federated tasks: task {TaskId} is not started this poll; the TRE is at its limit of runs at the same time",
+                            taskId);
+                        return Hold.None;
+                    }
+
+                    // A QUEUED task is marked running before its data is read. A RUNNING one was marked by an earlier
+                    // poll and is resumed. A transport failure here throws and leaves the task for the next poll.
+                    if (task.State == TesState.QUEUEDEnum && !await ReportRunningAsync(taskId))
+                        return Hold.None;
+                }
 
                 // The task is running now. If the bucket fails during the read, it stays running and is resumed at the
                 // next poll, under the same time limit as a failed listing. Any other fault cannot be fixed by
@@ -212,7 +246,7 @@ namespace Agent.Api
                 ExecutionResult executed;
                 try
                 {
-                    executed = await _execution.RunAsync(task, prepared.Spec!, checkOutcome.FileKey!, CancellationToken.None);
+                    executed = await _execution.RunAsync(task, prepared.Spec!, fileKey, CancellationToken.None);
                 }
                 catch (DatasetStoreException ex)
                 {
@@ -225,14 +259,27 @@ namespace Agent.Api
                     return Hold.None;
                 }
 
+                // A run that has not finished keeps the task's phase; the next poll checks it again.
+                if (executed.IsInProgress) return Hold.None;
+
                 if (!executed.IsSuccess)
                 {
-                    await ReportErrorAsync(Error(taskId, executed.ErrorCode!, executed.ErrorMessage, executed.DatasetSha256));
+                    // The run is removed only once the report is settled, so a lost report does not run the code
+                    // again: the next poll finds the run and reports its outcome once more.
+                    var settled = await ReportErrorAsync(Error(taskId, executed.ErrorCode!, executed.ErrorMessage,
+                        executed.DatasetSha256, executed.IsRunFailure));
+                    if (settled) await _execution.RemoveRunAsync(storeKey, CancellationToken.None);
                     return Hold.None;
                 }
 
-                bytes = FederatedResultDocumentJson.Serialize(executed.Document!);
+                bytes = executed.AnalysisDocument != null
+                    ? FederatedResultDocumentJson.SerializeAnalysis(executed.AnalysisDocument)
+                    : FederatedResultDocumentJson.Serialize(executed.Document!);
                 await _outputs.SaveAsync(storeKey, bytes, CancellationToken.None);
+
+                // The saved result means the task is never run again, so its run can go. If the Agent stops before
+                // this, the sweep removes the run.
+                await _execution.RemoveRunAsync(storeKey, CancellationToken.None);
             }
             else
             {
@@ -375,6 +422,9 @@ namespace Agent.Api
             if (review is { IsPending: true })
                 await _approval.WithdrawAndCloseAsync(storeKey, CanceledReason, CancellationToken.None);
 
+            // A run of the task's code is stopped and removed too; a Docker error is thrown like a store error below.
+            await _execution.RemoveRunAsync(storeKey, CancellationToken.None);
+
             // A store error is thrown: the task keeps its phase and the cancel is tried again at the next poll.
             await _outputs.DeleteAsync(storeKey, CancellationToken.None);
 
@@ -396,9 +446,12 @@ namespace Agent.Api
             var studyId = parsed.IsSuccess
                 ? parsed.Spec!.StudyId
                 : task.Tags?.GetValueOrDefault(FederatedTesProfile.StudyIdTag) ?? string.Empty;
+            // For a code task the reviewer also sees which code produced the result. The parsed hash, checked against
+            // the code, is used, never the raw tag.
+            var codeSha = parsed.IsSuccess && parsed.Spec!.IsCodeTask ? $" code sha256 {parsed.Spec.CodeSha256}" : string.Empty;
             return new EgressRegistration(
                 storeKey,
-                $"Federated task {storeKey}: {command}",
+                $"Federated task {storeKey}: {command}{codeSha}",
                 studyId,
                 $"{executor?.Image} {command}".Trim(),
                 System.Text.Encoding.UTF8.GetString(bytes),
@@ -455,23 +508,34 @@ namespace Agent.Api
             };
         }
 
-        /// <summary>Reports an error state (no file) and logs when Submission does not accept it.</summary>
-        private async Task ReportErrorAsync(FederatedTaskResultReport report)
+        /// <summary>
+        /// Reports an error state (no file) and logs when Submission does not accept it. Returns true when the task is
+        /// settled: the report was accepted, the task was already final, or it is being cancelled. Otherwise the task
+        /// keeps its phase and the report is sent again at the next poll.
+        /// </summary>
+        private async Task<bool> ReportErrorAsync(FederatedTaskResultReport report)
         {
             var outcome = await _client.ReportAsync(report, null);
             if (IsCanceling(outcome))
             {
                 Log.Information("Federated tasks: task {TaskId} is being cancelled; the error report was not recorded", report.TaskId);
+                return true;
             }
-            else if (IsAlreadyFinal(outcome))
+
+            if (IsAlreadyFinal(outcome))
             {
                 Log.Warning("Federated tasks: task {TaskId} was already reported to Submission; the error report was not recorded", report.TaskId);
+                return true;
             }
-            else if (!outcome.Accepted)
+
+            if (!outcome.Accepted)
             {
                 Log.Warning("Federated tasks: Submission did not accept the error report for task {TaskId} (status {Status}, {ErrorCode}); it keeps its phase",
                     report.TaskId, outcome.StatusCode, outcome.ErrorCode);
+                return false;
             }
+
+            return true;
         }
 
         private async Task HandleOutcomeAsync(string taskId, string storeKey, string sha, byte[] bytes, FederatedReportOutcome outcome)
@@ -576,11 +640,6 @@ namespace Agent.Api
                 return new Prepared(null, null, true);
             }
 
-            // Code tasks pass the profile but cannot run here yet (2.4). Refused before the input checks, so the
-            // hospital never looks in its dataset bucket for a task it cannot run.
-            if (parsed.Spec.IsCodeTask)
-                return new Prepared(null, Error(taskId, FederatedTaskErrorCodes.InvalidTask, "this TRE does not run code tasks yet"), false);
-
             return new Prepared(parsed.Spec, null, false);
         }
 
@@ -671,11 +730,13 @@ namespace Agent.Api
                 for (var i = 0; i < m.Length; i++) span[i] = char.IsControl(m[i]) ? ' ' : m[i];
             });
 
-        private static FederatedTaskResultReport Error(string taskId, string code, string? message, string? datasetSha256 = null)
+        private static FederatedTaskResultReport Error(string taskId, string code, string? message, string? datasetSha256 = null,
+            bool runFailure = false)
         {
             Log.Information("Federated tasks: task {TaskId} failed with {ErrorCode}", taskId, code);
-            // An input-check failure is a rejection (CANCELED), not an execution failure.
-            var rejected = FederatedTaskErrorCodes.InputCheckCodes.Contains(code);
+            // An input-check failure is a rejection (CANCELED), not an execution failure. A failed run of researcher
+            // code is always an execution failure, even when its code is also an input-check code.
+            var rejected = !runFailure && FederatedTaskErrorCodes.InputCheckCodes.Contains(code);
             return new FederatedTaskResultReport
             {
                 TaskId = taskId,

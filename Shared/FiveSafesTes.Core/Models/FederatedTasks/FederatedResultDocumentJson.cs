@@ -44,6 +44,10 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         public static byte[] Serialize(FederatedResultDocument doc) =>
             JsonSerializer.SerializeToUtf8Bytes(doc, SerializeOptions);
 
+        /// <summary>The result document of a code task; UTF-8, no BOM, not indented.</summary>
+        public static byte[] SerializeAnalysis(FederatedAnalysisResultDocument doc) =>
+            JsonSerializer.SerializeToUtf8Bytes(doc, SerializeOptions);
+
         public static string Sha256Hex(byte[] bytes) => Convert.ToHexStringLower(SHA256.HashData(bytes));
 
         private static readonly string[] RequiredTopFields =
