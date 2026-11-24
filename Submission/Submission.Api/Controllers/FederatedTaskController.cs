@@ -28,6 +28,9 @@ namespace Submission.Api.Controllers
         /// <summary>Attempts at one report when other reports for the same task keep winning the race.</summary>
         private const int MaxReportAttempts = 3;
 
+        /// <summary>Attempts at one submission when concurrent submissions of the same study keep taking the version number.</summary>
+        private const int MaxEnqueueAttempts = 3;
+
         /// <summary>Upper bound on tasks returned to a TRE Agent in a single poll.</summary>
         private const int MaxPendingTasks = 50;
 
@@ -39,11 +42,15 @@ namespace Submission.Api.Controllers
 
         private readonly FederatedTaskSettings _settings;
 
-        public FederatedTaskController(ApplicationDbContext db, IFederatedResultStore resultStore, FederatedTaskSettings settings)
+        private readonly IFederatedTaskDispatch _dispatch;
+
+        public FederatedTaskController(ApplicationDbContext db, IFederatedResultStore resultStore, FederatedTaskSettings settings,
+            IFederatedTaskDispatch dispatch)
         {
             _DbContext = db;
             _resultStore = resultStore;
             _settings = settings;
+            _dispatch = dispatch;
         }
 
         [Authorize(Roles = "dare-control-admin")]
@@ -53,6 +60,7 @@ namespace Submission.Api.Controllers
         [SwaggerOperation("Enqueue")]
         [SwaggerResponse(statusCode: 200, type: typeof(TesCreateTaskResponse), description: "")]
         [SwaggerResponse(statusCode: 400, type: typeof(FederatedApiError), description: "")]
+        [SwaggerResponse(statusCode: 409, type: typeof(FederatedApiError), description: "")]
         public virtual async Task<IActionResult> Enqueue([FromBody] TesTask task, CancellationToken cancellationToken = default)
         {
             var parsed = FederatedTesProfile.Parse(task, _settings.ToIntakeLimits());
@@ -62,58 +70,79 @@ namespace Submission.Api.Controllers
             }
 
             var spec = parsed.Spec!;
-            // One TRE per task until a study can be sent to several hospitals.
-            if (spec.Sites.Count != 1)
-            {
-                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "tag 'fed.sites' must name exactly one TRE");
-            }
-
-            var tre = await _DbContext.Tres
+            var tres = await _DbContext.Tres
                 .AsNoTracking()
-                .FirstOrDefaultAsync(x => x.Name.ToLower() == spec.TreName, cancellationToken);
-            if (tre == null)
+                .Where(x => spec.Sites.Contains(x.Name.ToLower()))
+                .ToListAsync(cancellationToken);
+            var tresBySite = tres.DistinctBy(x => x.Name.ToLower()).ToDictionary(x => x.Name.ToLower());
+            var missing = spec.Sites.Where(x => !tresBySite.ContainsKey(x)).ToList();
+            if (missing.Count > 0)
             {
-                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, $"TRE '{spec.TreName}' doesn't exist");
+                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask,
+                    $"TRE(s) {string.Join(", ", missing.Select(x => $"'{x}'"))} don't exist");
             }
 
-            // Server-owned fields: callers must not be able to inject state, logs or results into a queued task.
-            task.Id = null;
-            task.State = TesState.UNKNOWNEnum;
-            task.Logs = null;
-            task.CreationTime = null;
-
-            var submittedAt = DateTime.UtcNow;
+            FederatedStudyFanOut.ClearServerOwnedFields(task);
             var tesTaskJson = JsonConvert.SerializeObject(task);
-            // Until Task 4 fans a study out, a submission is a version holding its one part.
-            var latest = await _DbContext.FederatedStudyVersions
-                .Where(x => x.StudyId == spec.StudyId)
-                .MaxAsync(x => (int?)x.Version, cancellationToken) ?? 0;
-            var entity = new FederatedTask
-            {
-                TaskId = Guid.NewGuid(),
-                TreId = tre.Id,
-                TreName = spec.TreName,
-                StudyId = spec.StudyId,
-                Operation = spec.Operation,
-                Dataset = spec.Dataset,
-                TesTaskJson = tesTaskJson,
-                SubmittedAt = submittedAt
-            };
-            entity.MoveTo(FederatedTaskPhase.Queued, entity.SubmittedAt);
-            _DbContext.FederatedStudyVersions.Add(new FederatedStudyVersion
-            {
-                VersionId = Guid.NewGuid(),
-                StudyId = spec.StudyId,
-                Version = latest + 1,
-                Sites = string.Join('|', spec.Sites),
-                CodeSha256 = spec.CodeSha256,
-                TesTaskJson = tesTaskJson,
-                SubmittedAt = submittedAt,
-                Parts = [entity]
-            });
-            await _DbContext.SaveChangesAsync(cancellationToken);
 
-            return Ok(new TesCreateTaskResponse { Id = entity.TaskId.ToString() });
+            for (var attempt = 0; attempt < MaxEnqueueAttempts; attempt++)
+            {
+                // Only the latest version can block: an older one is either ended or was followed by a newer submission.
+                var latest = await _DbContext.FederatedStudyVersions
+                    .AsNoTracking()
+                    .Include(x => x.Parts)
+                    .Where(x => x.StudyId == spec.StudyId)
+                    .OrderByDescending(x => x.Version)
+                    .FirstOrDefaultAsync(cancellationToken);
+                if (latest?.State == FederatedStudyVersionState.Open)
+                {
+                    var conflict = Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.StudyVersionOpen,
+                        $"version {latest.Version} of study '{spec.StudyId}' is still open; cancel it or wait for it to end");
+                    ((FederatedApiError)conflict.Value!).VersionId = latest.VersionId;
+                    return conflict;
+                }
+
+                var version = new FederatedStudyVersion
+                {
+                    VersionId = Guid.NewGuid(),
+                    StudyId = spec.StudyId,
+                    Version = (latest?.Version ?? 0) + 1,
+                    Sites = string.Join('|', spec.Sites),
+                    CodeSha256 = spec.CodeSha256,
+                    TesTaskJson = tesTaskJson,
+                    SubmittedAt = DateTime.UtcNow
+                };
+                foreach (var site in spec.Sites)
+                {
+                    var part = FederatedStudyFanOut.BuildPart(task, version, tresBySite[site], site);
+                    part.Operation = spec.Operation;
+                    part.Dataset = spec.Dataset;
+                    version.Parts.Add(part);
+                }
+
+                _DbContext.FederatedStudyVersions.Add(version);
+                try
+                {
+                    await _DbContext.SaveChangesAsync(cancellationToken);
+                }
+                catch (DbUpdateException ex)
+                {
+                    // A concurrent submission took this version number (unique StudyId, Version): read the study again.
+                    Log.Warning(ex, "Enqueueing version {Version} of study {StudyId} collided with another submission", version.Version, spec.StudyId);
+                    _DbContext.ChangeTracker.Clear();
+                    continue;
+                }
+
+                foreach (var part in version.Parts)
+                {
+                    await _dispatch.SendAsync(part, cancellationToken);
+                }
+
+                return Ok(new TesCreateTaskResponse { Id = version.VersionId.ToString() });
+            }
+
+            return Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.TaskBusy,
+                "the study is being submitted by other requests, try again");
         }
 
         [Authorize(Roles = "dare-tre-admin")]

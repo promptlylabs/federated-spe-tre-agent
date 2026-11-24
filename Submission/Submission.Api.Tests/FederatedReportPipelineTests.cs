@@ -88,6 +88,7 @@ namespace Submission.Api.Tests
             builder.Services.AddSingleton(store);
             builder.Services.AddSingleton<IFederatedResultStore>(store);
             builder.Services.AddSingleton(new FederatedTaskSettings());
+            builder.Services.AddSingleton<IFederatedTaskDispatch, AgentPollDispatch>();
             builder.Services.AddDbContext<ApplicationDbContext>(o => o.UseInMemoryDatabase(dbName));
             builder.Services.AddAuthentication("Test").AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("Test", null);
             builder.Services.AddAuthorization();
