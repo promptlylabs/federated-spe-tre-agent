@@ -111,10 +111,10 @@ namespace Submission.Api.Tests
                     TreId = 1,
                     TreName = "tre-a",
                     StudyId = "study-1",
-                    Operation = "mean",
+                    Operation = "run-analysis",
                     Dataset = "cohort_2024",
-                    TesTaskJson = JsonConvert.SerializeObject(FederatedTesProfile.Build(
-                        new FederatedTaskSpec("mean", "cohort_2024", "age", [], "study-1", "tre-a"))),
+                    TesTaskJson = JsonConvert.SerializeObject(FederatedTesProfile.BuildCodeTask(
+                        "cohort_2024", "def site_analysis(df):\n    return {'n': len(df)}\n", "study-1", "tre-a")),
                     State = TesState.QUEUEDEnum,
                     SubmittedAt = DateTime.UtcNow
                 });
@@ -146,16 +146,19 @@ namespace Submission.Api.Tests
             return content;
         }
 
-        private static byte[] ValidDocument(Guid taskId) => FederatedResultDocumentJson.Serialize(new FederatedResultDocument
+        private static byte[] ValidDocument(Guid taskId) => FederatedResultDocumentJson.SerializeAnalysis(new FederatedAnalysisResultDocument
         {
             TaskId = taskId.ToString(),
             Tre = "tre-a",
             StudyId = "study-1",
-            Operation = "mean",
+            Operation = "run-analysis",
             Dataset = "cohort_2024",
             DatasetSha256 = new string('a', 64),
             CompletedAt = DateTimeOffset.UtcNow,
-            Result = new FederatedScalarResult { Value = 42.5m, RowCount = 10 }
+            Result = new FederatedAnalysisResult
+            {
+                N = 10, Value = System.Text.Json.JsonDocument.Parse("{\"mean_age\":42.5,\"n\":10}").RootElement.Clone()
+            }
         });
 
         [Fact]

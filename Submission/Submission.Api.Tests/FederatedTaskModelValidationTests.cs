@@ -13,17 +13,26 @@ namespace Submission.Api.Tests
     // Runs the same MVC model validation Enqueue's [FromBody] binding runs, which the controller tests bypass.
     public class FederatedTaskModelValidationTests
     {
-        // The example from docs/federated-tasks.md: GA4GH-optional fields (name, description, content) omitted.
+        // The code-task example from docs/federated-tasks.md: GA4GH-optional fields (name, description) omitted.
         private const string DocExample = """
             {
               "executors": [
-                { "image": "5s-tes/federated-ops:1", "command": ["mean", "--column", "age", "--filter", "sex:eq:F"] }
+                {
+                  "image": "python-runner:1",
+                  "command": ["run-analysis", "/code/analysis.py", "/data/cohort_2024", "/outputs/result.json"]
+                }
               ],
               "inputs": [
+                { "path": "/code/analysis.py", "type": "FILE", "content": "def site_analysis(df):\n    return {'n': len(df), 'mean_age': float(df['age'].mean())}\n" },
                 { "url": "dataset://cohort_2024", "path": "/data/cohort_2024", "type": "DIRECTORY" }
               ],
-              "outputs": [],
-              "tags": { "fed.sites": "my-tre", "fed.study_id": "study-001" }
+              "outputs": [{ "path": "/outputs/result.json", "url": "result://", "type": "FILE" }],
+              "resources": { "cpu_cores": 2, "ram_gb": 8 },
+              "tags": {
+                "fed.sites": "my-tre",
+                "fed.study_id": "study-001",
+                "fed.code_sha256": "<lowercase hex SHA-256 of the content>"
+              }
             }
             """;
 

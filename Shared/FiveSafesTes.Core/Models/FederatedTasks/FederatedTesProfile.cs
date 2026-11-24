@@ -8,11 +8,10 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
 {
     /// <summary>
     /// The restricted TES "federated profile": validates a <see cref="TesTask"/> and converts it to a
-    /// <see cref="FederatedTaskSpec"/> (and back).
+    /// <see cref="FederatedTaskSpec"/>, and builds a task that passes (<see cref="BuildCodeTask"/>).
     /// </summary>
     public static class FederatedTesProfile
     {
-        public const string ExecutorImage = "5s-tes/federated-ops:1";
         public const string DatasetUrlScheme = "dataset://";
 
         public const string SitesTag = "fed.sites";
@@ -33,20 +32,12 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         public const int MaxCodeBytes = 262144;
 
         private static readonly Regex Sha256Pattern = new(@"^[0-9a-f]{64}\z", RegexOptions.Compiled);
-        private const string ColumnArg = "--column";
-        private const string FilterArg = "--filter";
-
-        public static readonly IReadOnlySet<string> Operations =
-            new HashSet<string>(StringComparer.Ordinal) { "count", "mean" };
-
-        public static readonly IReadOnlySet<string> FilterOperators =
-            new HashSet<string>(StringComparer.Ordinal) { "eq", "gt", "lt", "gte", "lte" };
 
         /// <summary>
-        /// Applies the profile rules in order; the first failure wins. The executor image picks the rule set:
-        /// <see cref="ExecutorImage"/> is a count/mean task, any other image is a code task. <paramref name="intake"/>
-        /// carries the orchestrator's approved runner images and resource limits; the Agent passes none, and its own
-        /// ApprovedImages decides which images it runs.
+        /// Applies the code-task rules in order; the first failure wins. Every federated task is a code task: the
+        /// researcher's file, run by run-analysis in a runner image. <paramref name="intake"/> carries the
+        /// orchestrator's approved runner images and resource limits; the Agent passes none, and its own ApprovedImages
+        /// decides which images it runs.
         /// </summary>
         public static FederatedTaskParseResult Parse(TesTask task, FederatedIntakeLimits? intake = null)
         {
@@ -57,74 +48,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             if (executor == null)
                 return Fail(FederatedTaskErrorCodes.InvalidTask, "executor must not be null");
 
-            return executor.Image == ExecutorImage
-                ? ParseOperationTask(task, executor)
-                : ParseCodeTask(task, executor, intake);
-        }
-
-        // Count/mean tasks. Unchanged; removed in 2.4 with the federated-ops image.
-        private static FederatedTaskParseResult ParseOperationTask(TesTask task, TesExecutor executor)
-        {
-            // Command: operation, then arguments
-            var command = executor.Command;
-            if (command == null || command.Count == 0)
-                return Fail(FederatedTaskErrorCodes.InvalidTask, "executor command is required");
-            var operation = command[0];
-            if (!Operations.Contains(operation))
-                return Fail(FederatedTaskErrorCodes.UnknownOperation, $"unknown operation '{operation}'");
-
-            string? column = null;
-            var filters = new List<TaskFilter>();
-            for (var i = 1; i < command.Count; i++)
-            {
-                var arg = command[i];
-                switch (arg)
-                {
-                    case ColumnArg:
-                        if (column != null)
-                            return Fail(FederatedTaskErrorCodes.InvalidTask, $"{ColumnArg} may be given only once");
-                        if (i + 1 >= command.Count || string.IsNullOrWhiteSpace(command[i + 1]))
-                            return Fail(FederatedTaskErrorCodes.InvalidTask, $"{ColumnArg} requires a value");
-                        column = command[++i];
-                        break;
-                    case FilterArg:
-                        if (i + 1 >= command.Count || string.IsNullOrWhiteSpace(command[i + 1]))
-                            return Fail(FederatedTaskErrorCodes.InvalidFilter, $"{FilterArg} requires a value");
-                        var filter = ParseFilter(command[++i], out var filterError);
-                        if (filter == null)
-                            return Fail(FederatedTaskErrorCodes.InvalidFilter, filterError!);
-                        filters.Add(filter);
-                        break;
-                    default:
-                        return Fail(FederatedTaskErrorCodes.InvalidTask, $"unknown argument '{arg}'");
-                }
-            }
-
-            if (operation == "mean" && column == null)
-                return Fail(FederatedTaskErrorCodes.InvalidTask, $"operation 'mean' requires {ColumnArg}");
-
-            // Inputs
-            if (task.Inputs == null || task.Inputs.Count != 1)
-                return Fail(FederatedTaskErrorCodes.InvalidTask, "task must have exactly one input");
-            if (task.Inputs[0] == null)
-                return Fail(FederatedTaskErrorCodes.InvalidTask, "input must not be null");
-            var url = task.Inputs[0].Url;
-            if (url == null || !url.StartsWith(DatasetUrlScheme, StringComparison.Ordinal))
-                return Fail(FederatedTaskErrorCodes.InvalidTask, $"input url must start with {DatasetUrlScheme}");
-            var dataset = url.Substring(DatasetUrlScheme.Length);
-            if (!FederatedTaskNames.IsValidDatasetName(dataset))
-                return Fail(FederatedTaskErrorCodes.InvalidDatasetName, "invalid dataset name");
-
-            // Outputs
-            if (task.Outputs != null && task.Outputs.Count > 0)
-                return Fail(FederatedTaskErrorCodes.InvalidTask, "task must not declare outputs");
-
-            // Tags
-            if (ReadTags(task, out _, out var tre, out var studyId) is { } tagFailure)
-                return tagFailure;
-
-            var spec = new FederatedTaskSpec(operation, dataset, column, filters, studyId, tre);
-            return new FederatedTaskParseResult(spec, null, null);
+            return ParseCodeTask(task, executor, intake);
         }
 
         // Code tasks: exactly `run-analysis /code/analysis.py /data/<dataset> /outputs/result.json`, the code inline.
@@ -137,7 +61,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
                     return Fail(FederatedTaskErrorCodes.InvalidTask, "no runner image is approved");
                 if (!intake.ApprovedRunnerImages.Contains(executor.Image, StringComparer.Ordinal))
                     return Fail(FederatedTaskErrorCodes.InvalidTask,
-                        $"executor image must be {ExecutorImage} or an approved runner image");
+                        "executor image must be an approved runner image");
             }
 
             // Nothing that could change how the code runs.
@@ -203,7 +127,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
                 if (OutOfRange("disk_gb", resources.DiskGb, intake.MaxDiskGb) is { } disk) return disk;
             }
 
-            // Tags: as for count/mean, plus the hash of the code that runs.
+            // Tags: the TRE and study, plus the hash of the code that runs.
             if (ReadTags(task, out var tags, out var tre, out var studyId) is { } tagFailure)
                 return tagFailure;
             if (!tags.TryGetValue(CodeSha256Tag, out var codeSha) || codeSha is null || !Sha256Pattern.IsMatch(codeSha))
@@ -211,7 +135,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             if (codeSha != Convert.ToHexStringLower(SHA256.HashData(codeBytes)))
                 return Fail(FederatedTaskErrorCodes.InvalidTask, $"tag '{CodeSha256Tag}' does not match the code");
 
-            var spec = new FederatedTaskSpec(RunAnalysisCommand, dataset, null, [], studyId, tre, codeSha);
+            var spec = new FederatedTaskSpec(RunAnalysisCommand, dataset, studyId, tre, codeSha);
             return new FederatedTaskParseResult(spec, null, null);
         }
 
@@ -253,45 +177,6 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         }
 
         /// <summary>
-        /// Builds the TES task for a spec; the inverse of <see cref="Parse"/>.
-        /// </summary>
-        public static TesTask Build(FederatedTaskSpec spec)
-        {
-            var command = new List<string> { spec.Operation };
-            if (spec.Column != null)
-            {
-                command.Add(ColumnArg);
-                command.Add(spec.Column);
-            }
-
-            foreach (var filter in spec.Filters)
-            {
-                command.Add(FilterArg);
-                command.Add($"{filter.Column}:{filter.Op}:{filter.Value}");
-            }
-
-            return new TesTask
-            {
-                Executors = [new TesExecutor { Image = ExecutorImage, Command = command }],
-                Inputs =
-                [
-                    new TesInput
-                    {
-                        Url = DatasetUrlScheme + spec.Dataset,
-                        Path = "/data/" + spec.Dataset,
-                        Type = TesFileType.DIRECTORYEnum
-                    }
-                ],
-                Outputs = [],
-                Tags = new Dictionary<string, string>
-                {
-                    [SitesTag] = spec.TreName,
-                    [StudyIdTag] = spec.StudyId
-                }
-            };
-        }
-
-        /// <summary>
         /// Builds a code task that passes <see cref="Parse"/>: the exact run-analysis command, the code inline, the
         /// dataset, the result output and the fed.* tags with the code's SHA-256.
         /// </summary>
@@ -315,26 +200,6 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
                     [CodeSha256Tag] = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(code)))
                 }
             };
-        }
-
-        private static TaskFilter? ParseFilter(string text, out string? error)
-        {
-            // column:op:value; the value may itself contain ':'.
-            var parts = text.Split(':', 3);
-            if (parts.Length != 3 || string.IsNullOrEmpty(parts[0]))
-            {
-                error = "filter must be column:op:value";
-                return null;
-            }
-
-            if (!FilterOperators.Contains(parts[1]))
-            {
-                error = $"unknown filter operator '{parts[1]}'";
-                return null;
-            }
-
-            error = null;
-            return new TaskFilter(parts[0], parts[1], parts[2]);
         }
 
         private static FederatedTaskParseResult Fail(string code, string message) =>

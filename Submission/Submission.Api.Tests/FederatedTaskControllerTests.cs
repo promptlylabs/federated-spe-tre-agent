@@ -86,9 +86,8 @@ namespace Submission.Api.Tests
             return error;
         }
 
-        private static TesTask MeanTask(string tre = "tre-a", string dataset = "cohort_2024") =>
-            FederatedTesProfile.Build(new FederatedTaskSpec(
-                "mean", dataset, "age", [], "study-1", tre));
+        private static TesTask AnalysisTask(string tre = "tre-a", string dataset = "cohort_2024") =>
+            FederatedTesProfile.BuildCodeTask(dataset, Code, "study-1", tre);
 
         private static FederatedTask SeedTask(ApplicationDbContext db, int treId, TesState state, TesTask? task = null, string? treName = null)
         {
@@ -98,9 +97,9 @@ namespace Submission.Api.Tests
                 TreId = treId,
                 TreName = treName ?? (treId == 1 ? "tre-a" : "tre-b"),
                 StudyId = "study-1",
-                Operation = "mean",
+                Operation = "run-analysis",
                 Dataset = "cohort_2024",
-                TesTaskJson = JsonConvert.SerializeObject(task ?? MeanTask()),
+                TesTaskJson = JsonConvert.SerializeObject(task ?? AnalysisTask()),
                 State = state,
                 Phase = state switch
                 {
@@ -119,7 +118,7 @@ namespace Submission.Api.Tests
         public async Task Enqueue_Valid_PersistsQueuedTask()
         {
             using var db = NewDb();
-            var result = await ControllerFor(db, "dare-admin").Enqueue(MeanTask());
+            var result = await ControllerFor(db, "dare-admin").Enqueue(AnalysisTask());
 
             var ok = Assert.IsType<OkObjectResult>(result);
             var response = Assert.IsType<TesCreateTaskResponse>(ok.Value);
@@ -159,6 +158,24 @@ namespace Submission.Api.Tests
                     System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(code)))
             }
         };
+
+        [Fact]
+        public async Task Enqueue_CountMeanTask_Refused()
+        {
+            using var db = NewDb();
+            var task = new TesTask
+            {
+                Executors = [new TesExecutor { Image = "5s-tes/federated-ops:1", Command = ["count"] }],
+                Inputs = [new TesInput { Url = "dataset://cohort_2024", Path = "/data/cohort_2024", Type = TesFileType.DIRECTORYEnum }],
+                Outputs = [],
+                Tags = new Dictionary<string, string> { ["fed.sites"] = "tre-a", ["fed.study_id"] = "study-1" }
+            };
+
+            var result = await ControllerFor(db, "dare-admin").Enqueue(task);
+
+            AssertError(result, 400, FederatedTaskErrorCodes.InvalidTask);
+            Assert.Equal(0, db.FederatedTasks.Count());
+        }
 
         [Fact]
         public async Task Enqueue_valid_code_task_is_stored_queued()
@@ -330,16 +347,6 @@ namespace Submission.Api.Tests
         }
 
         [Fact]
-        public void The_operations_image_in_the_runner_list_is_a_problem()
-        {
-            var settings = new FederatedTaskSettings { ApprovedRunnerImages = ["5s-tes/federated-ops:1"] };
-
-            Assert.Equal(
-                ["FederatedTaskSettings:ApprovedRunnerImages must not list 5s-tes/federated-ops:1, the count/mean image"],
-                settings.Problems());
-        }
-
-        [Fact]
         public void Configured_runner_images_replace_the_default()
         {
             var config = new Microsoft.Extensions.Configuration.ConfigurationBuilder()
@@ -361,7 +368,7 @@ namespace Submission.Api.Tests
         public async Task Enqueue_records_queued_phase()
         {
             using var db = NewDb();
-            await ControllerFor(db, "dare-admin").Enqueue(MeanTask());
+            await ControllerFor(db, "dare-admin").Enqueue(AnalysisTask());
 
             var row = db.FederatedTasks.Include(x => x.PhaseChanges).Single();
             Assert.Equal(FederatedTaskPhase.Queued, row.Phase);
@@ -374,7 +381,7 @@ namespace Submission.Api.Tests
         public async Task GetTask_queued_task_shows_phase_and_queued_at()
         {
             using var db = NewDb();
-            await ControllerFor(db, "dare-admin").Enqueue(MeanTask());
+            await ControllerFor(db, "dare-admin").Enqueue(AnalysisTask());
             var id = db.FederatedTasks.Single().TaskId;
 
             var task = await GetTask(db, id);
@@ -423,7 +430,7 @@ namespace Submission.Api.Tests
         public async Task Enqueue_StoresDefinedStateInTaskJson()
         {
             using var db = NewDb();
-            var task = MeanTask();
+            var task = AnalysisTask();
             task.State = TesState.COMPLETEEnum;
 
             await ControllerFor(db, "dare-admin").Enqueue(task);
@@ -443,19 +450,19 @@ namespace Submission.Api.Tests
 
         public static IEnumerable<object[]> OutsideProfile()
         {
-            var image = MeanTask();
+            var image = AnalysisTask();
             image.Executors[0].Image = "ubuntu:22.04";
             yield return [image];
 
-            var multi = MeanTask();
+            var multi = AnalysisTask();
             multi.Tags!["fed.sites"] = "tre-a|tre-b";
             yield return [multi];
 
-            var unknown = MeanTask();
+            var unknown = AnalysisTask();
             unknown.Tags!["fed.sites"] = "tre-zzz";
             yield return [unknown];
 
-            var output = MeanTask();
+            var output = AnalysisTask();
             output.Outputs = [new TesOutput { Url = "s3://x/y", Path = "/out" }];
             yield return [output];
         }
@@ -475,7 +482,7 @@ namespace Submission.Api.Tests
         public async Task Enqueue_with_only_the_old_tags_is_refused_naming_the_missing_tag()
         {
             using var db = NewDb();
-            var task = MeanTask();
+            var task = AnalysisTask();
             task.Tags = new Dictionary<string, string> { ["tres"] = "tre-a", ["study_id"] = "study-1" };
 
             var result = await ControllerFor(db, "dare-admin").Enqueue(task);
@@ -489,7 +496,7 @@ namespace Submission.Api.Tests
         public async Task Enqueue_keeps_tags_outside_the_namespace()
         {
             using var db = NewDb();
-            var task = MeanTask();
+            var task = AnalysisTask();
             task.Tags!["daams.request"] = "r-42";
 
             await ControllerFor(db, "dare-admin").Enqueue(task);
@@ -502,7 +509,7 @@ namespace Submission.Api.Tests
         public async Task Enqueue_TreLookupIsCaseInsensitive()
         {
             using var db = NewDb();
-            var task = MeanTask();
+            var task = AnalysisTask();
             task.Tags!["fed.sites"] = "TRE-A";
             var result = await ControllerFor(db, "dare-admin").Enqueue(task);
 
@@ -514,7 +521,7 @@ namespace Submission.Api.Tests
         public async Task Enqueue_StripsServerOwnedFields()
         {
             using var db = NewDb();
-            var task = MeanTask();
+            var task = AnalysisTask();
             task.Id = "spoofed";
             task.State = TesState.COMPLETEEnum;
             task.CreationTime = DateTimeOffset.UtcNow.AddDays(-1);
@@ -583,7 +590,7 @@ namespace Submission.Api.Tests
             var task = Assert.Single(Assert.IsType<List<TesTask>>(ok.Value));
             Assert.Equal(mine.TaskId.ToString(), task.Id);
             Assert.Equal(TesState.QUEUEDEnum, task.State);
-            Assert.Equal("mean", task.Executors![0].Command![0]);
+            Assert.Equal("run-analysis", task.Executors![0].Command![0]);
         }
 
         [Fact]
@@ -618,9 +625,9 @@ namespace Submission.Api.Tests
         private static FederatedTask SeededTask(ApplicationDbContext db, int treId = 1) => SeedTask(db, treId, TesState.QUEUEDEnum);
 
         /// <summary>A valid result document for the task, as the Agent would write it.</summary>
-        private static byte[] ValidResult(FederatedTask task, Action<FederatedResultDocument>? tweak = null)
+        private static byte[] ValidResult(FederatedTask task, Action<FederatedAnalysisResultDocument>? tweak = null)
         {
-            var doc = new FederatedResultDocument
+            var doc = new FederatedAnalysisResultDocument
             {
                 TaskId = task.TaskId.ToString(),
                 Tre = task.TreName,
@@ -629,11 +636,14 @@ namespace Submission.Api.Tests
                 Dataset = task.Dataset,
                 DatasetSha256 = new string('b', 64),
                 CompletedAt = DateTimeOffset.UtcNow,
-                Result = new FederatedScalarResult { Kind = "scalar", Value = 40.5m, RowCount = 2 }
+                Result = new FederatedAnalysisResult { N = 2, Value = JsonValue("{\"mean_age\":40.5,\"n\":2}") }
             };
             tweak?.Invoke(doc);
-            return FederatedResultDocumentJson.Serialize(doc);
+            return FederatedResultDocumentJson.SerializeAnalysis(doc);
         }
+
+        private static System.Text.Json.JsonElement JsonValue(string json) =>
+            System.Text.Json.JsonDocument.Parse(json).RootElement.Clone();
 
         /// <summary>Calls ReportResult as a multipart request: the text fields, plus the given files as file parts.</summary>
         private static Task<IActionResult> ReportAs(FederatedTaskController controller, Dictionary<string, string> fields,
@@ -1012,7 +1022,7 @@ namespace Submission.Api.Tests
             var first = ValidResult(seeded);
             await ReportComplete(controller, seeded, first);
 
-            var second = await ReportComplete(controller, seeded, ValidResult(seeded, d => d.Result.Value = 99m));
+            var second = await ReportComplete(controller, seeded, ValidResult(seeded, d => d.Result.Value = JsonValue("{\"mean_age\":99}")));
 
             var error = AssertError(second, 409, FederatedTaskErrorCodes.TaskAlreadyReported);
             Assert.Single(store.Objects);
@@ -1066,7 +1076,7 @@ namespace Submission.Api.Tests
 
             var winner = ValidResult(seeded);
             await ReportComplete(AgentControllerFor(dbA, "tre-a-client"), seeded, winner);
-            var second = await ReportComplete(AgentControllerFor(dbB, "tre-a-client"), seeded, ValidResult(seeded, d => d.Result.Value = 7m));
+            var second = await ReportComplete(AgentControllerFor(dbB, "tre-a-client"), seeded, ValidResult(seeded, d => d.Result.Value = JsonValue("{\"mean_age\":7}")));
 
             var error = AssertError(second, 409, FederatedTaskErrorCodes.TaskAlreadyReported);
             Assert.Equal(FederatedResultDocumentJson.Sha256Hex(winner), error.ResultSha256);
@@ -1489,7 +1499,7 @@ namespace Submission.Api.Tests
         }
 
         [Theory]
-        [InlineData("input_checks", FederatedTaskPhase.RejectedByInputChecks, "invalid_filter")]
+        [InlineData("input_checks", FederatedTaskPhase.RejectedByInputChecks, "dataset_not_found")]
         [InlineData("output_approval", FederatedTaskPhase.RejectedAtOutputApproval, "output_rejected")]
         public async Task ReportResult_canceled_is_rejected_with_reason(string rejectedAt, FederatedTaskPhase expected, string code)
         {
@@ -1542,10 +1552,10 @@ namespace Submission.Api.Tests
         }
 
         [Theory]
-        [InlineData(null, "invalid_filter", "msg")]
-        [InlineData("elsewhere", "invalid_filter", "msg")]
-        [InlineData("input_checks", "invalid_filter", null)]
-        [InlineData("input_checks", "invalid_filter", "  ")]
+        [InlineData(null, "dataset_not_found", "msg")]
+        [InlineData("elsewhere", "dataset_not_found", "msg")]
+        [InlineData("input_checks", "dataset_not_found", null)]
+        [InlineData("input_checks", "dataset_not_found", "  ")]
         public async Task ReportResult_canceled_with_bad_fields_is_400(string? rejectedAt, string code, string? message)
         {
             using var db = NewDb();
@@ -1564,7 +1574,7 @@ namespace Submission.Api.Tests
         {
             using var db = NewDb();
             var seeded = SeedAtPhase(db, FederatedTaskPhase.Running);
-            var fields = Fields(seeded.TaskId, "CANCELED", "invalid_filter", "msg");
+            var fields = Fields(seeded.TaskId, "CANCELED", "dataset_not_found", "msg");
             fields[FederatedReportFields.RejectedAt] = "input_checks";
 
             var result = await ReportAs(AgentControllerFor(db, "tre-a-client"), fields,

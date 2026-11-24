@@ -400,6 +400,36 @@ public class DoFederatedTaskWorkTests
     }
 
     [Fact]
+    public async Task OldCountTask_IsRejectedWithoutReadingData()
+    {
+        // A task in the old count/mean shape, still pending from before they were removed. Its image is approved
+        // here, so only the profile can refuse it.
+        const string opsImage = "5s-tes/federated-ops:1";
+        var task = new TesTask
+        {
+            Id = T1,
+            State = TesState.QUEUEDEnum,
+            CreationTime = Now.AddMinutes(-1),
+            Executors = [new TesExecutor { Image = opsImage, Command = ["count"] }],
+            Inputs = [new TesInput { Url = "dataset://cohort_2024", Path = "/data/cohort_2024", Type = TesFileType.DIRECTORYEnum }],
+            Outputs = [],
+            Tags = new Dictionary<string, string> { ["fed.sites"] = "tre-a", ["fed.study_id"] = "study-1" }
+        };
+        var store = Store();
+        var client = new FakeClient();
+        client.Pending.Add(task);
+
+        await Work(client, store, Approving(RunnerImage, opsImage)).Execute();
+
+        var report = Assert.Single(client.Reports);
+        Assert.Equal(TesState.CANCELEDEnum, report.State);
+        Assert.Equal("input_checks", report.RejectedAt);
+        Assert.Equal("invalid_task", report.ErrorCode);
+        Assert.Equal(0, store.ListCalls);
+        Assert.Empty(client.ProgressCalls);
+    }
+
+    [Fact]
     public async Task Execute_TaskOutsideProfile_ReportsInvalidTask()
     {
         var client = new FakeClient();

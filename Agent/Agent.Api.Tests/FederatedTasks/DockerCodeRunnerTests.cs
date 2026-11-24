@@ -314,7 +314,7 @@ public class DockerCodeRunnerTests
             Outputs = [new TesOutput { Path = "/outputs/result.json", Url = "result://", Type = TesFileType.FILEEnum }],
             Resources = new TesResources { CpuCores = 1, RamGb = 2, DiskGb = 0.25 }
         };
-        var spec = new FederatedTaskSpec("run-analysis", Dataset, null, [], "study-1", "tre-a",
+        var spec = new FederatedTaskSpec("run-analysis", Dataset, "study-1", "tre-a",
             Sha(Encoding.UTF8.GetBytes(code)));
         try
         {

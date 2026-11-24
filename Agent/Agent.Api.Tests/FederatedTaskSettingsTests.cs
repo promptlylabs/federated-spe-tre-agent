@@ -119,15 +119,7 @@ public class FederatedTaskSettingsTests
 
         Assert.NotNull(warning);
         Assert.Contains("python-runner", warning);
-        Assert.DoesNotContain("federated-ops", warning);
         Assert.Contains("image_not_approved", warning);
-    }
-
-    [Fact]
-    public void ApprovedImagesProblem_IgnoresLeftoverOpsImage()
-    {
-        Assert.NotNull(new FederatedTaskSettings { ApprovedImages = ["5s-tes/federated-ops:1"] }.ApprovedImagesProblem());
-        Assert.Null(new FederatedTaskSettings { ApprovedImages = ["5s-tes/federated-ops:1", "python-runner:1"] }.ApprovedImagesProblem());
     }
 
     [Fact]
