@@ -7,6 +7,7 @@ using Agent.Api.Models;
 using Agent.Api.Repositories.DbContexts;
 using Agent.Api.Services;
 using Credentials.Models.DbContexts;
+using Docker.DotNet;
 using EasyNetQ;
 using FiveSafesTes.Core.Extensions;
 using FiveSafesTes.Core.Models.Settings;
@@ -403,7 +404,13 @@ void AddDependencies(WebApplicationBuilder builder, ConfigurationManager configu
     builder.Services.AddScoped<IMinioTreHelper, MinioTreHelper>();
     builder.Services.AddScoped<IDatasetStore, MinioDatasetStore>();
     builder.Services.AddScoped<IDatasetReader, DatasetReader>();
-    builder.Services.AddScoped<IFederatedTaskExecution, OperationExecution>();
+    // Code tasks run in containers through the Docker socket; count and mean tasks run in the Agent.
+    builder.Services.AddSingleton<IDockerClient>(sp =>
+        new DockerClientConfiguration(new Uri(sp.GetRequiredService<FederatedTaskSettings>().DockerEndpoint)).CreateClient());
+    builder.Services.AddScoped<ICodeRunner, DockerCodeRunner>();
+    builder.Services.AddScoped<OperationExecution>();
+    builder.Services.AddScoped<CodeExecution>();
+    builder.Services.AddScoped<IFederatedTaskExecution, FederatedTaskExecutionRouter>();
     builder.Services.AddScoped<IResultOutputStore, MinioResultOutputStore>();
     builder.Services.AddScoped<IFederatedTokenSource, KeycloakFederatedTokenSource>();
     builder.Services.AddScoped<IFederatedTaskClient, FederatedTaskClient>();
