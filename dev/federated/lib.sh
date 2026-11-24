@@ -53,24 +53,11 @@ print(json.dumps({
 PY
 }
 
-# enqueue <dataset> [operation] [extra args...]: a count/mean task. enqueue <dataset> code <file.py>: a code task.
+# enqueue <dataset> <file.py>: queues a code task that runs the file on the dataset; prints its id.
 enqueue() {
-  local dataset=$1 operation=${2:-count}
-  shift $(( $# >= 2 ? 2 : 1 ))
+  [ $# -eq 2 ] || { echo "usage: enqueue <dataset> <file.py>" >&2; return 1; }
   local body
-  if [ "$operation" = code ]; then
-    [ $# -eq 1 ] || { echo "usage: enqueue <dataset> code <file.py>" >&2; return 1; }
-    body=$(code_task_body "$dataset" "$1") || return 1
-  else
-    local command
-    command=$(python3 -c 'import sys, json; print(json.dumps(sys.argv[1:]))' "$operation" "$@")
-    body=$(cat <<EOF
-{"executors":[{"image":"5s-tes/federated-ops:1","command":$command}],
- "inputs":[{"url":"dataset://$dataset","path":"/data/$dataset","type":"DIRECTORY"}],
- "outputs":[],"tags":{"fed.sites":"my-tre","fed.study_id":"study-001"}}
-EOF
-)
-  fi
+  body=$(code_task_body "$1" "$2") || return 1
   local response code
   response=$(curl -s -w '\n%{http_code}' -X POST "$SUBMISSION/api/FederatedTask/Enqueue" \
     -H "Authorization: Bearer $(token)" -H 'Content-Type: application/json' -d "$body")

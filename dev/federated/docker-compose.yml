@@ -175,8 +175,8 @@ services:
       MinioTRESettings__Url: http://rustfs:9000
       MinioTRESettings__AccessKey: rustfsadmin
       MinioTRESettings__SecretKey: rustfsadmin123
-      # Count/mean tasks use 5s-tes/federated-ops:1; code tasks run in python-runner:1 (built by the python-runner service).
-      FederatedTaskSettings__ApprovedImages: "5s-tes/federated-ops:1,python-runner:1"
+      # Every task runs in python-runner:1 (built by the python-runner service).
+      FederatedTaskSettings__ApprovedImages: "python-runner:1"
       # Short, so the timeout path can be tried by hand in a few minutes.
       FederatedTaskSettings__MaxRunMinutes: "5"
       JobSettings__federatedTaskSchedule: "1"

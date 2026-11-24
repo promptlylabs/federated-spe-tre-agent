@@ -1,7 +1,7 @@
 # Local federated task stack
 
 A Docker Compose stack for trying the federated task flow on your machine:
-queue a task in Submission.Api → the Agent polls it → reads the CSV from the TRE's RustFS → saves the result as a JSON file in the TRE (`federated-outputs`) → registers it with the Data Egress app and waits → a reviewer approves or rejects it → on approval the Agent uploads it to the orchestrator's RustFS (`federated-results`).
+queue a task in Submission.Api → the Agent polls it → runs the researcher's Python code on the CSV from the TRE's RustFS, in a container → saves the result as a JSON file in the TRE (`federated-outputs`) → registers it with the Data Egress app and waits → a reviewer approves or rejects it → on approval the Agent uploads it to the orchestrator's RustFS (`federated-results`).
 See [docs/federated-tasks.md](../../docs/federated-tasks.md) for the flow itself.
 
 For local development only. All passwords below are throwaway dev values.
@@ -18,7 +18,7 @@ docker compose -f dev/federated/docker-compose.yml down -v         # stop and de
 
 On start, three one-shot steps prepare the test data:
 - `seed-tre` registers the TRE `my-tre` in Submission;
-- `seed-dataset` uploads `data/cohort.csv` as `dataset/cohort_2024/cohort.csv`, and `data/schema.json` next to it (code tasks need it);
+- `seed-dataset` uploads `data/cohort.csv` as `dataset/cohort_2024/cohort.csv`, and `data/schema.json` next to it (every task needs it);
 - `seed-egress-creds` stores the `egress-app` login (realm `tre-test`) in the Egress app, so the app can send decisions back to the Agent.
 
 If the stored login cannot be used (for example it was stored before the Egress app moved to `Shared/FiveSafesTes.Core`, whose encryption format is different, or with another `EncryptionSettings:Key`), the Egress API cannot send decisions to the Agent. Run the step again; it replaces the stored login:
@@ -62,19 +62,20 @@ The `uploader` login through the RustFS console's "TRE Keycloak" button loops. T
 
 ## Try it
 
+A task runs a Python file that defines `site_analysis(df)` (see `runner/README.md`) in a locked-down `python-runner:1` container. `task.sh` sends the file inline, with its SHA-256 as `fed.code_sha256`. `code/analysis.py` returns the number of people and their mean age.
+
 ```bash
 cd dev/federated
-./task.sh run cohort_2024 mean --column age     # RUNNING {"phase": "waiting_for_output_approval", ...}, then prints the approve/reject commands
+./task.sh run cohort_2024 code/analysis.py      # RUNNING {"phase": "waiting_for_output_approval", ...}, then prints the approve/reject commands
 ./task.sh approve <task-id>                     # COMPLETE {"phase": "released", "result_key": "<treId>/<taskId>/<sha256>.json", "result_sha256": ...}
-./task.sh result <task-id>                      # downloads and prints the result file
-./task.sh run cohort_2024 count
+./task.sh result <task-id>                      # downloads and prints the result file: "result": {"kind": "analysis", "n": 3, "value": {"n": 3, "mean_age": 40.0}}
+./task.sh run cohort_2024 code/analysis.py
 ./task.sh reject <task-id> "small cells"        # CANCELED {"phase": "rejected_at_output_approval", "error_code": "rejected_by_reviewer", "error_message": "small cells"}
 ./task.sh cancel <task-id>                      # CANCELED {"phase": "canceled", ...}: review closed, result removed from the TRE
-./task.sh run nope count                        # CANCELED, phase rejected_by_input_checks {"error_code": "dataset_not_found", ...}
-./task.sh enqueue cohort_2024 median            # rejected: unknown_operation
+./task.sh run nope code/analysis.py             # CANCELED, phase rejected_by_input_checks {"error_code": "dataset_not_found", ...}
 ```
 
-`run` queues the task and waits until the Agent has saved the result and registered it for review (or rejected or failed the task). The Agent polls once a minute. On the Hangfire dashboard, **Recurring jobs → Run Federated Tasks → Trigger now** runs it at once.
+`run` queues the task and waits until the Agent has saved the result and registered it for review (or rejected or failed the task). The Agent polls once a minute. A run spans several polls: one starts the container, later ones check it and collect `result.json`, so a task takes about two minutes to reach review. On the Hangfire dashboard, **Recurring jobs → Run Federated Tasks → Trigger now** runs it at once.
 
 ### Reviewing a result
 
@@ -94,7 +95,7 @@ echo '{"tampered":true}' | docker run --rm -i --network federated-dev_default -e
 
 The task then ends as `SYSTEM_ERROR` with `result_changed_after_review`, and nothing is uploaded.
 
-To test your own data, upload a CSV in the RustFS console to `federated-datasets/dataset/<name>/`, with exactly one `.csv` per folder. Then run `./task.sh run <name> count`. For a code task, also upload a `schema.json` for it to the same folder (format in `runner/README.md`).
+To test your own data, upload a CSV in the RustFS console to `federated-datasets/dataset/<name>/`, with exactly one `.csv` per folder, and a `schema.json` for it in the same folder (format in `runner/README.md`). Then run `./task.sh run <name> <file.py>`.
 
 Where the result files are:
 - **Orchestrator:** bucket `federated-results` on the second RustFS (console http://localhost:9101/rustfs/console/, `orchadmin` / `orchadmin123`), key `<treId>/<taskId>/<sha256>.json`. `task.sh result` reads it through Submission.
@@ -102,17 +103,9 @@ Where the result files are:
 
 Logs: `docker compose -f dev/federated/docker-compose.yml logs -f agent-api` (and `egress-api`, `egress-ui`)
 
-### Code tasks
+### Code runs
 
-A code task runs a Python file that defines `site_analysis(df)` (see `runner/README.md`) in a locked-down `python-runner:1` container. `task.sh` sends the file inline, with its SHA-256 as `fed.code_sha256`:
-
-```bash
-./task.sh run cohort_2024 code code/analysis.py   # RUNNING {"phase": "waiting_for_output_approval", ...}
-./task.sh approve <task-id>                       # COMPLETE {"phase": "released", ...}
-./task.sh result <task-id>                        # "result": {"kind": "analysis", "n": 3, "value": {"n": 3, "mean_age": 40.0}}
-```
-
-A run spans several polls: one starts the container, later ones check it and collect `result.json`, so a code task takes about two minutes to reach review. Code that raises ends as `EXECUTOR_ERROR`, `code_error`, with a fixed message (no data values). Code that runs longer than `MaxRunMinutes` (5 on this stack) ends as `EXECUTOR_ERROR`, `timeout`. `./task.sh cancel <task-id>` on a running code task stops and removes its container.
+Code that raises ends as `EXECUTOR_ERROR`, `code_error`, with a fixed message (no data values). Code that runs longer than `MaxRunMinutes` (5 on this stack) ends as `EXECUTOR_ERROR`, `timeout`. `./task.sh cancel <task-id>` on a running task stops and removes its container.
 
 The Agent starts the run containers on your Docker daemon, through the mounted `/var/run/docker.sock`; for that it runs as root on this stack (dev only). Each run's container and volume carry the label `fed.task-id` and are removed when the run ends. To check nothing is left:
 
@@ -149,18 +142,19 @@ In the live run, approve case 1 and reject case 3 (with a reason) in the Egress 
 
 ## Integration tests
 
-`Tests/Federated.IntegrationTests` drives the real loop on this stack (Submission → Agent → Egress app) and checks how each task ends in `GetTask`, and that only a released task has a result file in the orchestrator's result store (RustFS on port 9100). It covers the three demo cases and a set of deliberately invalid tasks:
+`Tests/Federated.IntegrationTests` drives the real loop on this stack (Submission → Agent → Egress app) and checks how each task ends in `GetTask`, and that only a released task has a result file in the orchestrator's result store (RustFS on port 9100). Every task it queues is a code task in `python-runner:1`, with the small `site_analysis` files in `Code.cs`. It covers the three demo cases, cancelling, and a set of deliberately invalid tasks:
 
 | Gate | Case | Expected end |
 |---|---|---|
 | Hospital input checks | dataset the hospital does not hold | `CANCELED`, `rejected_by_input_checks`, `dataset_not_found` |
 | Hospital input checks | a dataset folder with two `.csv` files | `CANCELED`, `rejected_by_input_checks`, `ambiguous_dataset` |
-| Submission's task profile | unknown operation, invalid filter, an image Submission does not accept (neither `5s-tes/federated-ops:1` nor `python-runner:1`) | Enqueue refused with 400 (`unknown_operation`, `invalid_filter`, `invalid_task`); no task |
+| Submission's task profile | a count task in the shape used before every task ran code, an image Submission does not accept, the old tag names, code that does not match `fed.code_sha256` | Enqueue refused with 400 `invalid_task`; no task |
 | Output approval | reviewer approves | `COMPLETE`, `released`, result stored with the reviewed SHA-256 |
 | Output approval | reviewer rejects | `CANCELED`, `rejected_at_output_approval`, `rejected_by_reviewer`, the reason; no result |
 | Output approval | result overwritten after it was registered, then approved | `SYSTEM_ERROR`, `result_changed_after_review`; no result |
+| Cancel | a queued task, a running task, a task waiting for review, a cancel at the same time as an approval | `CANCELED`, `canceled`; no review left open, no result in the TRE or the orchestrator |
 
-"Image not approved" cannot happen on this stack (Submission accepts only `5s-tes/federated-ops:1` and `python-runner:1`, and the Agent approves both); unit tests cover it.
+"Image not approved" cannot happen on this stack (Submission accepts only `python-runner:1`, and the Agent approves it); unit tests cover it.
 
 With the stack running, from the repo root:
 
