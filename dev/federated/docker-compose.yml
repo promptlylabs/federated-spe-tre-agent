@@ -292,7 +292,7 @@ services:
         condition: service_started
     restart: "no"
 
-  # One-shot: registers TRE "my-tre" in Submission once its migrations have created the Tres table.
+  # One-shot: registers the TREs "my-tre" and "other-tre" (no Agent) in Submission once its migrations have created the Tres table.
   seed-tre:
     image: postgres:16.4
     environment:
@@ -309,6 +309,10 @@ services:
                  SELECT 'my-tre','tre-agent-my-tre','Local federated dev TRE','{}',now(),'tre-my-tre'
                  WHERE NOT EXISTS (SELECT 1 FROM \"Tres\" WHERE lower(\"Name\")='my-tre');"
         psql -c "UPDATE \"Tres\" SET \"KeycloakClientId\"='tre-my-tre' WHERE lower(\"Name\")='my-tre' AND (\"KeycloakClientId\" IS NULL OR \"KeycloakClientId\" = '');"
+        # A second hospital with no Agent: its part of a study version stays queued until the version is cancelled.
+        psql -c "INSERT INTO \"Tres\" (\"Name\",\"AdminUsername\",\"About\",\"FormData\",\"LastHeartBeatReceived\")
+                 SELECT 'other-tre','tre-agent-other-tre','Second dev TRE, no Agent','{}',now()
+                 WHERE NOT EXISTS (SELECT 1 FROM \"Tres\" WHERE lower(\"Name\")='other-tre');"
     depends_on:
       submission-api:
         condition: service_started
