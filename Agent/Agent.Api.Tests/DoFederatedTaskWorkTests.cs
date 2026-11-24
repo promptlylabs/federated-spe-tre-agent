@@ -2056,6 +2056,21 @@ public class DoFederatedTaskWorkTests
     }
 
     [Fact]
+    public async Task Cancel_RemovesRunEvenWhenWithdrawalFails()
+    {
+        var client = OneTask(TesState.RUNNINGEnum);
+        Canceling(client.Pending[0]);
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false, FailClose = true }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), registered: true);
+        var execution = new FakeExecution { HasRun = true };
+
+        await Work(client, execution, outputs: outputs, approval: approval).Execute();
+
+        Assert.Equal(new[] { T1 }, execution.Removed);
+        Assert.Empty(client.ProgressCalls);
+    }
+
+    [Fact]
     public async Task RunThatThrows_ReportsInternalErrorAndRemovesRun()
     {
         var client = OneTask(TesState.RUNNINGEnum);
