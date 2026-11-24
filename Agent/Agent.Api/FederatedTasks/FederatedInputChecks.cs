@@ -62,8 +62,8 @@ namespace Agent.Api.FederatedTasks
             var dataset = await _reader.ResolveAsync(spec.Dataset, ct);
             if (CheckDataset(dataset) is { } datasetRejected) return datasetRejected;
 
-            // Only researcher code reads the schema; count and mean tasks do not need one.
-            if (spec.IsCodeTask && dataset.SchemaKey == null)
+            // The researcher's code gets the schema with the data, so a dataset without one cannot run.
+            if (dataset.SchemaKey == null)
             {
                 return InputCheckOutcome.Reject(FederatedTaskErrorCodes.SchemaNotFound,
                     $"no schema.json found for '{spec.Dataset}'");

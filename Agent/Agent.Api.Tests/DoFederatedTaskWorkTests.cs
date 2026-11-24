@@ -1,5 +1,4 @@
 using System.Net;
-using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text;
 using Agent.Api.FederatedTasks;
@@ -16,6 +15,8 @@ namespace Agent.Api.Tests;
 public class DoFederatedTaskWorkTests
 {
     private const string Csv = "person_id,age,sex\n1,34,F\n2,51,M\n3,47,F\n";
+    private const string Code = "def site_analysis(df):\n    return {'n': len(df)}\n";
+    private const string RunnerImage = "python-runner:1";
 
     private const string T1 = "11111111-1111-1111-1111-111111111111";
     private const string T2 = "22222222-2222-2222-2222-222222222222";
@@ -200,24 +201,17 @@ public class DoFederatedTaskWorkTests
         public override DateTimeOffset GetUtcNow() => Now;
     }
 
-    /// <summary>Finds any dataset, but throws if its data is read.</summary>
-    private sealed class ThrowingReader : IDatasetReader
+    /// <summary>Finds any dataset and its schema.json without touching a store.</summary>
+    private sealed class FindingReader : IDatasetReader
     {
         public Task<DatasetResolveResult> ResolveAsync(string datasetName, CancellationToken ct) =>
-            Task.FromResult(DatasetResolveResult.Ok($"dataset/{datasetName}/data.csv"));
-
-        public Task<DatasetReadResult> ReadAsync(string fileKey, CancellationToken ct) => throw new InvalidOperationException("reader must not be called");
+            Task.FromResult(DatasetResolveResult.Ok($"dataset/{datasetName}/data.csv", $"dataset/{datasetName}/schema.json"));
     }
 
-    private sealed class FuncReader(Func<DatasetReadResult> f) : IDatasetReader
-    {
-        public Task<DatasetResolveResult> ResolveAsync(string datasetName, CancellationToken ct) =>
-            Task.FromResult(DatasetResolveResult.Ok($"dataset/{datasetName}/data.csv"));
-
-        public Task<DatasetReadResult> ReadAsync(string fileKey, CancellationToken ct) => Task.FromResult(f());
-    }
-
-    private static FakeDatasetStore Store() => new FakeDatasetStore().Add("dataset/cohort_2024/cohort.csv", Csv);
+    /// <summary>A dataset with its data file and the schema.json its uploader puts next to it.</summary>
+    private static FakeDatasetStore Store() => new FakeDatasetStore()
+        .Add("dataset/cohort_2024/cohort.csv", Csv)
+        .Add("dataset/cohort_2024/schema.json", "{}");
 
     /// <summary>The task as Submission hands it out after the orchestrator cancelled it.</summary>
     private static void Canceling(TesTask task)
@@ -233,9 +227,9 @@ public class DoFederatedTaskWorkTests
         task.Logs = [new TesTaskLog { Metadata = new Dictionary<string, string> { ["phase"] = "waiting_for_output_approval" } }];
     }
 
-    private static TesTask PendingTask(string id, string dataset, string operation, string? column, params TaskFilter[] filters)
+    private static TesTask PendingTask(string id, string dataset = "cohort_2024")
     {
-        var task = FederatedTesProfile.Build(new FederatedTaskSpec(operation, dataset, column, filters, "study-1", "tre-a"));
+        var task = FederatedTesProfile.BuildCodeTask(dataset, Code, "study-1", "tre-a");
         task.Id = id;
         task.State = TesState.QUEUEDEnum;
         // Submission always sets it; a minute before FixedClock makes the task young enough to be retried.
@@ -255,12 +249,19 @@ public class DoFederatedTaskWorkTests
             .AddInMemoryCollection(new Dictionary<string, string?> { ["TreName"] = treName })
             .Build();
         var clock = new FixedClock();
-        // An Agent that started long ago, so the give-up window counts from when the task was queued.
-        return new DoFederatedTaskWork(client, reader, execution ?? new OperationExecution(reader, clock),
+        // An Agent that started long ago, so the give-up window counts from when the task was queued. By default the
+        // run succeeds at once with an analysis document for the task.
+        return new DoFederatedTaskWork(client, reader, execution ?? Succeeding(),
             outputs ?? new FakeResultOutputStore(),
             approval ?? new FakeOutputApproval(), egress ?? new FakeEgressClient(), config, clock,
-            settings ?? Approving(FederatedTesProfile.ExecutorImage), new AgentStartTime(startedAt ?? Now.AddDays(-1)), dockerFaults);
+            settings ?? Approving(RunnerImage), new AgentStartTime(startedAt ?? Now.AddDays(-1)), dockerFaults);
     }
+
+    private static DoFederatedTaskWork Work(FakeClient client, FakeExecution execution, IDatasetReader? reader = null,
+        FakeResultOutputStore? outputs = null, FakeOutputApproval? approval = null, FederatedTaskSettings? settings = null) =>
+        Work(client, reader ?? new FindingReader(), outputs: outputs, settings: settings, execution: execution, approval: approval);
+
+    private static FakeExecution Succeeding() => new(task => ExecutionResult.Ok(AnalysisDocument(task.Id!)));
 
     private static FederatedTaskSettings Approving(params string[] images) => new() { ApprovedImages = images };
 
@@ -273,7 +274,7 @@ public class DoFederatedTaskWorkTests
     {
         var store = Store();
         var client = new FakeClient();
-        client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+        client.Pending.Add(PendingTask(T1));
 
         await Work(client, store, Approving("other:1")).Execute();
 
@@ -290,7 +291,7 @@ public class DoFederatedTaskWorkTests
     public async Task Execute_running_task_whose_image_is_no_longer_approved_is_rejected()
     {
         var client = new FakeClient();
-        var task = PendingTask(T1, "cohort_2024", "count", null);
+        var task = PendingTask(T1);
         task.State = TesState.RUNNINGEnum;
         client.Pending.Add(task);
 
@@ -307,7 +308,7 @@ public class DoFederatedTaskWorkTests
     {
         var store = Store();
         var client = new FakeClient();
-        client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+        client.Pending.Add(PendingTask(T1));
 
         await Work(client, store, Approving()).Execute();
 
@@ -320,11 +321,11 @@ public class DoFederatedTaskWorkTests
     public async Task Execute_without_approved_images_still_releases_a_saved_result()
     {
         var client = new FakeClient();
-        client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+        client.Pending.Add(PendingTask(T1));
         var outputs = new FakeResultOutputStore();
         outputs.Files[T1] = Encoding.UTF8.GetBytes("{\"schemaVersion\":1}");
 
-        await Work(client, new ThrowingReader(), outputs: outputs, settings: Approving()).Execute();
+        await Work(client, new FindingReader(), outputs: outputs, settings: Approving()).Execute();
 
         var report = Assert.Single(client.Reports);
         Assert.Equal(TesState.COMPLETEEnum, report.State);
@@ -334,8 +335,8 @@ public class DoFederatedTaskWorkTests
     public async Task Execute_task_outside_profile_is_rejected_as_invalid_task_before_the_image_check()
     {
         var client = new FakeClient();
-        var task = PendingTask(T1, "cohort_2024", "count", null);
-        task.Executors[0].Image = "ubuntu:22.04";
+        var task = PendingTask(T1);
+        task.Executors[0].Command = ["bash", "-c", "cat /data/cohort_2024/*"];
         client.Pending.Add(task);
 
         await Work(client, Store(), Approving("other:1")).Execute();
@@ -344,46 +345,13 @@ public class DoFederatedTaskWorkTests
         Assert.Equal("invalid_task", report.ErrorCode);
     }
 
-    private static TesTask PendingCodeTask(string id)
-    {
-        const string code = "def site_analysis(df):\n    return {'n': len(df)}\n";
-        var task = new TesTask
-        {
-            Id = id,
-            State = TesState.QUEUEDEnum,
-            CreationTime = Now.AddMinutes(-1),
-            Executors =
-            [
-                new TesExecutor
-                {
-                    Image = "python-runner:1",
-                    Command = ["run-analysis", "/code/analysis.py", "/data/cohort_2024", "/outputs/result.json"]
-                }
-            ],
-            Inputs =
-            [
-                new TesInput { Path = "/code/analysis.py", Type = TesFileType.FILEEnum, Content = code },
-                new TesInput { Url = "dataset://cohort_2024", Path = "/data/cohort_2024", Type = TesFileType.DIRECTORYEnum }
-            ],
-            Outputs = [new TesOutput { Path = "/outputs/result.json", Url = "result://", Type = TesFileType.FILEEnum }],
-            Tags = new Dictionary<string, string>
-            {
-                ["fed.sites"] = "tre-a",
-                ["fed.study_id"] = "study-1",
-                ["fed.code_sha256"] = Convert.ToHexStringLower(
-                    System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(code)))
-            }
-        };
-        return task;
-    }
-
     [Theory]
     [InlineData("code changed")]
     [InlineData("tag changed")]
     public async Task Code_whose_hash_no_longer_matches_is_refused_without_reading_data(string tampering)
     {
         var client = new FakeClient();
-        var task = PendingCodeTask(T1);
+        var task = PendingTask(T1);
         if (tampering == "code changed")
             task.Inputs!.Single(i => i.Path == "/code/analysis.py").Content += "\n# x";
         else
@@ -392,7 +360,7 @@ public class DoFederatedTaskWorkTests
 
         // The dataset lookup throws, so a task that got past the hash check would not get this report: the exact
         // message below proves the hash check stopped it before any data access.
-        await Work(client, new FailingResolveReader(), settings: Approving("python-runner:1")).Execute();
+        await Work(client, new FailingResolveReader(), settings: Approving(RunnerImage)).Execute();
 
         var report = Assert.Single(client.Reports);
         Assert.Equal("invalid_task", report.ErrorCode);
@@ -401,10 +369,10 @@ public class DoFederatedTaskWorkTests
     }
 
     [Fact]
-    public async Task Execute_ValidMean_ReportsComplete()
+    public async Task Execute_valid_task_reports_complete()
     {
         var client = new FakeClient();
-        client.Pending.Add(PendingTask(T1, "cohort_2024", "mean", "age", new TaskFilter("sex", "eq", "F")));
+        client.Pending.Add(PendingTask(T1));
 
         await Work(client, Store()).Execute();
 
@@ -418,7 +386,7 @@ public class DoFederatedTaskWorkTests
     public async Task Execute_missing_dataset_reports_rejected_by_input_checks()
     {
         var client = new FakeClient();
-        client.Pending.Add(PendingTask(T1, "nope", "count", null));
+        client.Pending.Add(PendingTask(T1, "nope"));
 
         await Work(client, Store()).Execute();
 
@@ -432,38 +400,11 @@ public class DoFederatedTaskWorkTests
     }
 
     [Fact]
-    public async Task Execute_MissingColumn_ReportsExecutorErrorColumnNotFound()
-    {
-        var client = new FakeClient();
-        client.Pending.Add(PendingTask(T1, "cohort_2024", "mean", "height"));
-
-        await Work(client, Store()).Execute();
-
-        var report = Assert.Single(client.Reports);
-        Assert.Equal(TesState.EXECUTORERROREnum, report.State);
-        Assert.Equal("column_not_found", report.ErrorCode);
-        Assert.Null(report.RejectedAt);
-    }
-
-    [Fact]
-    public async Task Execute_missing_column_still_reports_executor_error()
-    {
-        var client = new FakeClient();
-        client.Pending.Add(PendingTask(T1, "cohort_2024", "mean", "height"));
-
-        await Work(client, Store()).Execute();
-
-        var report = Assert.Single(client.Reports);
-        Assert.Equal(TesState.EXECUTORERROREnum, report.State);
-        Assert.Null(report.RejectedAt);
-    }
-
-    [Fact]
     public async Task Execute_TaskOutsideProfile_ReportsInvalidTask()
     {
         var client = new FakeClient();
-        var task = PendingTask(T1, "cohort_2024", "count", null);
-        task.Executors[0].Image = "ubuntu:22.04";
+        var task = PendingTask(T1);
+        task.Executors[0].Command = ["bash", "-c", "cat /data/cohort_2024/*"];
         client.Pending.Add(task);
 
         await Work(client, Store()).Execute();
@@ -478,15 +419,16 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Execute_OneTaskThrows_OthersStillReported()
     {
-        var store = Store().Add("dataset/other/other.csv", "a\n1\n");
-        store.ThrowOnOpenKey = "dataset/other/other.csv";
         var client = new FakeClient();
-        var failing = PendingTask(T1, "other", "count", null);
+        var failing = PendingTask(T1);
         failing.CreationTime = Now.AddMinutes(-60); // old enough that the read failure is reported, not retried
         client.Pending.Add(failing);
-        client.Pending.Add(PendingTask(T2, "cohort_2024", "count", null));
+        client.Pending.Add(PendingTask(T2));
+        var execution = new FakeExecution(task => task.Id == T1
+            ? throw new DatasetStoreException("Reading dataset file 'dataset/other/other.csv' failed", new IOException("down"))
+            : ExecutionResult.Ok(AnalysisDocument(task.Id!)));
 
-        await Work(client, store).Execute();
+        await Work(client, execution, new DatasetReader(Store(), new FederatedTaskSettings())).Execute();
 
         Assert.Equal(2, client.Reports.Count);
         Assert.Equal(TesState.SYSTEMERROREnum, client.Reports[0].State);
@@ -499,7 +441,7 @@ public class DoFederatedTaskWorkTests
     public async Task Execute_NotConfigured_DoesNothing()
     {
         var client = new FakeClient { IsConfigured = false };
-        client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+        client.Pending.Add(PendingTask(T1));
 
         await Work(client, Store()).Execute();
 
@@ -512,10 +454,10 @@ public class DoFederatedTaskWorkTests
     {
         var store = Store();
         var client = new FakeClient();
-        var task = PendingTask(T1, "cohort_2024", "count", null);
+        var task = PendingTask(T1);
         task.Tags!["fed.sites"] = "tre-b";
         client.Pending.Add(task);
-        client.Pending.Add(PendingTask(T2, "cohort_2024", "count", null));
+        client.Pending.Add(PendingTask(T2));
 
         await Work(client, store).Execute();
 
@@ -530,7 +472,7 @@ public class DoFederatedTaskWorkTests
     public async Task Execute_TreNameMatchesCaseInsensitively()
     {
         var client = new FakeClient();
-        client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+        client.Pending.Add(PendingTask(T1));
 
         await Work(client, Store(), " TRE-A ").Execute();
 
@@ -543,7 +485,7 @@ public class DoFederatedTaskWorkTests
     public async Task Execute_TreNameNotConfigured_DoesNothing(string? treName)
     {
         var client = new FakeClient();
-        client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+        client.Pending.Add(PendingTask(T1));
 
         await Work(client, Store(), treName).Execute();
 
@@ -552,55 +494,29 @@ public class DoFederatedTaskWorkTests
     }
 
     [Fact]
-    public async Task Execute_Complete_DocumentHoldsDatasetSha256()
-    {
-        var client = new FakeClient();
-        var outputs = new FakeResultOutputStore();
-        client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
-
-        await Work(client, Store(), outputs: outputs).Execute();
-
-        var expected = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Csv))).ToLowerInvariant();
-        Assert.Equal(expected, Doc(outputs.Files[T1]).DatasetSha256);
-    }
-
-    [Fact]
-    public async Task Execute_ColumnNotFound_ReportsDatasetSha256()
-    {
-        var client = new FakeClient();
-        client.Pending.Add(PendingTask(T1, "cohort_2024", "mean", "height"));
-
-        await Work(client, Store()).Execute();
-
-        var expected = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Csv))).ToLowerInvariant();
-        Assert.Equal(expected, Assert.Single(client.Reports).DatasetSha256);
-    }
-
-    [Fact]
     public async Task Execute_DatasetNotFound_ReportsNullDatasetSha256()
     {
         var client = new FakeClient();
-        client.Pending.Add(PendingTask(T1, "nope", "count", null));
+        client.Pending.Add(PendingTask(T1, "nope"));
 
         await Work(client, Store()).Execute();
 
         Assert.Null(Assert.Single(client.Reports).DatasetSha256);
     }
 
-    private static FederatedResultDocument Doc(byte[] bytes) =>
-        System.Text.Json.JsonSerializer.Deserialize<FederatedResultDocument>(bytes, new System.Text.Json.JsonSerializerOptions { PropertyNamingPolicy = System.Text.Json.JsonNamingPolicy.CamelCase })!;
-
-    private static FakeClient OneMean()
+    private static FakeClient OneTask(TesState state = TesState.QUEUEDEnum)
     {
         var client = new FakeClient();
-        client.Pending.Add(PendingTask(T1, "cohort_2024", "mean", "age", new TaskFilter("sex", "eq", "F")));
+        var task = PendingTask(T1);
+        task.State = state;
+        client.Pending.Add(task);
         return client;
     }
 
     [Fact]
     public async Task Success_saves_then_releases_same_bytes()
     {
-        var client = OneMean();
+        var client = OneTask();
         var outputs = new FakeResultOutputStore();
 
         await Work(client, Store(), outputs: outputs).Execute();
@@ -608,19 +524,13 @@ public class DoFederatedTaskWorkTests
         var call = Assert.Single(client.Calls);
         Assert.Equal(TesState.COMPLETEEnum, call.Report.State);
         Assert.Equal(outputs.Files[T1], call.Bytes);
-        var doc = Doc(call.Bytes!);
-        Assert.Equal(40.5m, doc.Result.Value);
-        Assert.Equal(2, doc.Result.RowCount);
-        Assert.Equal(T1, doc.TaskId);
-        Assert.Equal("tre-a", doc.Tre);
-        Assert.Equal("study-1", doc.StudyId);
-        Assert.Equal(new DateTimeOffset(2026, 11, 5, 10, 0, 0, TimeSpan.Zero), doc.CompletedAt);
+        Assert.Equal(FederatedResultDocumentJson.SerializeAnalysis(AnalysisDocument()), call.Bytes);
     }
 
     [Fact]
     public async Task Success_marks_released_when_sha_matches()
     {
-        var client = OneMean();
+        var client = OneTask();
         var outputs = new FakeResultOutputStore();
         var work = Work(client, Store(), outputs: outputs);
         // Run once to learn the sha, then release on a second poll using the saved file.
@@ -637,7 +547,7 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Sha_mismatch_does_not_mark_released()
     {
-        var client = OneMean();
+        var client = OneTask();
         client.Outcomes.Enqueue(new FederatedReportOutcome(200, null, null, "k", new string('a', 64)));
         var outputs = new FakeResultOutputStore();
 
@@ -649,7 +559,7 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Ok_with_null_key_or_sha_does_not_mark_released()
     {
-        var client = OneMean();
+        var client = OneTask();
         client.Outcomes.Enqueue(new FederatedReportOutcome(200, null, null, null, null));
         var outputs = new FakeResultOutputStore();
 
@@ -661,8 +571,8 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Save_failure_does_not_report()
     {
-        var client = OneMean();
-        client.Pending.Add(PendingTask(T2, "cohort_2024", "count", null));
+        var client = OneTask();
+        client.Pending.Add(PendingTask(T2));
         var outputs = new FakeResultOutputStore { FailSave = true };
 
         await Work(client, Store(), outputs: outputs).Execute();
@@ -673,7 +583,7 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Get_failure_does_not_report()
     {
-        var client = OneMean();
+        var client = OneTask();
         var outputs = new FakeResultOutputStore { FailGet = true };
 
         await Work(client, Store(), outputs: outputs).Execute();
@@ -684,7 +594,7 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Report_failure_is_isolated_per_task_and_task_stays_queued()
     {
-        var client = OneMean();
+        var client = OneTask();
         client.ThrowOnReport = true;
         var outputs = new FakeResultOutputStore();
 
@@ -698,22 +608,24 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Retry_reuses_saved_file_and_does_not_recompute()
     {
-        var client = OneMean();
+        var client = OneTask();
         var outputs = new FakeResultOutputStore();
         var saved = Encoding.UTF8.GetBytes("{\"schemaVersion\":1}");
         outputs.Files[T1] = saved;
+        var execution = new FakeExecution();
 
-        await Work(client, new ThrowingReader(), outputs: outputs).Execute();
+        await Work(client, execution, outputs: outputs).Execute();
 
         var call = Assert.Single(client.Calls);
         Assert.Equal(saved, call.Bytes);
         Assert.Equal(TesState.COMPLETEEnum, call.Report.State);
+        Assert.Empty(execution.Runs);
     }
 
     [Fact]
     public async Task Storage_unavailable_503_leaves_task_for_retry_and_sends_no_follow_up()
     {
-        var client = OneMean();
+        var client = OneTask();
         client.Outcomes.Enqueue(new FederatedReportOutcome(503, "storage_unavailable", "down", null, null));
 
         await Work(client, Store()).Execute();
@@ -726,7 +638,7 @@ public class DoFederatedTaskWorkTests
     [InlineData("result_too_large")]
     public async Task Rejected_result_400_sends_follow_up_executor_error(string code)
     {
-        var client = OneMean();
+        var client = OneTask();
         client.Outcomes.Enqueue(new FederatedReportOutcome(400, code, new string('x', 2000), null, null));
 
         await Work(client, Store()).Execute();
@@ -745,7 +657,7 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Other_400_sends_no_follow_up()
     {
-        var client = OneMean();
+        var client = OneTask();
         client.Outcomes.Enqueue(new FederatedReportOutcome(400, "invalid_task", "bad", null, null));
 
         await Work(client, Store()).Execute();
@@ -756,7 +668,7 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Conflict_409_with_matching_sha_marks_released()
     {
-        var client = OneMean();
+        var client = OneTask();
         var outputs = new FakeResultOutputStore();
         var work = Work(client, Store(), outputs: outputs);
         await work.Execute();
@@ -771,7 +683,7 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Conflict_409_without_sha_does_not_mark_released_and_sends_nothing_more()
     {
-        var client = OneMean();
+        var client = OneTask();
         client.Outcomes.Enqueue(new FederatedReportOutcome(409, "task_already_reported", "already", null, null));
         var outputs = new FakeResultOutputStore();
 
@@ -784,7 +696,7 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Conflict_409_with_other_sha_does_not_mark_released()
     {
-        var client = OneMean();
+        var client = OneTask();
         client.Outcomes.Enqueue(new FederatedReportOutcome(409, "conflict", "already", "k", new string('b', 64)));
         var outputs = new FakeResultOutputStore();
 
@@ -797,7 +709,7 @@ public class DoFederatedTaskWorkTests
     public async Task Error_task_reports_without_file_and_saves_nothing()
     {
         var client = new FakeClient();
-        client.Pending.Add(PendingTask(T1, "nope", "count", null));
+        client.Pending.Add(PendingTask(T1, "nope"));
         var outputs = new FakeResultOutputStore();
 
         await Work(client, Store(), outputs: outputs).Execute();
@@ -812,9 +724,9 @@ public class DoFederatedTaskWorkTests
     public async Task Error_message_is_truncated_to_limit()
     {
         var client = new FakeClient();
-        client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+        client.Pending.Add(PendingTask(T1));
 
-        await Work(client, new FuncReader(() => DatasetReadResult.Fail("dataset_not_found", new string('m', 2000)))).Execute();
+        await Work(client, new FakeExecution(ExecutionResult.RunFailed(FederatedTaskErrorCodes.RunFailed, new string('m', 2000)))).Execute();
 
         Assert.True(Assert.Single(client.Calls).Report.ErrorMessage!.Length <= 512);
     }
@@ -823,9 +735,9 @@ public class DoFederatedTaskWorkTests
     public async Task Internal_error_does_not_leak_exception_text()
     {
         var client = new FakeClient();
-        client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+        client.Pending.Add(PendingTask(T1));
 
-        await Work(client, new FuncReader(() => throw new InvalidOperationException("bucket secret-host:9000 unreachable"))).Execute();
+        await Work(client, new FakeExecution(() => throw new InvalidOperationException("bucket secret-host:9000 unreachable"))).Execute();
 
         var report = Assert.Single(client.Calls).Report;
         Assert.Equal("internal_error", report.ErrorCode);
@@ -836,13 +748,14 @@ public class DoFederatedTaskWorkTests
     public async Task Overlong_study_id_reports_invalid_task_without_reading_data()
     {
         var client = new FakeClient();
-        var task = FederatedTesProfile.Build(new FederatedTaskSpec("count", "cohort_2024", null, Array.Empty<TaskFilter>(), new string('s', 1025), "tre-a"));
+        var task = FederatedTesProfile.BuildCodeTask("cohort_2024", Code, new string('s', 1025), "tre-a");
         task.Id = T1;
         task.State = TesState.QUEUEDEnum;
         client.Pending.Add(task);
         var outputs = new FakeResultOutputStore();
+        var execution = new FakeExecution(() => throw new InvalidOperationException("dataset must not be read"));
 
-        await Work(client, new FuncReader(() => throw new InvalidOperationException("dataset must not be read")), outputs: outputs).Execute();
+        await Work(client, execution, outputs: outputs).Execute();
 
         var call = Assert.Single(client.Calls);
         Assert.Equal(TesState.CANCELEDEnum, call.Report.State);
@@ -855,7 +768,7 @@ public class DoFederatedTaskWorkTests
     public async Task Non_guid_task_id_reports_invalid_task_without_storage_access()
     {
         var client = new FakeClient();
-        client.Pending.Add(PendingTask("../evil", "cohort_2024", "count", null));
+        client.Pending.Add(PendingTask("../evil"));
         var outputs = new FakeResultOutputStore();
 
         await Work(client, Store(), outputs: outputs).Execute();
@@ -869,12 +782,12 @@ public class DoFederatedTaskWorkTests
     public async Task Error_message_control_characters_are_replaced()
     {
         var client = new FakeClient();
-        client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+        client.Pending.Add(PendingTask(T1));
 
-        await Work(client, new FuncReader(() => DatasetReadResult.Fail("column_not_found", "column 'a\nb\tc' not found"))).Execute();
+        await Work(client, new FakeExecution(ExecutionResult.RunFailed(FederatedTaskErrorCodes.RunFailed, "name 'a\nb\tc' is not defined"))).Execute();
 
         var message = Assert.Single(client.Calls).Report.ErrorMessage;
-        Assert.Equal("column 'a b c' not found", message);
+        Assert.Equal("name 'a b c' is not defined", message);
         Assert.True(FederatedResultLimits.IsValidErrorMessage(message));
     }
 
@@ -882,8 +795,8 @@ public class DoFederatedTaskWorkTests
     public async Task Rejected_error_report_does_not_stop_the_loop()
     {
         var client = new FakeClient();
-        client.Pending.Add(PendingTask(T1, "nope", "count", null));
-        client.Pending.Add(PendingTask(T2, "nope", "count", null));
+        client.Pending.Add(PendingTask(T1, "nope"));
+        client.Pending.Add(PendingTask(T2, "nope"));
         client.Outcomes.Enqueue(new FederatedReportOutcome(400, "invalid_task", "bad", null, null));
 
         await Work(client, Store()).Execute();
@@ -894,7 +807,7 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Execute_queued_task_reports_running_before_result()
     {
-        var client = OneMean();
+        var client = OneTask();
 
         await Work(client, Store()).Execute();
 
@@ -906,7 +819,7 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Execute_running_task_is_resumed_without_reporting_running()
     {
-        var client = OneMean();
+        var client = OneTask();
         client.Pending[0].State = TesState.RUNNINGEnum;
 
         await Work(client, Store()).Execute();
@@ -916,13 +829,6 @@ public class DoFederatedTaskWorkTests
     }
 
     private static IDatasetReader Reader() => new DatasetReader(Store(), new FederatedTaskSettings());
-
-    private static FakeClient OneAgeMean()
-    {
-        var client = new FakeClient();
-        client.Pending.Add(PendingTask(T1, "cohort_2024", "mean", "age"));
-        return client;
-    }
 
     private static FakeResultOutputStore Saved(string content = "{\"schemaVersion\":1}")
     {
@@ -936,7 +842,7 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Computed_result_is_registered_and_reported_waiting_not_uploaded()
     {
-        var client = OneMean();
+        var client = OneTask();
         var outputs = new FakeResultOutputStore();
         var approval = new FakeOutputApproval { AutoApprove = false };
 
@@ -951,7 +857,7 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Registration_carries_study_code_and_result()
     {
-        var client = OneAgeMean();
+        var client = OneTask();
         var outputs = new FakeResultOutputStore();
         var approval = new FakeOutputApproval { AutoApprove = false };
 
@@ -960,8 +866,9 @@ public class DoFederatedTaskWorkTests
         var r = approval.Registered[T1];
         Assert.Equal(T1, r.TaskId);
         Assert.Equal("study-1", r.StudyId);
-        Assert.Equal("5s-tes/federated-ops:1 mean --column age", r.Code);
-        Assert.Equal($"Federated task {T1}: mean --column age", r.Name);
+        const string command = "run-analysis /code/analysis.py /data/cohort_2024 /outputs/result.json";
+        Assert.Equal($"python-runner:1 {command}", r.Code);
+        Assert.Equal($"Federated task {T1}: {command} code sha256 {client.Pending[0].Tags!["fed.code_sha256"]}", r.Name);
         Assert.Equal(Encoding.UTF8.GetString(outputs.Files[T1]), r.ResultContent);
         Assert.Equal(new FederatedTaskSettings().OutputBucket, r.OutputBucket);
     }
@@ -969,12 +876,12 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Canceling_task_with_pending_review_is_withdrawn_deleted_and_reported_canceled()
     {
-        var client = OneMean();
+        var client = OneTask();
         Canceling(client.Pending[0]);
         var outputs = Saved();
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), registered: true);
 
-        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+        await Work(client, new FindingReader(), outputs: outputs, approval: approval).Execute();
 
         Assert.Contains(T1, approval.Withdrawn);
         Assert.Equal(1, approval.CloseCalls);
@@ -987,13 +894,13 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Canceling_task_already_withdrawn_is_not_withdrawn_again()
     {
-        var client = OneMean();
+        var client = OneTask();
         Canceling(client.Pending[0]);
         var outputs = Saved();
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), registered: true);
         approval.Withdrawn.Add(T1);
 
-        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+        await Work(client, new FindingReader(), outputs: outputs, approval: approval).Execute();
 
         Assert.Equal(0, approval.WithdrawCalls);
         Assert.Empty(outputs.Files);
@@ -1003,12 +910,12 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Canceling_task_approved_before_the_cancel_is_never_released()
     {
-        var client = OneMean();
+        var client = OneTask();
         Canceling(client.Pending[0]);
         var outputs = Saved();
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Approved(ShaOf(outputs.Files[T1])));
 
-        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+        await Work(client, new FindingReader(), outputs: outputs, approval: approval).Execute();
 
         Assert.Empty(client.Calls);
         Assert.Equal(0, approval.WithdrawCalls);
@@ -1019,12 +926,12 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Canceling_task_without_result_or_review_is_reported_canceled_without_running()
     {
-        var client = OneMean();
+        var client = OneTask();
         Canceling(client.Pending[0]);
         var outputs = new FakeResultOutputStore();
         var approval = new FakeOutputApproval { AutoApprove = false };
 
-        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+        await Work(client, new FindingReader(), outputs: outputs, approval: approval).Execute();
 
         Assert.Equal(0, approval.WithdrawCalls);
         Assert.Equal(0, approval.RegisterCalls);
@@ -1035,12 +942,12 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Canceling_task_whose_egress_request_cannot_be_closed_is_not_confirmed()
     {
-        var client = OneMean();
+        var client = OneTask();
         Canceling(client.Pending[0]);
         var outputs = Saved();
         var approval = new FakeOutputApproval { AutoApprove = false, FailClose = true }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), registered: true);
 
-        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+        await Work(client, new FindingReader(), outputs: outputs, approval: approval).Execute();
 
         Assert.Contains(T1, approval.Withdrawn);
         Assert.True(outputs.Files.ContainsKey(T1));
@@ -1050,13 +957,13 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Canceling_task_already_withdrawn_still_has_its_egress_request_closed()
     {
-        var client = OneMean();
+        var client = OneTask();
         Canceling(client.Pending[0]);
         var outputs = Saved();
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), registered: true);
         approval.Withdrawn.Add(T1);
 
-        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+        await Work(client, new FindingReader(), outputs: outputs, approval: approval).Execute();
 
         Assert.Equal(1, approval.CloseCalls);
         Assert.Equal([(T1, FederatedTaskPhase.Canceled)], client.ProgressCalls);
@@ -1065,12 +972,12 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Canceling_state_without_a_phase_is_still_cleaned_up_and_never_run()
     {
-        var client = OneMean();
+        var client = OneTask();
         client.Pending[0].State = TesState.CANCELINGEnum;
         client.Pending[0].Logs = null;
         var outputs = new FakeResultOutputStore();
 
-        await Work(client, new ThrowingReader(), outputs: outputs, approval: new FakeOutputApproval { AutoApprove = false }).Execute();
+        await Work(client, new FindingReader(), outputs: outputs, approval: new FakeOutputApproval { AutoApprove = false }).Execute();
 
         Assert.Equal([(T1, FederatedTaskPhase.Canceled)], client.ProgressCalls);
         Assert.Empty(client.Calls);
@@ -1080,13 +987,13 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Canceling_task_whose_result_cannot_be_deleted_is_not_confirmed()
     {
-        var client = OneMean();
+        var client = OneTask();
         Canceling(client.Pending[0]);
         var outputs = Saved();
         outputs.FailDelete = true;
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), registered: true);
 
-        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+        await Work(client, new FindingReader(), outputs: outputs, approval: approval).Execute();
 
         Assert.Contains(T1, approval.Withdrawn);
         Assert.True(outputs.Files.ContainsKey(T1));
@@ -1096,13 +1003,13 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Release_refused_because_the_task_is_canceling_reports_nothing_more()
     {
-        var client = OneMean();
+        var client = OneTask();
         var outputs = Saved();
         var sha = ShaOf(outputs.Files[T1]);
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Approved(sha));
         client.Outcomes.Enqueue(new FederatedReportOutcome(409, FederatedTaskErrorCodes.TaskCanceling, "the task is being cancelled", null, null));
 
-        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).ActOnDecision(T1);
+        await Work(client, new FindingReader(), outputs: outputs, approval: approval).ActOnDecision(T1);
 
         var report = Assert.Single(client.Calls).Report;
         Assert.Equal(TesState.COMPLETEEnum, report.State);
@@ -1113,12 +1020,12 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Waiting_task_without_decision_reports_nothing()
     {
-        var client = OneMean();
+        var client = OneTask();
         Waiting(client.Pending[0]);
         var outputs = Saved();
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), registered: true);
 
-        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+        await Work(client, new FindingReader(), outputs: outputs, approval: approval).Execute();
 
         Assert.Empty(client.ProgressCalls);
         Assert.Empty(client.Calls);
@@ -1128,12 +1035,12 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Waiting_task_without_file_or_record_is_skipped_without_computing()
     {
-        var client = OneMean();
+        var client = OneTask();
         Waiting(client.Pending[0]);
         var outputs = new FakeResultOutputStore();
         var approval = new FakeOutputApproval { AutoApprove = false };
 
-        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+        await Work(client, new FindingReader(), outputs: outputs, approval: approval).Execute();
 
         Assert.Empty(client.ProgressCalls);
         Assert.Empty(client.Calls);
@@ -1144,14 +1051,14 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Waiting_approved_task_is_released_with_the_reviewed_sha()
     {
-        var client = OneMean();
+        var client = OneTask();
         Waiting(client.Pending[0]);
         var outputs = Saved();
         var sha = ShaOf(outputs.Files[T1]);
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Approved(sha));
         client.Outcomes.Enqueue(new FederatedReportOutcome(200, null, null, $"1/{T1}/{sha}.json", sha));
 
-        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+        await Work(client, new FindingReader(), outputs: outputs, approval: approval).Execute();
 
         var call = Assert.Single(client.Calls);
         Assert.Equal(TesState.COMPLETEEnum, call.Report.State);
@@ -1165,13 +1072,13 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Approved_task_whose_file_changed_is_failed_and_not_uploaded()
     {
-        var client = OneMean();
+        var client = OneTask();
         Waiting(client.Pending[0]);
         var outputs = Saved();
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Approved(ShaOf(outputs.Files[T1])));
         outputs.Files[T1] = Encoding.UTF8.GetBytes("{\"schemaVersion\":2}");
 
-        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+        await Work(client, new FindingReader(), outputs: outputs, approval: approval).Execute();
 
         var call = Assert.Single(client.Calls);
         Assert.Equal(TesState.SYSTEMERROREnum, call.Report.State);
@@ -1187,12 +1094,12 @@ public class DoFederatedTaskWorkTests
     [InlineData(true)]
     public async Task Pending_task_whose_file_changed_since_the_review_record_is_failed_not_registered_or_waiting(bool registered)
     {
-        var client = OneMean();
+        var client = OneTask();
         client.Pending[0].State = TesState.RUNNINGEnum;
         var outputs = Saved();
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(new string('d', 64)), registered);
 
-        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+        await Work(client, new FindingReader(), outputs: outputs, approval: approval).Execute();
 
         var call = Assert.Single(client.Calls);
         Assert.Equal(TesState.SYSTEMERROREnum, call.Report.State);
@@ -1208,11 +1115,11 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Pending_task_whose_file_is_gone_is_withdrawn_and_failed()
     {
-        var client = OneMean();
+        var client = OneTask();
         Waiting(client.Pending[0]);
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(new string('c', 64)), true);
 
-        await Work(client, new ThrowingReader(), approval: approval).Execute();
+        await Work(client, new FindingReader(), approval: approval).Execute();
 
         var call = Assert.Single(client.Calls);
         Assert.Equal("result_changed_after_review", call.Report.ErrorCode);
@@ -1222,12 +1129,12 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Approved_task_whose_file_is_gone_is_failed_without_recomputing()
     {
-        var client = OneMean();
+        var client = OneTask();
         client.Pending[0].State = TesState.RUNNINGEnum;
         var outputs = new FakeResultOutputStore();
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Approved(new string('c', 64)));
 
-        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+        await Work(client, new FindingReader(), outputs: outputs, approval: approval).Execute();
 
         var call = Assert.Single(client.Calls);
         Assert.Equal(TesState.SYSTEMERROREnum, call.Report.State);
@@ -1242,12 +1149,12 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Rejected_task_reports_rejection_at_output_approval_with_reason()
     {
-        var client = OneMean();
+        var client = OneTask();
         Waiting(client.Pending[0]);
         var outputs = Saved();
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Rejected(ShaOf(outputs.Files[T1]), "small cells"));
 
-        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+        await Work(client, new FindingReader(), outputs: outputs, approval: approval).Execute();
 
         var call = Assert.Single(client.Calls);
         Assert.Equal(TesState.CANCELEDEnum, call.Report.State);
@@ -1261,11 +1168,11 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Rejected_task_whose_file_is_gone_still_reports_the_rejection()
     {
-        var client = OneMean();
+        var client = OneTask();
         Waiting(client.Pending[0]);
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Rejected(new string('c', 64), "small cells"));
 
-        await Work(client, new ThrowingReader(), approval: approval).Execute();
+        await Work(client, new FindingReader(), approval: approval).Execute();
 
         var call = Assert.Single(client.Calls);
         Assert.Equal(TesState.CANCELEDEnum, call.Report.State);
@@ -1276,14 +1183,14 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task ActOnDecision_releases_an_approved_task_that_is_not_in_the_pending_list()
     {
-        var client = OneMean();
+        var client = OneTask();
         client.Pending.Clear();
         var outputs = Saved();
         var sha = ShaOf(outputs.Files[T1]);
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Approved(sha));
         client.Outcomes.Enqueue(new FederatedReportOutcome(200, null, null, $"1/{T1}/{sha}.json", sha));
 
-        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).ActOnDecision(T1.ToUpperInvariant());
+        await Work(client, new FindingReader(), outputs: outputs, approval: approval).ActOnDecision(T1.ToUpperInvariant());
 
         var call = Assert.Single(client.Calls);
         Assert.Equal(T1, call.Report.TaskId);
@@ -1295,12 +1202,12 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task ActOnDecision_reports_a_rejection_with_its_reason()
     {
-        var client = OneMean();
+        var client = OneTask();
         client.Pending.Clear();
         var outputs = Saved();
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Rejected(ShaOf(outputs.Files[T1]), "small cells"));
 
-        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).ActOnDecision(T1);
+        await Work(client, new FindingReader(), outputs: outputs, approval: approval).ActOnDecision(T1);
 
         var call = Assert.Single(client.Calls);
         Assert.Equal(TesState.CANCELEDEnum, call.Report.State);
@@ -1312,13 +1219,13 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task ActOnDecision_fails_an_approved_task_whose_file_changed()
     {
-        var client = OneMean();
+        var client = OneTask();
         client.Pending.Clear();
         var outputs = Saved();
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Approved(ShaOf(outputs.Files[T1])));
         outputs.Files[T1] = Encoding.UTF8.GetBytes("{\"schemaVersion\":2}");
 
-        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).ActOnDecision(T1);
+        await Work(client, new FindingReader(), outputs: outputs, approval: approval).ActOnDecision(T1);
 
         var call = Assert.Single(client.Calls);
         Assert.Equal("result_changed_after_review", call.Report.ErrorCode);
@@ -1329,12 +1236,12 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task ActOnDecision_does_nothing_for_a_pending_or_unknown_review()
     {
-        var client = OneMean();
+        var client = OneTask();
         client.Pending.Clear();
         var outputs = Saved();
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), true);
 
-        var work = Work(client, new ThrowingReader(), outputs: outputs, approval: approval);
+        var work = Work(client, new FindingReader(), outputs: outputs, approval: approval);
         await work.ActOnDecision(T1);
         await work.ActOnDecision("22222222-2222-2222-2222-222222222222");
         await work.ActOnDecision("not-a-guid");
@@ -1347,13 +1254,13 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Rejection_reason_is_cleaned_and_truncated()
     {
-        var client = OneMean();
+        var client = OneTask();
         Waiting(client.Pending[0]);
         var outputs = Saved();
         var reason = "small\ncells\t" + new string('r', 2000);
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, Rejected(ShaOf(outputs.Files[T1]), reason));
 
-        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+        await Work(client, new FindingReader(), outputs: outputs, approval: approval).Execute();
 
         var message = Assert.Single(client.Calls).Report.ErrorMessage!;
         Assert.Equal(FederatedResultLimits.MaxErrorMessageLength, message.Length);
@@ -1364,13 +1271,13 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Running_task_with_unregistered_record_registers_again()
     {
-        var client = OneMean();
+        var client = OneTask();
         client.Pending[0].State = TesState.RUNNINGEnum;
         var outputs = Saved();
         var sha = ShaOf(outputs.Files[T1]);
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(sha), registered: false);
 
-        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+        await Work(client, new FindingReader(), outputs: outputs, approval: approval).Execute();
 
         Assert.Equal(sha, approval.Registered[T1].ResultSha256);
         Assert.Contains(T1, approval.Marked);
@@ -1381,12 +1288,12 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Running_task_with_registered_pending_record_reports_waiting_without_registering()
     {
-        var client = OneMean();
+        var client = OneTask();
         client.Pending[0].State = TesState.RUNNINGEnum;
         var outputs = Saved();
         var approval = new FakeOutputApproval { AutoApprove = false }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), registered: true);
 
-        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+        await Work(client, new FindingReader(), outputs: outputs, approval: approval).Execute();
 
         Assert.Equal(0, approval.RegisterCalls);
         Assert.Equal((T1, FederatedTaskPhase.WaitingForOutputApproval), Assert.Single(client.ProgressCalls));
@@ -1396,7 +1303,7 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Egress_not_configured_holds_the_result_and_uploads_nothing()
     {
-        var client = OneMean();
+        var client = OneTask();
         var outputs = new FakeResultOutputStore();
         var approval = new FakeOutputApproval { AutoApprove = false };
 
@@ -1411,7 +1318,7 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Registration_failure_leaves_task_running_for_next_poll()
     {
-        var client = OneMean();
+        var client = OneTask();
         var outputs = new FakeResultOutputStore();
         var approval = new FakeOutputApproval { AutoApprove = false, ThrowOnRegister = true };
 
@@ -1427,13 +1334,13 @@ public class DoFederatedTaskWorkTests
     [InlineData(25 * 60, true)]    // 25 hours ago: past the one-day default
     public async Task Registration_failing_since_the_result_was_first_sent_gives_up_after_the_limit(int minutesAgo, bool givesUp)
     {
-        var client = OneMean();
+        var client = OneTask();
         client.Pending[0].State = TesState.RUNNINGEnum;
         var outputs = Saved();
         var approval = new FakeOutputApproval { AutoApprove = false, ThrowOnRegister = true }
             .Preset(T1, OutputReview.Pending(ShaOf(outputs.Files[T1]), Now.AddMinutes(-minutesAgo)));
 
-        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval, startedAt: Now.AddDays(-3)).Execute();
+        await Work(client, new FindingReader(), outputs: outputs, approval: approval, startedAt: Now.AddDays(-3)).Execute();
 
         if (givesUp)
         {
@@ -1456,14 +1363,14 @@ public class DoFederatedTaskWorkTests
     public async Task Withdrawn_pending_review_is_reported_failed_and_not_registered_again()
     {
         // Registration gave up and withdrew the review, but the failure report did not get through.
-        var client = OneMean();
+        var client = OneTask();
         client.Pending[0].State = TesState.RUNNINGEnum;
         var outputs = Saved();
         var approval = new FakeOutputApproval { AutoApprove = false }
             .Preset(T1, OutputReview.Pending(ShaOf(outputs.Files[T1]), Now.AddDays(-2)));
         approval.Withdrawn.Add(T1);
 
-        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval).Execute();
+        await Work(client, new FindingReader(), outputs: outputs, approval: approval).Execute();
 
         var call = Assert.Single(client.Calls);
         Assert.Equal(TesState.SYSTEMERROREnum, call.Report.State);
@@ -1475,13 +1382,13 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Registration_failure_limit_counts_from_agent_start_when_that_is_later()
     {
-        var client = OneMean();
+        var client = OneTask();
         client.Pending[0].State = TesState.RUNNINGEnum;
         var outputs = Saved();
         var approval = new FakeOutputApproval { AutoApprove = false, ThrowOnRegister = true }
             .Preset(T1, OutputReview.Pending(ShaOf(outputs.Files[T1]), Now.AddDays(-3)));
 
-        await Work(client, new ThrowingReader(), outputs: outputs, approval: approval, startedAt: Now.AddHours(-1)).Execute();
+        await Work(client, new FindingReader(), outputs: outputs, approval: approval, startedAt: Now.AddHours(-1)).Execute();
 
         Assert.Empty(client.Calls);
     }
@@ -1489,10 +1396,10 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Registration_failure_with_a_zero_limit_gives_up_at_once()
     {
-        var client = OneMean();
+        var client = OneTask();
         var outputs = new FakeResultOutputStore();
         var approval = new FakeOutputApproval { AutoApprove = false, ThrowOnRegister = true };
-        var settings = Approving(FederatedTesProfile.ExecutorImage);
+        var settings = Approving(RunnerImage);
         settings.EgressUnreachableGiveUpMinutes = 0;
 
         await Work(client, Reader(), outputs: outputs, approval: approval, settings: settings, startedAt: Now.AddDays(-1)).Execute();
@@ -1504,10 +1411,10 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Execute_running_report_network_failure_leaves_task_for_next_poll()
     {
-        var client = OneMean();
+        var client = OneTask();
         client.ThrowOnProgress = true;
 
-        await Work(client, new ThrowingReader()).Execute();
+        await Work(client, new FindingReader()).Execute();
 
         Assert.Empty(client.Calls);
     }
@@ -1515,10 +1422,10 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Execute_running_report_409_already_final_skips_task()
     {
-        var client = OneMean();
+        var client = OneTask();
         client.ProgressOutcomes.Enqueue(new FederatedReportOutcome(409, "task_already_reported", "final", null, null));
 
-        await Work(client, new ThrowingReader()).Execute();
+        await Work(client, new FindingReader()).Execute();
 
         Assert.Single(client.ProgressCalls);
         Assert.Empty(client.Calls);
@@ -1528,11 +1435,11 @@ public class DoFederatedTaskWorkTests
     public async Task Execute_task_for_other_tre_does_not_report_running()
     {
         var client = new FakeClient();
-        var task = PendingTask(T1, "cohort_2024", "count", null);
+        var task = PendingTask(T1);
         task.Tags!["fed.sites"] = "tre-b";
         client.Pending.Add(task);
 
-        await Work(client, new ThrowingReader()).Execute();
+        await Work(client, new FindingReader()).Execute();
 
         Assert.Empty(client.ProgressCalls);
         Assert.Empty(client.Calls);
@@ -1545,10 +1452,10 @@ public class DoFederatedTaskWorkTests
     [InlineData(TesState.UNKNOWNEnum)]
     public async Task Execute_task_in_unexpected_state_is_skipped(TesState state)
     {
-        var client = OneMean();
+        var client = OneTask();
         client.Pending[0].State = state;
 
-        await Work(client, new ThrowingReader()).Execute();
+        await Work(client, new FindingReader()).Execute();
 
         Assert.Empty(client.ProgressCalls);
         Assert.Empty(client.Calls);
@@ -1558,7 +1465,7 @@ public class DoFederatedTaskWorkTests
     public async Task Execute_ambiguous_dataset_is_rejected_without_reporting_running()
     {
         var client = new FakeClient();
-        client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+        client.Pending.Add(PendingTask(T1));
         var store = Store().Add("dataset/cohort_2024/second.csv", Csv);
 
         await Work(client, store).Execute();
@@ -1572,8 +1479,8 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Execute_store_failure_while_finding_dataset_leaves_task_for_next_poll()
     {
-        var client = OneMean();
-        client.Pending.Add(PendingTask(T2, "cohort_2024", "count", null));
+        var client = OneTask();
+        client.Pending.Add(PendingTask(T2));
 
         await Work(client, new FailingResolveReader()).Execute();
 
@@ -1585,17 +1492,15 @@ public class DoFederatedTaskWorkTests
     private sealed class FailingResolveReader : IDatasetReader
     {
         public Task<DatasetResolveResult> ResolveAsync(string datasetName, CancellationToken ct) => throw new IOException("store down");
-
-        public Task<DatasetReadResult> ReadAsync(string fileKey, CancellationToken ct) => throw new InvalidOperationException("must not be read");
     }
 
     [Fact]
     public async Task Execute_running_report_409_task_busy_leaves_task_for_next_poll()
     {
-        var client = OneMean();
+        var client = OneTask();
         client.ProgressOutcomes.Enqueue(new FederatedReportOutcome(409, "task_busy", "busy", null, null));
 
-        await Work(client, new ThrowingReader()).Execute();
+        await Work(client, new FindingReader()).Execute();
 
         Assert.Single(client.ProgressCalls);
         Assert.Empty(client.Calls);
@@ -1604,7 +1509,7 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Result_409_task_busy_does_not_mark_released_and_keeps_the_saved_file()
     {
-        var client = OneMean();
+        var client = OneTask();
         client.Outcomes.Enqueue(new FederatedReportOutcome(409, "task_busy", "busy", null, null));
         var outputs = new FakeResultOutputStore();
 
@@ -1620,7 +1525,7 @@ public class DoFederatedTaskWorkTests
     public async Task Error_report_409_task_busy_sends_nothing_more()
     {
         var client = new FakeClient();
-        client.Pending.Add(PendingTask(T1, "nope", "count", null));
+        client.Pending.Add(PendingTask(T1, "nope"));
         client.Outcomes.Enqueue(new FederatedReportOutcome(409, "task_busy", "busy", null, null));
         var outputs = new FakeResultOutputStore();
 
@@ -1634,7 +1539,7 @@ public class DoFederatedTaskWorkTests
     public async Task Execute_dataset_bucket_unreachable_soon_after_agent_start_retries_a_long_queued_task()
     {
         // Queued 10 hours ago, for example held while ApprovedImages was missing; the Agent was restarted a minute ago.
-        var client = OneMean();
+        var client = OneTask();
         client.Pending[0].CreationTime = Now.AddMinutes(-600);
 
         await Work(client, new FailingResolveReader(), startedAt: Now.AddMinutes(-1)).Execute();
@@ -1645,7 +1550,7 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Execute_dataset_bucket_unreachable_gives_up_once_the_agent_has_run_for_the_whole_window()
     {
-        var client = OneMean();
+        var client = OneTask();
         client.Pending[0].CreationTime = Now.AddMinutes(-600);
 
         await Work(client, new FailingResolveReader(), startedAt: Now.AddMinutes(-60)).Execute();
@@ -1658,7 +1563,7 @@ public class DoFederatedTaskWorkTests
     [InlineData(600)]
     public async Task Execute_dataset_bucket_unreachable_for_too_long_reports_internal_error(int ageMinutes)
     {
-        var client = OneMean();
+        var client = OneTask();
         client.Pending[0].CreationTime = Now.AddMinutes(-ageMinutes);
 
         await Work(client, new FailingResolveReader()).Execute();
@@ -1674,10 +1579,10 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Execute_dataset_bucket_unreachable_uses_the_configured_give_up_time()
     {
-        var client = OneMean();
+        var client = OneTask();
         client.Pending[0].CreationTime = Now.AddMinutes(-10);
 
-        await Work(client, new FailingResolveReader(), settings: new FederatedTaskSettings { DatasetUnreachableGiveUpMinutes = 5, ApprovedImages = [FederatedTesProfile.ExecutorImage] }).Execute();
+        await Work(client, new FailingResolveReader(), settings: new FederatedTaskSettings { DatasetUnreachableGiveUpMinutes = 5, ApprovedImages = [RunnerImage] }).Execute();
 
         Assert.Equal("internal_error", Assert.Single(client.Reports).ErrorCode);
     }
@@ -1685,7 +1590,7 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Execute_dataset_bucket_unreachable_without_creation_time_reports_internal_error()
     {
-        var client = OneMean();
+        var client = OneTask();
         client.Pending[0].CreationTime = null;
 
         await Work(client, new FailingResolveReader()).Execute();
@@ -1696,7 +1601,7 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Execute_dataset_listing_fails_on_a_young_queued_task_reports_nothing_and_retries_next_poll()
     {
-        var client = OneMean();
+        var client = OneTask();
         var store = Store();
         store.ThrowOnList = true;
 
@@ -1710,7 +1615,7 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Execute_dataset_listing_fails_for_too_long_reports_internal_error()
     {
-        var client = OneMean();
+        var client = OneTask();
         client.Pending[0].CreationTime = Now.AddMinutes(-60);
         var store = Store();
         store.ThrowOnList = true;
@@ -1726,10 +1631,10 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Execute_dataset_read_fails_on_a_young_queued_task_marks_it_running_and_reports_nothing_else()
     {
-        var client = OneMean();
+        var client = OneTask();
         var outputs = new FakeResultOutputStore();
 
-        await Work(client, new FuncReader(() => throw new DatasetStoreException("read failed", new IOException("store down"))), outputs: outputs).Execute();
+        await Work(client, new FakeExecution(() => throw new DatasetStoreException("read failed", new IOException("store down"))), outputs: outputs).Execute();
 
         // Marked running before the read; the failed read leaves it running for the next poll to resume.
         Assert.Single(client.ProgressCalls);
@@ -1740,10 +1645,10 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Execute_dataset_read_fails_on_a_young_running_task_reports_nothing()
     {
-        var client = OneMean();
+        var client = OneTask();
         client.Pending[0].State = TesState.RUNNINGEnum;
 
-        await Work(client, new FuncReader(() => throw new DatasetStoreException("read failed", new IOException("store down")))).Execute();
+        await Work(client, new FakeExecution(() => throw new DatasetStoreException("read failed", new IOException("store down")))).Execute();
 
         Assert.Empty(client.ProgressCalls);
         Assert.Empty(client.Calls);
@@ -1752,11 +1657,11 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Execute_dataset_read_fails_for_too_long_reports_internal_error()
     {
-        var client = OneMean();
+        var client = OneTask();
         client.Pending[0].State = TesState.RUNNINGEnum;
         client.Pending[0].CreationTime = Now.AddMinutes(-60);
 
-        await Work(client, new FuncReader(() => throw new DatasetStoreException("read failed", new IOException("store down")))).Execute();
+        await Work(client, new FakeExecution(() => throw new DatasetStoreException("read failed", new IOException("store down")))).Execute();
 
         var report = Assert.Single(client.Reports);
         Assert.Equal(TesState.SYSTEMERROREnum, report.State);
@@ -1765,21 +1670,21 @@ public class DoFederatedTaskWorkTests
     }
 
     [Fact]
-    public async Task Execute_invalid_csv_on_a_young_task_is_still_reported_at_once()
+    public async Task Execute_run_failure_on_a_young_task_is_still_reported_at_once()
     {
-        var client = OneMean();
+        var client = OneTask();
 
-        await Work(client, new FuncReader(() => DatasetReadResult.Fail("invalid_dataset", "dataset file is not valid CSV"))).Execute();
+        await Work(client, new FakeExecution(ExecutionResult.RunFailed(FederatedTaskErrorCodes.RunFailed, "the code raised an error"))).Execute();
 
-        Assert.Equal("invalid_dataset", Assert.Single(client.Reports).ErrorCode);
+        Assert.Equal("run_failed", Assert.Single(client.Reports).ErrorCode);
     }
 
     [Fact]
     public async Task Execute_dataset_read_fault_that_is_not_the_bucket_is_reported_at_once()
     {
-        var client = OneMean();
+        var client = OneTask();
 
-        await Work(client, new FuncReader(() => throw new InvalidOperationException("parser bug"))).Execute();
+        await Work(client, new FakeExecution(() => throw new InvalidOperationException("parser bug"))).Execute();
 
         // A young task: a bucket failure would be retried, but waiting cannot fix a fault in the TRE.
         Assert.Single(client.ProgressCalls);
@@ -1792,8 +1697,12 @@ public class DoFederatedTaskWorkTests
     /// Stands in for the task execution; records what it was asked to do. By default no run exists and a run can
     /// start. Queued results are returned first, then <c>run</c>.
     /// </summary>
-    private sealed class FakeExecution(Func<ExecutionResult> run) : IFederatedTaskExecution
+    private sealed class FakeExecution(Func<TesTask, ExecutionResult> run) : IFederatedTaskExecution
     {
+        public FakeExecution(Func<ExecutionResult> run) : this(_ => run())
+        {
+        }
+
         public FakeExecution(params ExecutionResult[] results) : this(() => throw new InvalidOperationException("no result queued"))
         {
             foreach (var r in results) Results.Enqueue(r);
@@ -1828,7 +1737,7 @@ public class DoFederatedTaskWorkTests
         public Task<ExecutionResult> RunAsync(TesTask task, FederatedTaskSpec spec, string? fileKey, CancellationToken ct)
         {
             Runs.Add((task.Id, spec, fileKey));
-            return Task.FromResult(Results.Count > 0 ? Results.Dequeue() : run());
+            return Task.FromResult(Results.Count > 0 ? Results.Dequeue() : run(task));
         }
 
         public Task RemoveRunAsync(string taskId, CancellationToken ct)
@@ -1846,36 +1755,24 @@ public class DoFederatedTaskWorkTests
         }
     }
 
-    private static FederatedResultDocument SubstituteDocument() => new()
-    {
-        TaskId = T1,
-        Tre = "tre-a",
-        StudyId = "study-1",
-        Operation = "mean",
-        Dataset = "cohort_2024",
-        DatasetSha256 = new string('a', 64),
-        CompletedAt = Now,
-        Result = new FederatedScalarResult { Value = 42m, RowCount = 7 }
-    };
-
     [Fact]
     public async Task Execute_substituted_execution_result_is_saved_and_released()
     {
-        var client = OneMean();
+        var client = OneTask();
         var outputs = new FakeResultOutputStore();
-        var document = SubstituteDocument();
+        var document = AnalysisDocument();
         var execution = new FakeExecution(() => ExecutionResult.Ok(document));
 
         // The reader only finds the dataset for the input checks; the substitute does not read it.
-        await Work(client, new ThrowingReader(), outputs: outputs, execution: execution).Execute();
+        await Work(client, new FindingReader(), outputs: outputs, execution: execution).Execute();
 
         var run = Assert.Single(execution.Runs);
         Assert.Equal(T1, run.TaskId);
-        Assert.Equal("mean", run.Spec.Operation);
+        Assert.Equal("run-analysis", run.Spec.Operation);
         Assert.Equal("dataset/cohort_2024/data.csv", run.FileKey);
         Assert.Equal(new[] { "progress:running", "report:COMPLETEEnum" }, client.Order);
 
-        var expected = FederatedResultDocumentJson.Serialize(document);
+        var expected = FederatedResultDocumentJson.SerializeAnalysis(document);
         Assert.Equal(expected, outputs.Files[T1]);
         var call = Assert.Single(client.Calls);
         Assert.Equal(TesState.COMPLETEEnum, call.Report.State);
@@ -1883,34 +1780,20 @@ public class DoFederatedTaskWorkTests
     }
 
     [Fact]
-    public async Task Execute_count_or_mean_task_never_asks_whether_a_run_exists()
-    {
-        // Only code tasks have runs; asking Docker for a count or mean task would stall it while Docker is down.
-        var client = OneMean();
-        var execution = new FakeExecution(() => ExecutionResult.Ok(SubstituteDocument())) { HasRun = true };
-
-        await Work(client, new ThrowingReader(), execution: execution).Execute();
-
-        Assert.Empty(execution.HasRunCalls);
-        Assert.Equal("dataset/cohort_2024/data.csv", Assert.Single(execution.Runs).FileKey);
-        Assert.Equal(new[] { "progress:running", "report:COMPLETEEnum" }, client.Order);
-    }
-
-    [Fact]
     public async Task Execute_substituted_execution_error_is_reported_as_executor_error()
     {
-        var client = OneMean();
+        var client = OneTask();
         var outputs = new FakeResultOutputStore();
         var sha = new string('b', 64);
-        var execution = new FakeExecution(() => ExecutionResult.Fail("non_numeric_value", "column 'age' contains a non-numeric value", sha));
+        var execution = new FakeExecution(() => ExecutionResult.Fail(FederatedTaskErrorCodes.RunFailed, "the code raised an error", sha));
 
-        await Work(client, new ThrowingReader(), outputs: outputs, execution: execution).Execute();
+        await Work(client, new FindingReader(), outputs: outputs, execution: execution).Execute();
 
         var report = Assert.Single(client.Reports);
         Assert.Equal(TesState.EXECUTORERROREnum, report.State);
         Assert.Null(report.RejectedAt);
-        Assert.Equal("non_numeric_value", report.ErrorCode);
-        Assert.Equal("column 'age' contains a non-numeric value", report.ErrorMessage);
+        Assert.Equal("run_failed", report.ErrorCode);
+        Assert.Equal("the code raised an error", report.ErrorMessage);
         Assert.Equal(sha, report.DatasetSha256);
         Assert.Empty(outputs.Files);
     }
@@ -1918,10 +1801,10 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Execute_substituted_execution_does_not_run_when_input_checks_reject_the_task()
     {
-        var client = OneMean();
-        var execution = new FakeExecution(() => ExecutionResult.Ok(SubstituteDocument()));
+        var client = OneTask();
+        var execution = new FakeExecution(() => ExecutionResult.Ok(AnalysisDocument()));
 
-        await Work(client, new ThrowingReader(), settings: Approving("other:1"), execution: execution).Execute();
+        await Work(client, new FindingReader(), settings: Approving("other:1"), execution: execution).Execute();
 
         Assert.Empty(execution.Runs);
         Assert.Equal("image_not_approved", Assert.Single(client.Reports).ErrorCode);
@@ -1942,10 +1825,10 @@ public class DoFederatedTaskWorkTests
     [InlineData("docker-socket")]
     public async Task Execute_substituted_execution_fault_that_may_pass_keeps_a_young_task_running_and_its_run(string fault)
     {
-        var client = OneMean();
+        var client = OneTask();
         var execution = new FakeExecution(() => throw RunFault(fault));
 
-        await Work(client, new ThrowingReader(), execution: execution).Execute();
+        await Work(client, new FindingReader(), execution: execution).Execute();
 
         Assert.Single(client.ProgressCalls);
         Assert.Empty(client.Calls);
@@ -1958,13 +1841,13 @@ public class DoFederatedTaskWorkTests
     public async Task Execute_docker_fault_window_counts_from_the_first_fault_not_the_queue(int faultMinutesAgo, bool givenUp)
     {
         // Queued long ago (a dataset outage this old would be given up at once), but Docker only now went away.
-        var client = OneMean();
+        var client = OneTask();
         client.Pending[0].CreationTime = Now.AddMinutes(-600);
         var faults = new DockerFaultTimes();
         if (faultMinutesAgo > 0) faults.FirstSeen(T1, Now.AddMinutes(-faultMinutesAgo));
         var execution = new FakeExecution(() => throw RunFault("docker-500"));
 
-        await Work(client, new ThrowingReader(), execution: execution, dockerFaults: faults).Execute();
+        await Work(client, new FindingReader(), execution: execution, dockerFaults: faults).Execute();
 
         Assert.Equal(givenUp ? new[] { "internal_error" } : [], client.Reports.Select(r => r.ErrorCode));
         Assert.Equal(givenUp ? 1 : 0, execution.Removed.Count);
@@ -1975,10 +1858,10 @@ public class DoFederatedTaskWorkTests
     [InlineData("docker-404")]
     public async Task Execute_substituted_execution_that_throws_reports_internal_error(string fault)
     {
-        var client = OneMean();
+        var client = OneTask();
         var execution = new FakeExecution(() => throw RunFault(fault));
 
-        await Work(client, new ThrowingReader(), execution: execution).Execute();
+        await Work(client, new FindingReader(), execution: execution).Execute();
 
         var report = Assert.Single(client.Reports);
         Assert.Equal(TesState.SYSTEMERROREnum, report.State);
@@ -1987,32 +1870,9 @@ public class DoFederatedTaskWorkTests
 
     // Code tasks: the poll moves the run one step per poll (start, check, collect) and never waits for it.
 
-    /// <summary>Finds the dataset and its schema.json, but throws if its data is read.</summary>
-    private sealed class CodeDatasetReader : IDatasetReader
+    private static FederatedAnalysisResultDocument AnalysisDocument(string taskId = T1) => new()
     {
-        public Task<DatasetResolveResult> ResolveAsync(string datasetName, CancellationToken ct) =>
-            Task.FromResult(DatasetResolveResult.Ok($"dataset/{datasetName}/data.csv", $"dataset/{datasetName}/schema.json"));
-
-        public Task<DatasetReadResult> ReadAsync(string fileKey, CancellationToken ct) => throw new InvalidOperationException("reader must not be called");
-    }
-
-    private static DoFederatedTaskWork CodeWork(FakeClient client, FakeExecution execution, IDatasetReader? reader = null,
-        FakeResultOutputStore? outputs = null, FakeOutputApproval? approval = null) =>
-        Work(client, reader ?? new CodeDatasetReader(), outputs: outputs, settings: Approving("python-runner:1"),
-            execution: execution, approval: approval);
-
-    private static FakeClient OneCodeTask(TesState state = TesState.QUEUEDEnum)
-    {
-        var client = new FakeClient();
-        var task = PendingCodeTask(T1);
-        task.State = state;
-        client.Pending.Add(task);
-        return client;
-    }
-
-    private static FederatedAnalysisResultDocument AnalysisDocument() => new()
-    {
-        TaskId = T1,
+        TaskId = taskId,
         Tre = "tre-a",
         StudyId = "study-1",
         Operation = FederatedTesProfile.RunAnalysisCommand,
@@ -2023,16 +1883,16 @@ public class DoFederatedTaskWorkTests
     };
 
     [Fact]
-    public async Task CodeTask_IsNoLongerRefused()
+    public async Task QueuedTask_IsMarkedRunningAndStarted()
     {
-        var client = OneCodeTask();
+        var client = OneTask();
         var execution = new FakeExecution(ExecutionResult.InProgress());
 
-        await CodeWork(client, execution).Execute();
+        await Work(client, execution).Execute();
 
         var run = Assert.Single(execution.Runs);
         Assert.Equal(T1, run.TaskId);
-        Assert.True(run.Spec.IsCodeTask);
+        Assert.Equal(client.Pending[0].Tags!["fed.code_sha256"], run.Spec.CodeSha256);
         Assert.Equal("dataset/cohort_2024/data.csv", run.FileKey);
         Assert.Equal(new[] { (T1, FederatedTaskPhase.Running) }, client.ProgressCalls);
         Assert.Empty(client.Calls);
@@ -2041,11 +1901,11 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task InProgress_KeepsPhaseAndSendsNoReport()
     {
-        var client = OneCodeTask(TesState.RUNNINGEnum);
+        var client = OneTask(TesState.RUNNINGEnum);
         var outputs = new FakeResultOutputStore();
         var execution = new FakeExecution(ExecutionResult.InProgress()) { HasRun = true };
 
-        await CodeWork(client, execution, outputs: outputs).Execute();
+        await Work(client, execution, outputs: outputs).Execute();
 
         Assert.Single(execution.Runs);
         Assert.Empty(client.Calls);
@@ -2057,12 +1917,12 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task ExistingRun_SkipsInputChecksAndRunningReport()
     {
-        var client = OneCodeTask(TesState.RUNNINGEnum);
+        var client = OneTask(TesState.RUNNINGEnum);
         var execution = new FakeExecution(ExecutionResult.InProgress()) { HasRun = true };
         var store = new FakeDatasetStore();
 
         // The dataset store is empty: input checks that ran would reject the task with dataset_not_found.
-        await CodeWork(client, execution, new DatasetReader(store, new FederatedTaskSettings())).Execute();
+        await Work(client, execution, new DatasetReader(store, new FederatedTaskSettings())).Execute();
 
         Assert.Equal(new[] { T1 }, execution.HasRunCalls);
         var run = Assert.Single(execution.Runs);
@@ -2076,10 +1936,10 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task AtCapacity_NoRunningReportAndNoStart()
     {
-        var client = OneCodeTask();
+        var client = OneTask();
         var execution = new FakeExecution(ExecutionResult.InProgress()) { CanStart = false };
 
-        await CodeWork(client, execution).Execute();
+        await Work(client, execution).Execute();
 
         Assert.Equal(1, execution.CanStartCalls);
         Assert.Empty(execution.Runs);
@@ -2090,10 +1950,10 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task RunFailure_WithInputCheckCode_IsExecutorError()
     {
-        var client = OneCodeTask(TesState.RUNNINGEnum);
+        var client = OneTask(TesState.RUNNINGEnum);
         var execution = new FakeExecution(ExecutionResult.RunFailed("dataset_not_found", "the runner found no dataset")) { HasRun = true };
 
-        await CodeWork(client, execution).Execute();
+        await Work(client, execution).Execute();
 
         var report = Assert.Single(client.Reports);
         Assert.Equal(TesState.EXECUTORERROREnum, report.State);
@@ -2104,11 +1964,11 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task ErrorReportNotAccepted_KeepsRun()
     {
-        var client = OneCodeTask(TesState.RUNNINGEnum);
+        var client = OneTask(TesState.RUNNINGEnum);
         client.Outcomes.Enqueue(new FederatedReportOutcome(503, null, null, null, null));
         var execution = new FakeExecution(ExecutionResult.RunFailed(FederatedTaskErrorCodes.Timeout, "the run took too long")) { HasRun = true };
 
-        await CodeWork(client, execution).Execute();
+        await Work(client, execution).Execute();
 
         Assert.Single(client.Reports);
         Assert.Empty(execution.Removed);
@@ -2120,11 +1980,11 @@ public class DoFederatedTaskWorkTests
     [InlineData(409, FederatedTaskErrorCodes.TaskCanceling)]
     public async Task ErrorReportAccepted_RemovesRun(int status, string? errorCode)
     {
-        var client = OneCodeTask(TesState.RUNNINGEnum);
+        var client = OneTask(TesState.RUNNINGEnum);
         client.Outcomes.Enqueue(new FederatedReportOutcome(status, errorCode, null, null, null));
         var execution = new FakeExecution(ExecutionResult.RunFailed(FederatedTaskErrorCodes.Timeout, "the run took too long")) { HasRun = true };
 
-        await CodeWork(client, execution).Execute();
+        await Work(client, execution).Execute();
 
         Assert.Equal(TesState.EXECUTORERROREnum, Assert.Single(client.Reports).State);
         Assert.Equal(new[] { T1 }, execution.Removed);
@@ -2133,11 +1993,11 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task ErrorReportBusy_KeepsRun()
     {
-        var client = OneCodeTask(TesState.RUNNINGEnum);
+        var client = OneTask(TesState.RUNNINGEnum);
         client.Outcomes.Enqueue(new FederatedReportOutcome(409, FederatedTaskErrorCodes.TaskBusy, null, null, null));
         var execution = new FakeExecution(ExecutionResult.RunFailed(FederatedTaskErrorCodes.RunFailed, "the code failed")) { HasRun = true };
 
-        await CodeWork(client, execution).Execute();
+        await Work(client, execution).Execute();
 
         Assert.Empty(execution.Removed);
     }
@@ -2145,12 +2005,12 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task AnalysisSuccess_SavedThenRunRemoved()
     {
-        var client = OneCodeTask(TesState.RUNNINGEnum);
+        var client = OneTask(TesState.RUNNINGEnum);
         var outputs = new FakeResultOutputStore();
         var document = AnalysisDocument();
         var execution = new FakeExecution(ExecutionResult.Ok(document)) { HasRun = true, Outputs = outputs };
 
-        await CodeWork(client, execution, outputs: outputs).Execute();
+        await Work(client, execution, outputs: outputs).Execute();
 
         var expected = FederatedResultDocumentJson.SerializeAnalysis(document);
         Assert.Equal(expected, outputs.Files[T1]);
@@ -2164,13 +2024,13 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task Cancel_RemovesRun()
     {
-        var client = OneCodeTask(TesState.RUNNINGEnum);
+        var client = OneTask(TesState.RUNNINGEnum);
         Canceling(client.Pending[0]);
         var outputs = new FakeResultOutputStore();
         outputs.Files[T1] = Encoding.UTF8.GetBytes("{\"schemaVersion\":1}");
         var execution = new FakeExecution { HasRun = true, Outputs = outputs };
 
-        await CodeWork(client, execution, outputs: outputs).Execute();
+        await Work(client, execution, outputs: outputs).Execute();
 
         Assert.Equal(new[] { T1 }, execution.Removed);
         // The run is removed before the result.
@@ -2183,10 +2043,10 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task RunThatThrows_ReportsInternalErrorAndRemovesRun()
     {
-        var client = OneCodeTask(TesState.RUNNINGEnum);
+        var client = OneTask(TesState.RUNNINGEnum);
         var execution = new FakeExecution(() => throw new InvalidOperationException("docker crashed")) { HasRun = true };
 
-        await CodeWork(client, execution).Execute();
+        await Work(client, execution).Execute();
 
         var report = Assert.Single(client.Reports);
         Assert.Equal(TesState.SYSTEMERROREnum, report.State);
@@ -2197,11 +2057,11 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task RunThatThrows_ErrorReportNotAccepted_KeepsRun()
     {
-        var client = OneCodeTask(TesState.RUNNINGEnum);
+        var client = OneTask(TesState.RUNNINGEnum);
         client.Outcomes.Enqueue(new FederatedReportOutcome(503, null, null, null, null));
         var execution = new FakeExecution(() => throw new InvalidOperationException("docker crashed")) { HasRun = true };
 
-        await CodeWork(client, execution).Execute();
+        await Work(client, execution).Execute();
 
         Assert.Single(client.Reports);
         Assert.Empty(execution.Removed);
@@ -2210,11 +2070,11 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task RunStoreFailure_PastGiveUpWindow_ReportsAndRemovesRun()
     {
-        var client = OneCodeTask(TesState.RUNNINGEnum);
+        var client = OneTask(TesState.RUNNINGEnum);
         client.Pending[0].CreationTime = Now.AddMinutes(-600);
         var execution = new FakeExecution(() => throw new DatasetStoreException("staging failed", new IOException("store down"))) { HasRun = true };
 
-        await CodeWork(client, execution).Execute();
+        await Work(client, execution).Execute();
 
         Assert.Equal("internal_error", Assert.Single(client.Reports).ErrorCode);
         Assert.Equal(new[] { T1 }, execution.Removed);
@@ -2223,10 +2083,10 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task RunStoreFailure_WithinGiveUpWindow_KeepsRun()
     {
-        var client = OneCodeTask(TesState.RUNNINGEnum);
+        var client = OneTask(TesState.RUNNINGEnum);
         var execution = new FakeExecution(() => throw new DatasetStoreException("staging failed", new IOException("store down"))) { HasRun = true };
 
-        await CodeWork(client, execution).Execute();
+        await Work(client, execution).Execute();
 
         Assert.Empty(client.Calls);
         Assert.Empty(execution.Removed);
@@ -2235,10 +2095,10 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task RunningCodeTask_WithoutRun_IsStartedAgain()
     {
-        var client = OneCodeTask(TesState.RUNNINGEnum);
+        var client = OneTask(TesState.RUNNINGEnum);
         var execution = new FakeExecution(ExecutionResult.InProgress());
 
-        await CodeWork(client, execution).Execute();
+        await Work(client, execution).Execute();
 
         var run = Assert.Single(execution.Runs);
         Assert.Equal("dataset/cohort_2024/data.csv", run.FileKey);
@@ -2250,13 +2110,13 @@ public class DoFederatedTaskWorkTests
     public async Task Sweep_GetsThePendingTaskIdsInCanonicalForm()
     {
         var client = new FakeClient();
-        var task = PendingCodeTask(T1.ToUpperInvariant());
+        var task = PendingTask(T1.ToUpperInvariant());
         client.Pending.Add(task);
-        var bad = PendingCodeTask("not-a-guid");
+        var bad = PendingTask("not-a-guid");
         client.Pending.Add(bad);
         var execution = new FakeExecution(ExecutionResult.InProgress());
 
-        await CodeWork(client, execution).Execute();
+        await Work(client, execution).Execute();
 
         Assert.Equal(new[] { T1 }, Assert.Single(execution.Sweeps));
     }
@@ -2267,7 +2127,7 @@ public class DoFederatedTaskWorkTests
         var client = new FakeClient();
         var execution = new FakeExecution();
 
-        await CodeWork(client, execution).Execute();
+        await Work(client, execution).Execute();
 
         Assert.Empty(Assert.Single(execution.Sweeps));
     }
@@ -2275,10 +2135,10 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task SweepFailure_DoesNotStopPoll()
     {
-        var client = OneCodeTask();
+        var client = OneTask();
         var execution = new FakeExecution(ExecutionResult.InProgress()) { ThrowOnSweep = true };
 
-        await CodeWork(client, execution).Execute();
+        await Work(client, execution).Execute();
 
         Assert.Single(execution.Sweeps);
         Assert.Single(execution.Runs);
@@ -2287,25 +2147,14 @@ public class DoFederatedTaskWorkTests
     [Fact]
     public async Task EgressRegistration_IncludesCodeSha()
     {
-        var client = OneCodeTask(TesState.RUNNINGEnum);
+        var client = OneTask(TesState.RUNNINGEnum);
         var approval = new FakeOutputApproval();
         var execution = new FakeExecution(ExecutionResult.Ok(AnalysisDocument())) { HasRun = true };
 
-        await CodeWork(client, execution, approval: approval).Execute();
+        await Work(client, execution, approval: approval).Execute();
 
         var codeSha = client.Pending[0].Tags!["fed.code_sha256"];
         Assert.EndsWith($" code sha256 {codeSha}", approval.Registered[T1].Name);
-    }
-
-    [Fact]
-    public async Task EgressRegistration_OfOperationTask_HasNoCodeSha()
-    {
-        var client = OneMean();
-        var approval = new FakeOutputApproval();
-
-        await Work(client, new DatasetReader(Store(), new FederatedTaskSettings()), approval: approval).Execute();
-
-        Assert.DoesNotContain("code sha256", approval.Registered[T1].Name);
     }
 
     /// <summary>
@@ -2353,10 +2202,10 @@ public class DoFederatedTaskWorkTests
         [Fact]
         public async Task RunningCodeTask_WithoutRun_LogsRestartWarning()
         {
-            var client = OneCodeTask(TesState.RUNNINGEnum);
+            var client = OneTask(TesState.RUNNINGEnum);
             var execution = new FakeExecution(ExecutionResult.InProgress());
 
-            var events = await Logged("starting it again", () => CodeWork(client, execution).Execute());
+            var events = await Logged("starting it again", () => Work(client, execution).Execute());
 
             Assert.Equal(Serilog.Events.LogEventLevel.Warning, Assert.Single(events).Level);
         }
@@ -2366,21 +2215,10 @@ public class DoFederatedTaskWorkTests
         [InlineData(TesState.RUNNINGEnum, true)]
         public async Task RestartWarning_OnlyForRunningCodeTaskWithoutRun(TesState state, bool hasRun)
         {
-            var client = OneCodeTask(state);
+            var client = OneTask(state);
             var execution = new FakeExecution(ExecutionResult.InProgress()) { HasRun = hasRun };
 
-            var events = await Logged("starting it again", () => CodeWork(client, execution).Execute());
-
-            Assert.Empty(events);
-        }
-
-        [Fact]
-        public async Task RestartWarning_NotForRunningOperationTask()
-        {
-            var client = OneMean();
-            client.Pending[0].State = TesState.RUNNINGEnum;
-
-            var events = await Logged("starting it again", () => Work(client, Reader()).Execute());
+            var events = await Logged("starting it again", () => Work(client, execution).Execute());
 
             Assert.Empty(events);
         }
@@ -2389,9 +2227,9 @@ public class DoFederatedTaskWorkTests
         public async Task Execute_without_approved_images_logs_once_per_poll()
         {
             var client = new FakeClient();
-            client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
-            client.Pending.Add(PendingTask(T2, "cohort_2024", "count", null));
-            client.Pending.Add(PendingTask("33333333-3333-3333-3333-333333333333", "cohort_2024", "count", null));
+            client.Pending.Add(PendingTask(T1));
+            client.Pending.Add(PendingTask(T2));
+            client.Pending.Add(PendingTask("33333333-3333-3333-3333-333333333333"));
 
             var events = await Logged("ApprovedImages", () => Work(client, Store(), Approving()).Execute());
 
@@ -2402,8 +2240,8 @@ public class DoFederatedTaskWorkTests
         public async Task Execute_without_egress_credentials_logs_once_per_poll()
         {
             var client = new FakeClient();
-            client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
-            client.Pending.Add(PendingTask(T2, "cohort_2024", "count", null));
+            client.Pending.Add(PendingTask(T1));
+            client.Pending.Add(PendingTask(T2));
 
             var events = await Logged("FederatedEgressSettings", () =>
                 Work(client, Reader(), approval: new FakeOutputApproval { AutoApprove = false },
@@ -2418,10 +2256,10 @@ public class DoFederatedTaskWorkTests
         public async Task Execute_saved_result_whose_image_is_no_longer_approved_is_released_with_a_warning()
         {
             var client = new FakeClient();
-            client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+            client.Pending.Add(PendingTask(T1));
 
             var events = await Logged("no longer approved", () =>
-                Work(client, new ThrowingReader(), outputs: SavedResult(), settings: Approving("other:1")).Execute());
+                Work(client, new FindingReader(), outputs: SavedResult(), settings: Approving("other:1")).Execute());
 
             // Releasing is output approval's call, not the input checks'; the site is told the image check was skipped.
             Assert.Equal(TesState.COMPLETEEnum, Assert.Single(client.Reports).State);
@@ -2432,10 +2270,10 @@ public class DoFederatedTaskWorkTests
         public async Task Execute_saved_result_whose_image_is_approved_is_released_without_a_warning()
         {
             var client = new FakeClient();
-            client.Pending.Add(PendingTask(T1, "cohort_2024", "count", null));
+            client.Pending.Add(PendingTask(T1));
 
             var events = await Logged("no longer approved", () =>
-                Work(client, new ThrowingReader(), outputs: SavedResult()).Execute());
+                Work(client, new FindingReader(), outputs: SavedResult()).Execute());
 
             Assert.Equal(TesState.COMPLETEEnum, Assert.Single(client.Reports).State);
             Assert.Empty(events);
@@ -2445,12 +2283,12 @@ public class DoFederatedTaskWorkTests
         public async Task Execute_saved_result_of_a_task_without_an_image_is_released_without_a_warning()
         {
             var client = new FakeClient();
-            var task = PendingTask(T1, "cohort_2024", "count", null);
+            var task = PendingTask(T1);
             task.Executors = null;
             client.Pending.Add(task);
 
             var events = await Logged("no longer approved", () =>
-                Work(client, new ThrowingReader(), outputs: SavedResult(), settings: Approving("other:1")).Execute());
+                Work(client, new FindingReader(), outputs: SavedResult(), settings: Approving("other:1")).Execute());
 
             Assert.Equal(TesState.COMPLETEEnum, Assert.Single(client.Reports).State);
             Assert.Empty(events);

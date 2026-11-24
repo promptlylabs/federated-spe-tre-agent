@@ -50,11 +50,11 @@ public class FederatedTaskSettingsTests
     {
         var settings = Bind(new Dictionary<string, string?>
         {
-            ["FederatedTaskSettings:ApprovedImages:0"] = " 5s-tes/federated-ops:1 ",
+            ["FederatedTaskSettings:ApprovedImages:0"] = " python-runner:1 ",
             ["FederatedTaskSettings:ApprovedImages:1"] = "  ",
         });
 
-        Assert.Equal(["5s-tes/federated-ops:1"], settings.ApprovedImages);
+        Assert.Equal(["python-runner:1"], settings.ApprovedImages);
     }
 
     [Fact]
@@ -64,9 +64,9 @@ public class FederatedTaskSettingsTests
     [Fact]
     public void ApprovedImages_set_directly_are_trimmed_and_blank_entries_dropped()
     {
-        var settings = new FederatedTaskSettings { ApprovedImages = [" 5s-tes/federated-ops:1 ", "", "  "] };
+        var settings = new FederatedTaskSettings { ApprovedImages = [" python-runner:1 ", "", "  "] };
 
-        Assert.Equal(["5s-tes/federated-ops:1"], settings.ApprovedImages);
+        Assert.Equal(["python-runner:1"], settings.ApprovedImages);
     }
 
     [Fact]
@@ -74,10 +74,10 @@ public class FederatedTaskSettingsTests
     {
         var settings = Bind(new Dictionary<string, string?>
         {
-            ["FederatedTaskSettings:ApprovedImages"] = "5s-tes/federated-ops:1, other:2",
+            ["FederatedTaskSettings:ApprovedImages"] = "python-runner:1, other:2",
         });
 
-        Assert.Equal(["5s-tes/federated-ops:1", "other:2"], settings.ApprovedImages);
+        Assert.Equal(["python-runner:1", "other:2"], settings.ApprovedImages);
     }
 
     [Fact]
@@ -98,7 +98,6 @@ public class FederatedTaskSettingsTests
     [Theory]
     [InlineData("python-runner:1")]
     [InlineData("registry.example/spms/python-runner:1")]
-    [InlineData("5s-tes/federated-ops:1")]
     public void ApprovedImagesProblem_NullForKnownImageNames(string image) =>
         Assert.Null(new FederatedTaskSettings { ApprovedImages = [image] }.ApprovedImagesProblem());
 
@@ -107,21 +106,28 @@ public class FederatedTaskSettingsTests
         Assert.NotNull(new FederatedTaskSettings { ApprovedImages = ["pyhton-runner:1"] }.ApprovedImagesProblem());
 
     [Fact]
-    public void ApprovedImagesProblem_is_null_when_the_list_is_empty_or_has_the_profile_image()
+    public void ApprovedImagesProblem_is_null_when_the_list_is_empty_or_has_the_runner_image()
     {
         Assert.Null(new FederatedTaskSettings().ApprovedImagesProblem());
-        Assert.Null(new FederatedTaskSettings { ApprovedImages = ["other:1", FederatedTesProfile.ExecutorImage] }.ApprovedImagesProblem());
+        Assert.Null(new FederatedTaskSettings { ApprovedImages = ["other:1", "python-runner:1"] }.ApprovedImagesProblem());
     }
 
     [Fact]
-    public void ApprovedImagesProblem_names_the_profile_image_when_the_list_lacks_it()
+    public void ApprovedImagesProblem_names_the_runner_image_when_the_list_lacks_it()
     {
-        var warning = new FederatedTaskSettings { ApprovedImages = ["docker.io/5s-tes/federated-opz:1"] }.ApprovedImagesProblem();
+        var warning = new FederatedTaskSettings { ApprovedImages = ["docker.io/spms/python-runnr:1"] }.ApprovedImagesProblem();
 
         Assert.NotNull(warning);
         Assert.Contains("python-runner", warning);
-        Assert.Contains("federated-ops", warning);
+        Assert.DoesNotContain("federated-ops", warning);
         Assert.Contains("image_not_approved", warning);
+    }
+
+    [Fact]
+    public void ApprovedImagesProblem_IgnoresLeftoverOpsImage()
+    {
+        Assert.NotNull(new FederatedTaskSettings { ApprovedImages = ["5s-tes/federated-ops:1"] }.ApprovedImagesProblem());
+        Assert.Null(new FederatedTaskSettings { ApprovedImages = ["5s-tes/federated-ops:1", "python-runner:1"] }.ApprovedImagesProblem());
     }
 
     [Fact]
@@ -130,7 +136,7 @@ public class FederatedTaskSettingsTests
         // appsettings lists ApprovedImages:0; an environment variable FederatedTaskSettings__ApprovedImages overrides it.
         var settings = Bind(new Dictionary<string, string?>
         {
-            ["FederatedTaskSettings:ApprovedImages:0"] = "5s-tes/federated-ops:1",
+            ["FederatedTaskSettings:ApprovedImages:0"] = "python-runner:1",
             ["FederatedTaskSettings:ApprovedImages"] = "other:1",
         });
 

@@ -356,7 +356,7 @@ using (var scope = app.Services.CreateScope())
     }
 
     // Code tasks run through Docker. Don't fail startup if it is unreachable: code tasks are not run until it is
-    // back, and count and mean tasks do not need it. Checked once, as a hint for the site admin.
+    // back. Checked once, as a hint for the site admin.
     try
     {
         using var dockerPing = new CancellationTokenSource(TimeSpan.FromSeconds(10));
@@ -420,13 +420,11 @@ void AddDependencies(WebApplicationBuilder builder, ConfigurationManager configu
     builder.Services.AddScoped<IMinioTreHelper, MinioTreHelper>();
     builder.Services.AddScoped<IDatasetStore, MinioDatasetStore>();
     builder.Services.AddScoped<IDatasetReader, DatasetReader>();
-    // Code tasks run in containers through the Docker socket; count and mean tasks run in the Agent.
+    // Code tasks run in containers through the Docker socket.
     builder.Services.AddSingleton<IDockerClient>(sp =>
         new DockerClientConfiguration(new Uri(sp.GetRequiredService<FederatedTaskSettings>().DockerEndpoint)).CreateClient());
     builder.Services.AddScoped<ICodeRunner, DockerCodeRunner>();
-    builder.Services.AddScoped<OperationExecution>();
-    builder.Services.AddScoped<CodeExecution>();
-    builder.Services.AddScoped<IFederatedTaskExecution, FederatedTaskExecutionRouter>();
+    builder.Services.AddScoped<IFederatedTaskExecution, CodeExecution>();
     builder.Services.AddScoped<IResultOutputStore, MinioResultOutputStore>();
     builder.Services.AddScoped<IFederatedTokenSource, KeycloakFederatedTokenSource>();
     builder.Services.AddScoped<IFederatedTaskClient, FederatedTaskClient>();

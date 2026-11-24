@@ -291,6 +291,32 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             };
         }
 
+        /// <summary>
+        /// Builds a code task that passes <see cref="Parse"/>: the exact run-analysis command, the code inline, the
+        /// dataset, the result output and the fed.* tags with the code's SHA-256.
+        /// </summary>
+        public static TesTask BuildCodeTask(string dataset, string code, string studyId, string treName,
+            string image = "python-runner:1")
+        {
+            var dataPath = DataPathPrefix + dataset;
+            return new TesTask
+            {
+                Executors = [new TesExecutor { Image = image, Command = [RunAnalysisCommand, CodePath, dataPath, ResultPath] }],
+                Inputs =
+                [
+                    new TesInput { Path = CodePath, Type = TesFileType.FILEEnum, Content = code },
+                    new TesInput { Url = DatasetUrlScheme + dataset, Path = dataPath, Type = TesFileType.DIRECTORYEnum }
+                ],
+                Outputs = [new TesOutput { Path = ResultPath, Url = ResultUrl, Type = TesFileType.FILEEnum }],
+                Tags = new Dictionary<string, string>
+                {
+                    [SitesTag] = treName,
+                    [StudyIdTag] = studyId,
+                    [CodeSha256Tag] = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(code)))
+                }
+            };
+        }
+
         private static TaskFilter? ParseFilter(string text, out string? error)
         {
             // column:op:value; the value may itself contain ':'.

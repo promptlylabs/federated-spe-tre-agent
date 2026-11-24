@@ -22,7 +22,7 @@ namespace Agent.Api.Models
 
         /// <summary>
         /// File extensions (without the dot) that the upload policy allows to be uploaded. This does not
-        /// change what the dataset reader parses; it reads only .csv files.
+        /// change what the dataset reader finds; it finds only .csv files.
         /// </summary>
         public string[] AllowedExtensions { get; set; } = ["csv"];
 
@@ -84,19 +84,17 @@ namespace Agent.Api.Models
 
         /// <summary>
         /// A message for the site admin when the list is set but holds no image the Agent runs: an entry whose image name
-        /// (the last '/' segment, before the ':' tag) is python-runner or federated-ops. Every task is then rejected with
+        /// (the last '/' segment, before the ':' tag) is python-runner. Every task is then rejected with
         /// image_not_approved. That can be a deliberate refusal or a typo. The Agent cannot tell them apart, so it logs
         /// this as an error at startup but still applies the list. Null otherwise, and when the list is empty.
         /// </summary>
         public string? ApprovedImagesProblem() =>
-            ApprovedImages.Length == 0 || ApprovedImages.Any(image => KnownImageNames.Contains(ImageName(image)))
+            ApprovedImages.Length == 0 || ApprovedImages.Any(image => ImageName(image) == RunnerImageName)
                 ? null
-                : $"FederatedTaskSettings:ApprovedImages lists neither '{RunnerImageName}' nor '{OpsImageName}', the images federated tasks use, " +
+                : $"FederatedTaskSettings:ApprovedImages does not list '{RunnerImageName}', the image federated tasks use, " +
                   "so every federated task will be rejected with image_not_approved. If that is not intended, check the list for a typo.";
 
         private const string RunnerImageName = "python-runner";
-        private const string OpsImageName = "federated-ops";
-        private static readonly string[] KnownImageNames = [RunnerImageName, OpsImageName];
 
         private static string ImageName(string image)
         {

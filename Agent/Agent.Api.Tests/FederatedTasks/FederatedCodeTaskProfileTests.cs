@@ -58,6 +58,21 @@ public class FederatedCodeTaskProfileTests
     }
 
     [Fact]
+    public void BuildCodeTask_ParsesAsCodeTask()
+    {
+        const string code = "def site_analysis(df): return {'n': 0}\n";
+
+        var result = FederatedTesProfile.Parse(FederatedTesProfile.BuildCodeTask("cohort_2024", code, "study-1", "my-tre"));
+
+        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.Equal("run-analysis", result.Spec!.Operation);
+        Assert.Equal(Sha(code), result.Spec.CodeSha256);
+        Assert.Equal("cohort_2024", result.Spec.Dataset);
+        Assert.Equal("study-1", result.Spec.StudyId);
+        Assert.Equal("my-tre", result.Spec.TreName);
+    }
+
+    [Fact]
     public void Valid_code_task_parses_without_limits()
     {
         var task = ValidCodeTask();
