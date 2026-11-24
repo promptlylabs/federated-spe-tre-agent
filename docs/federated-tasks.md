@@ -1,14 +1,28 @@
 # Federated tasks
 
-The orchestrator (Submission.Api) queues a GA4GH TES task for one TRE. The TRE Agent (Agent.Api) polls for it, runs the researcher's Python code on a CSV dataset from the TRE bucket, in a locked-down container, holds the result until a hospital reviewer approves it in the Data Egress app, and then reports the result.
+The orchestrator (Submission.Api) takes a GA4GH TES task for a study and sends it to each hospital (TRE) the task names. The TRE Agent (Agent.Api) at each hospital polls for its part, runs the researcher's Python code on a CSV dataset from the TRE bucket, in a locked-down container, holds the result until a hospital reviewer approves it in the Data Egress app, and then reports the result.
 
 There is no DAAMS signing or approval gate on the orchestrator side yet.
 
 To try the flow locally, see [dev/federated](../dev/federated/README.md). It is a Docker Compose stack with both APIs, the Data Egress app, Keycloak, RustFS and a sample dataset.
 
+## Studies and versions
+
+- A **study** is `fed.study_id`. It collects versions over time.
+- A **study version** is one submission of code to the study's hospitals (`fed.sites`). Submission numbers versions 1, 2, 3… per study, and gives each a version ID. `Enqueue` returns the version ID.
+- A **hospital's part** of a version is a federated task, with its own task ID. Everything under "Flow" below happens per part: input checks, run, output approval, release or refusal, cancel cleanup. Each hospital sees and reports on only its own part.
+
+Fan-out. Every hospital gets a copy of the submitted task: the same code byte for byte, the same `fed.code_sha256` and `fed.study_id`, and the same dataset name, which each hospital resolves to its own copy. Only its `fed.sites` differs: it names that hospital alone. The version keeps the task as submitted. If any hospital in `fed.sites` is not registered, the whole submission is refused and nothing is stored, so no hospital starts.
+
+One open version per study. A version is `open` until every part is final (`released`, `rejected_by_input_checks`, `rejected_at_output_approval`, `failed` or `canceled`), or until it is cancelled. A submission for a study whose latest version is open gets 409 `study_version_open`, with the open version's ID. A cancelled version whose hospitals have not all confirmed yet is `canceling`: it no longer blocks a new version, and its hospitals' cleanup carries on in the background. Once every part is final the version is `ended`. Open, canceling and ended are worked out from the parts and the cancel time; nothing else is stored. Two submissions for one study at the same moment cannot both get a version: the version number is unique per study, so the loser reads the study again and gets 409.
+
+A cancelled version stops blocking at once because a hospital whose Agent is gone for good would otherwise block the study forever. It is safe: a canceling part can never release a result. At the hospital, each poll hands out canceling parts before queued ones, and the cleanup stops the old run first, so the old and new versions' code do not run together unless that cleanup fails partway (then the hospital's `MaxConcurrentRuns` and `MaxRunMinutes` bound it).
+
+TODO: refuse fewer than 2 hospitals at intake (ANZE-6130, with the version's timeout and overall state). Until then one hospital is accepted.
+
 ## Flow
 
-1. A `dare-control-admin` user calls `POST /api/FederatedTask/Enqueue` with a TES task. Submission validates it against the federated profile. The task is stored at the phase `queued`. The response holds the task id.
+1. A `dare-control-admin` user calls `POST /api/FederatedTask/Enqueue` with a TES task. Submission validates it against the federated profile and creates a study version with one task per hospital (see "Studies and versions"), each at the phase `queued`. The response is `{ "id": "<versionId>" }`; `GetStudyVersion` gives each hospital's task ID.
 2. The Agent job `Run Federated Tasks` (`JobSettings:FederatedTaskJobName`) runs every `JobSettings:federatedTaskSchedule` minutes. It calls `GET /api/FederatedTask/GetPendingTasksForTre`. The TRE is taken from the token.
 3. The Agent checks the task against the profile, then runs the hospital's input checks in this order: the executor image is in `ApprovedImages` (see "Approved images"), and the one `.csv` under `dataset/<name>/` is in the dataset bucket, and a `schema.json` is in the same folder. It reads no data values yet. If a check fails, or there is no file or more than one, the task is rejected (`rejected_by_input_checks`). If `ApprovedImages` is not set, the task still gets the profile check, but the hospital's checks do not run. The task is not run or reported, and keeps its phase. A `queued` task rejected here never reaches `running`. A resumed `running` task is checked again, so if its dataset was removed in the meantime it is rejected with a `running_at` in its history. If the dataset bucket cannot be listed, the task keeps its phase and is tried again at the next poll, until `DatasetUnreachableGiveUpMinutes` (default 60) have passed since it was queued, or since the Agent started if that is later. A task that waited while the Agent was down, or while `ApprovedImages` was not set, so gets the full time. Each restart of the Agent gives pending tasks the full time again. After that it fails with `SYSTEM_ERROR` and `internal_error`, so a bucket that is wrongly configured or denied does not leave tasks queued for good.
 4. For a `queued` task, the Agent calls `POST /api/FederatedTask/ReportProgress` with the phase `running`. Submission moves the task to `running`. Then the Agent reads the CSV and `schema.json` to stage them for the run. If the bucket fails during the read, or Docker has a fault that may pass by itself (the daemon is down or restarting, a server error, a broken socket or a timeout), the task stays `running` and is resumed at the next poll, with the same `DatasetUnreachableGiveUpMinutes` limit as a failed listing (for a Docker fault, counted from the first fault, so a task that waited long in the queue still gets the whole time). A finished run is kept meanwhile, so its result is collected once Docker is back. A Docker error that waiting can't fix (for example an image that doesn't exist) is reported at once (`internal_error`). A finished run is kept meanwhile, so its result is collected once Docker is back. A Docker error that waiting can't fix (for example an image that doesn't exist) is reported at once (`internal_error`).
@@ -18,13 +32,13 @@ To try the flow locally, see [dev/federated](../dev/federated/README.md). It is 
 8. A hospital reviewer opens the request in the Egress app. The page shows the study ID, the code that ran (image and command) and the result in full, with its SHA-256. The reviewer approves, or rejects with a reason. The Egress app sends the decision to the Agent, which records it in `federated-outputs/<taskId>.review.json`.
 9. Right after recording the decision, the Agent acts on it in a background job. The poll acts on a recorded decision too, in case the job could not. On approval it hashes the saved file again. If the hash equals the reviewed SHA-256, it releases the file: `POST /api/FederatedTask/ReportResult` with the file as an upload. Submission checks the caller and the file, and stores it in the orchestrator bucket `federated-results`. The task moves to `released`. On rejection the Agent reports `CANCELED` with `RejectedAt` `output_approval`, the code `rejected_by_reviewer` and the reviewer's reason as the message, and no file. If the saved file no longer matches the reviewed one, or is gone, the Agent reports `SYSTEM_ERROR` with `result_changed_after_review` and no file.
 10. After a release, the Agent compares the SHA-256 that Submission stored with the SHA-256 of its own copy. If they match, it adds the metadata `released-key` and `released-sha256` to the TRE copy.
-11. A `dare-control-admin` user calls `GET /api/FederatedTask/GetTask?id=<taskId>` for the phase, the state and where the result is stored, and `GET /api/FederatedTask/GetTaskResult?id=<taskId>` for the file.
+11. A `dare-control-admin` user calls `GET /api/FederatedTask/GetStudyVersion?id=<versionId>` (or `GetStudy`) for the version and each hospital's phase, `GET /api/FederatedTask/GetTask?id=<taskId>` for one hospital's phase, state and where its result is stored, and `GET /api/FederatedTask/GetTaskResult?id=<taskId>` for that hospital's file.
 
 If the Agent cannot save the file, or the registration with the Egress app fails, or the release fails (network error, 5xx, or a 4xx that is not listed under "Reporting a result"), the task stays `running` and the Agent tries again at the next poll. A task that fails before there is a file (for example `dataset_not_found` or `timeout`) is reported as a rejection or a failure, with no file, and does not go through save and release.
 
 `GetPendingTasksForTre` returns the tasks that are not finished: `canceling` first, then `running`, then `queued`, then `waiting_for_output_approval`, oldest first inside each group. For a `waiting_for_output_approval` task the Agent reads the review record and acts on the decision, if there is one (see "Output approval"). A `running` task was marked by an earlier poll that did not finish. The Agent resumes it, and does not report `running` again. If the result file from the earlier poll is in the TRE bucket, the Agent reuses it. Otherwise it runs the task again from the start, so every step the Agent does before it reports must be safe to do twice. The Agent skips, and logs, a pending task in any state other than `QUEUED` or `RUNNING`. A `RUNNING` task is either `running` or `waiting_for_output_approval`; the Agent reads the phase to tell which.
 
-`GetPendingTasksForTre`, `ReportProgress` and `ReportResult` accept only the TRE Agent's service account (role `dare-tre-admin`). See "Reporting a result". `Enqueue`, `GetTask` and `GetTaskResult` need `dare-control-admin`.
+`GetPendingTasksForTre`, `ReportProgress` and `ReportResult` accept only the TRE Agent's service account (role `dare-tre-admin`). See "Reporting a result". `Enqueue`, `GetStudy`, `GetStudyVersion`, `Cancel`, `GetTask` and `GetTaskResult` need `dare-control-admin`.
 
 ```mermaid
 sequenceDiagram
@@ -40,7 +54,7 @@ sequenceDiagram
     end
 
     Admin->>Sub: POST Enqueue (TES task)
-    Sub-->>Admin: task id (phase queued)
+    Sub-->>Admin: version id (one task per hospital, phase queued)
     loop every federatedTaskSchedule minutes
         Agent->>Sub: GET GetPendingTasksForTre (TRE from token)
         Sub-->>Agent: running, queued and waiting tasks for this TRE
@@ -119,12 +133,14 @@ Every 4xx from these endpoints has the same JSON body. Its keys are the same as 
 | 400 | `invalid_result` | `ReportResult`: the result file is not valid, or does not match the task. |
 | 400 | `result_too_large` | `ReportResult`: the result file is over 65536 bytes. |
 | 404 | `task_not_found` | No such task. `ReportProgress` and `ReportResult` also return this for a task that belongs to another TRE. |
+| 404 | `study_not_found` | `GetStudy`, `GetStudyVersion` or `Cancel`: no such study, version or version ID. |
 | 404 | `result_not_found` | `GetTaskResult`: the task is not `released`. |
 | 409 | `task_already_reported` | `ReportResult` or `ReportProgress` for a task that is already final. When the task is `released`, the body also has `result_sha256` and `result_key`. |
 | 409 | `invalid_transition` | `ReportProgress` asks to go back to an earlier phase. |
-| 409 | `task_busy` | `ReportProgress`, `ReportResult` or `Cancel` lost a race with other reports for the same task three times in a row. Nothing was recorded. Send it again. |
-| 409 | `task_canceling` | `ReportResult` or `ReportProgress` for a task the orchestrator is cancelling. Only the cancel confirmation (`ReportProgress` with `canceled`) is accepted. See "Cancelling a task". |
-| 409 | `task_already_finished` | `Cancel` for a task that is already in a final phase. |
+| 409 | `study_version_open` | `Enqueue` for a study whose latest version is still open. The body also has `version_id`, the open version. Cancel it or wait for it to end. |
+| 409 | `task_busy` | `ReportProgress`, `ReportResult` or `Cancel` lost a race with other reports for the same task or version three times in a row; or `Enqueue` lost the version number to other submissions of the same study three times. Nothing was recorded. Send it again. |
+| 409 | `task_canceling` | `ReportResult` or `ReportProgress` for a task the orchestrator is cancelling. Only the cancel confirmation (`ReportProgress` with `canceled`) is accepted. See "Cancelling a study version". |
+| 409 | `task_already_finished` | `Cancel` for a version that ended without being cancelled: every part is already final. |
 | 500 | `internal_error` | `GetTaskResult`: the stored file does not match its SHA-256. The file is not returned. |
 | 503 | `storage_unavailable` | The orchestrator bucket cannot be reached, or `ReportResult` lost a race and could not read the task again. For `ReportResult` the task keeps its phase and the Agent sends the report again at the next poll. |
 
@@ -155,21 +171,51 @@ A `ReportResult` with state `EXECUTOR_ERROR`, `SYSTEM_ERROR` or `CANCELED` must 
 
 The Agent sends `running` when it picks a `queued` task up, `waiting_for_output_approval` after it has registered the result with the Egress app, and `canceled` once it has cleaned up a cancelled task.
 
-### Cancelling a task
+### Reading a study
 
-`POST /api/FederatedTask/Cancel?id=<taskId>` cancels a task. It needs the `dare-control-admin` role. A 200 response is `{ "phase": "<the phase the task is at now>" }`.
+`GET /api/FederatedTask/GetStudy?studyId=<studyId>[&version=<n>]` returns the study's latest version, or version `n`. `GET /api/FederatedTask/GetStudyVersion?id=<versionId>` returns a version by the ID `Enqueue` gave. Both need `dare-control-admin`, and answer 404 `study_not_found` for an unknown study, version or ID. This is plain JSON, not TES:
 
-- A `queued` task, which no hospital has picked up, moves straight to `canceled`. If the Agent picked it up at the same moment, its `running` report is refused, and it does not run the task.
-- A `running` or `waiting_for_output_approval` task moves to `canceling`. It stays in `GetPendingTasksForTre` (listed first, even if the TRE was renamed since) until the hospital confirms. A TRE rename does not fail it.
-- A `canceling` task: 200, nothing changes. A final task: 409 `task_already_finished`. An unknown task: 404 `task_not_found`.
+```json
+{
+  "study_id": "study-001",
+  "version": 2,
+  "version_id": "5f0c9a52-2b8e-4c41-9d0e-7a3b1c6e8f20",
+  "submitted_at": "2026-11-24T18:00:00Z",
+  "code_sha256": "<lowercase hex SHA-256 of the code>",
+  "state": "open",
+  "canceled_at": null,
+  "versions": [1, 2],
+  "hospitals": [
+    { "tre": "hosp-a", "task_id": "0b9a3c4e-6f1d-4c1e-9a52-3d7b8e2f1a10", "phase": "released", "state": "COMPLETE",
+      "times": { "queued_at": "…", "running_at": "…", "waiting_for_output_approval_at": "…", "released_at": "…" },
+      "result_sha256": "<sha256 of the released file>" },
+    { "tre": "hosp-b", "task_id": "7c2d1e0f-3a4b-4c5d-8e9f-0a1b2c3d4e5f", "phase": "queued", "state": "QUEUED",
+      "times": { "queued_at": "…" } }
+  ]
+}
+```
+
+- `state` is `open`, `canceling` or `ended` (see "Studies and versions"). `canceled_at` is set once the version is cancelled.
+- `versions` lists every version number of the study; only `GetStudy` sends it.
+- `hospitals` is in `fed.sites` order. `phase`, `state` and `times` are each hospital's task phase, TES state and `<phase>_at` times, as in "Task phases and state". `error_code` is there for a rejected or failed part, `result_sha256` for a released one. Result content never is; read it with `GetTaskResult` and the part's `task_id`.
+
+### Cancelling a study version
+
+`POST /api/FederatedTask/Cancel?id=<versionId>` cancels a whole study version. It needs the `dare-control-admin` role. It records the version's cancel time and cancels every unfinished part, in one save. A 200 response is the version, as `GetStudyVersion` returns it. There is no cancel of one hospital's part from the API.
+
+- A `queued` part, which no hospital has picked up, moves straight to `canceled`. If the Agent picked it up at the same moment, its `running` report is refused, and it does not run the task.
+- A `running` or `waiting_for_output_approval` part moves to `canceling`. It stays in `GetPendingTasksForTre` (listed first, even if the TRE was renamed since) until the hospital confirms. A TRE rename does not fail it.
+- Final parts keep their phase. A version with every part final after the cancel is `ended`; one with a part still `canceling` is `canceling`. Either way it no longer blocks a new version of the study.
+- A version already cancelled: 200, nothing changes. A version that ended without a cancel: 409 `task_already_finished`. An unknown version ID: 404 `study_not_found`.
 
 While a task is `canceling`, Submission refuses every `ReportResult` (an approved result, a rejection or an error) with 409 `task_canceling`, before any file is written. So a reviewer's decision made at the same moment as a cancel never releases the result: the task can only end `canceled`.
 
 On a `canceling` task, the Agent:
 
-1. withdraws the review if it is still pending, so no decision is accepted any more, and closes the request in the Egress app (an Egress error stops here, and the next poll tries again);
-2. deletes the saved result from `federated-outputs` (a store error stops here, and the next poll tries again);
-3. reports `ReportProgress` with `canceled`. Before Submission accepts it, it deletes any result file stored for the task (one can exist if a cancel raced a result report). A storage error answers 503 `storage_unavailable`, and the Agent confirms again at the next poll.
+1. stops and removes the run of the task's code, if there is one (a Docker error stops here, and the next poll tries again). This comes first so the old code stops even when the Egress app is unreachable, since a new version of the study may already be queued;
+2. withdraws the review if it is still pending, so no decision is accepted any more, and closes the request in the Egress app (an Egress error stops here, and the next poll tries again);
+3. deletes the saved result from `federated-outputs` (a store error stops here, and the next poll tries again);
+4. reports `ReportProgress` with `canceled`. Before Submission accepts it, it deletes any result file stored for the task (one can exist if a cancel raced a result report). A storage error answers 503 `storage_unavailable`, and the Agent confirms again at the next poll.
 
 Each part is safe to repeat, so if one fails the next poll does them again. The review record and its withdrawn marker stay in the TRE as the audit of what was reviewed; they hold no data. There is no standard TES cancel yet. `POST /tasks/{id}:cancel`, for DAAMS, is planned with the TES API task and will apply the same rules.
 
@@ -264,7 +310,7 @@ A code task runs the researcher's Python file with `run-analysis` in an approved
 | `outputs` | Exactly 1: `path` `/outputs/result.json`, `type` `FILE`, `url` `result://`. TES requires a `url`; any real address is refused, so no runtime can upload the result past output approval. The result goes through output approval at the hospital and back to Submission, as for every task. |
 | `volumes` | Must be null or empty. |
 | `resources` | May be left out. If given, `cpu_cores`, `ram_gb` and `disk_gb` must each be more than 0 and at most `MaxCpuCores`, `MaxRamGb` and `MaxDiskGb`. `zones`, `preemptible` and `backend_parameters` must not be set. |
-| `tags` | `fed.sites` names the TRE the task runs at. For now it must name exactly one existing TRE; study fan-out will let a study name several. It is trimmed and lowercased, and must not contain `\|`, which is kept for that list. `fed.study_id` must not be empty. Both are at most 1024 characters, the limit for strings in the result document. `fed.code_sha256` is required: the lowercase hex SHA-256 of the code's UTF-8 bytes. It must match the code, so the hash the hospital reviews is the hash of the code that runs. Tags without the `fed.` prefix are kept and ignored. |
+| `tags` | `fed.sites` lists the hospitals (TREs) the study version goes to, separated by `\|`, for example `hosp-a\|hosp-b`. Each entry is trimmed and lowercased. An empty entry, a TRE named twice or more than 20 TREs is refused (`invalid_task`), and so is the whole submission if any entry is not a registered TRE. One TRE is accepted for now (see "Studies and versions"). `fed.study_id` must not be empty. Both are at most 1024 characters, the limit for strings in the result document. `fed.code_sha256` is required: the lowercase hex SHA-256 of the code's UTF-8 bytes. It must match the code, so the hash the hospital reviews is the hash of the code that runs. Tags without the `fed.` prefix are kept and ignored. |
 | `name`, `description` | Accepted and ignored. |
 
 The dataset name must match `^[a-z0-9][a-z0-9_-]{0,62}$`.
@@ -297,7 +343,7 @@ Example:
 }
 ```
 
-The code reaches only the hospital the task is for, as it was submitted. The code travels inside the task. Submission checks its hash at intake and stores the task once. The stored task is init-only in code and EF refuses to save a change to it; bulk updates and raw SQL are not covered by that guard; Submission runs none on this column (the only raw SQL on these rows is in an old migration and does not touch the task). Each Agent gets only its own TRE's tasks, through `GetPendingTasksForTre` with its service account. As part of its profile check, before any input check or data read, the Agent recomputes the hash. If the code no longer matches `fed.code_sha256`, the task is rejected (`rejected_by_input_checks`, `invalid_task`, "tag 'fed.code_sha256' does not match the code"), and no data is read.
+The code reaches only the hospitals in `fed.sites`, as it was submitted. The code travels inside the task. Submission checks its hash at intake, and stores the task once for the version and once for each hospital's part. The stored task is init-only in code and EF refuses to save a change to it; bulk updates and raw SQL are not covered by that guard; Submission runs none on this column (the only raw SQL on these rows is in an old migration and does not touch the task). Each Agent gets only its own TRE's tasks, through `GetPendingTasksForTre` with its service account. As part of its profile check, before any input check or data read, the Agent recomputes the hash. If the code no longer matches `fed.code_sha256`, the task is rejected (`rejected_by_input_checks`, `invalid_task`, "tag 'fed.code_sha256' does not match the code"), and no data is read.
 
 What the hash check catches: code changed on the way or in storage without its tag. What it does not catch: someone who can write to Submission's database could change both the code and its tag, because they are stored together. The orchestrator's database is trusted for the PoC. Closing that gap needs a signature made at intake that the Agent can verify, which is not built yet.
 
@@ -457,7 +503,7 @@ TODO: researcher access scoped by study once study_id → project mapping exists
 
 Set `TreName` in the Agent's settings to the name of the TRE as registered in Submission. The shipped default is `SAIL`, so every other site must override it. The comparison ignores case.
 
-The Agent does not run a task whose `fed.sites` is not its own `TreName`. It logs an error, does not read the dataset, and does not report, so the task stays as it is and runs once `TreName` is fixed. If `TreName` is empty, the Agent logs an error and runs no task.
+The Agent does not run a task whose `fed.sites` is not exactly its own `TreName` (a task naming several hospitals is never a hospital's part, so it is not run either). It logs an error, does not read the dataset, and does not report, so the task stays as it is and runs once `TreName` is fixed. If `TreName` is empty, the Agent logs an error and runs no task.
 
 If a TRE is renamed in Submission, its unfinished tasks (`queued`, `running` or `waiting_for_output_approval`) that were enqueued under the old name fail at once with the phase `failed`, `SYSTEM_ERROR` and `tre_renamed`. Enqueue them again under the new name. A change of case only (`My-TRE` to `my-tre`) is not a rename. If the name is changed directly in the database instead, the old tasks are not failed, but they are no longer sent to the Agent.
 
@@ -597,6 +643,8 @@ Submission.Api keeps result files in its own RustFS, not in the TRE and not in t
 Upgrading from inline results: the migration `FederatedResultFiles` drops the old `ResultValue` and `ResultRowCount` columns. A task that was COMPLETE before the migration keeps its state but has no result file, so `GetTaskResult` returns 404 `result_not_found` for it. The values cannot be recovered, not even by a rollback. Deploy Agent.Api and Submission.Api together.
 
 Upgrading to task phases: deploy Submission.Api before (or together with) the Agent. A new Agent gets 404 from an old Submission's `ReportProgress` and does not run tasks. The migration `AddFederatedTaskPhases` fills in the phase of existing rows from their TES state. Input-check errors reported before this change stay `failed`.
+
+Upgrading to study versions: the migration `AddFederatedStudyVersions` deletes every existing federated task, with its phase history, because a task now belongs to a study version and old tasks have none. Their result files stay in `federated-results` but no API call reaches them. `Enqueue` now returns a version ID, and `Cancel` takes one.
 
 TODO: store results in the project's output bucket once study_id → project mapping exists
 

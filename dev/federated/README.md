@@ -17,7 +17,7 @@ docker compose -f dev/federated/docker-compose.yml down -v         # stop and de
 ```
 
 On start, three one-shot steps prepare the test data:
-- `seed-tre` registers the TRE `my-tre` in Submission;
+- `seed-tre` registers the TREs `my-tre` and `other-tre` in Submission. `other-tre` has no Agent on this stack, so its part of a study version stays `queued` until the version is cancelled: it shows a study sent to two hospitals, one of which has not answered yet;
 - `seed-dataset` uploads `data/cohort.csv` as `dataset/cohort_2024/cohort.csv`, and `data/schema.json` next to it (every task needs it);
 - `seed-egress-creds` stores the `egress-app` login (realm `tre-test`) in the Egress app, so the app can send decisions back to the Agent.
 
@@ -64,6 +64,17 @@ The `uploader` login through the RustFS console's "TRE Keycloak" button loops. T
 
 A task runs a Python file that defines `site_analysis(df)` (see `runner/README.md`) in a locked-down `python-runner:1` container. `task.sh` sends the file inline, with its SHA-256 as `fed.code_sha256`. `code/analysis.py` returns the number of people and their mean age.
 
+Each `enqueue` (and `run`) creates a study version and prints its version ID; the commands that follow one hospital (`get`, `result`, `approve`, `reject`) take that hospital's task ID, which `part` prints. `cancel` takes the version ID. Every call is a new study (`study-<random>`), so runs never wait for each other's open version; set `STUDY_ID` to reuse one. The hospitals are `SITES`, `my-tre` by default:
+
+```bash
+v=$(SITES='my-tre|other-tre' ./task.sh enqueue cohort_2024 code/analysis.py)   # prints the version ID
+./task.sh part "$v"               # my-tre's task ID
+./task.sh part "$v" other-tre     # other-tre's task ID
+./task.sh study "$v"              # state open, my-tre's and other-tre's phases
+STUDY_ID=s1 ./task.sh enqueue cohort_2024 code/analysis.py   # twice in a row: the second gets 409 study_version_open
+./task.sh cancel "$v"             # cancels the whole version: other-tre's part at once, my-tre's once its Agent confirms
+```
+
 ```bash
 cd dev/federated
 ./task.sh run cohort_2024 code/analysis.py      # RUNNING {"phase": "waiting_for_output_approval", ...}, then prints the approve/reject commands
@@ -71,7 +82,7 @@ cd dev/federated
 ./task.sh result <task-id>                      # downloads and prints the result file: "result": {"kind": "analysis", "n": 3, "value": {"n": 3, "mean_age": 40.0}}
 ./task.sh run cohort_2024 code/analysis.py
 ./task.sh reject <task-id> "small cells"        # CANCELED {"phase": "rejected_at_output_approval", "error_code": "rejected_by_reviewer", "error_message": "small cells"}
-./task.sh cancel <task-id>                      # CANCELED {"phase": "canceled", ...}: review closed, result removed from the TRE
+./task.sh cancel <version-id>                   # CANCELED {"phase": "canceled", ...}: review closed, result removed from the TRE
 ./task.sh run nope code/analysis.py             # CANCELED, phase rejected_by_input_checks {"error_code": "dataset_not_found", ...}
 ```
 
@@ -105,7 +116,7 @@ Logs: `docker compose -f dev/federated/docker-compose.yml logs -f agent-api` (an
 
 ### Code runs
 
-Code that raises ends as `EXECUTOR_ERROR`, `code_error`, with a fixed message (no data values). Code that runs longer than `MaxRunMinutes` (5 on this stack) ends as `EXECUTOR_ERROR`, `timeout`. `./task.sh cancel <task-id>` on a running task stops and removes its container.
+Code that raises ends as `EXECUTOR_ERROR`, `code_error`, with a fixed message (no data values). Code that runs longer than `MaxRunMinutes` (5 on this stack) ends as `EXECUTOR_ERROR`, `timeout`. `./task.sh cancel <version-id>` on a running task stops and removes its container.
 
 The Agent starts the run containers on your Docker daemon, through the mounted `/var/run/docker.sock`; for that it runs as root on this stack (dev only). Each run's container and volume carry the label `fed.task-id` and are removed when the run ends. To check nothing is left:
 
@@ -142,7 +153,7 @@ In the live run, approve case 1 and reject case 3 (with a reason) in the Egress 
 
 ## Integration tests
 
-`Tests/Federated.IntegrationTests` drives the real loop on this stack (Submission → Agent → Egress app) and checks how each task ends in `GetTask`, and that only a released task has a result file in the orchestrator's result store (RustFS on port 9100). Every task it queues is a code task in `python-runner:1`, with the small `site_analysis` files in `Code.cs`. It covers the three demo cases, cancelling, and a set of deliberately invalid tasks:
+`Tests/Federated.IntegrationTests` drives the real loop on this stack (Submission → Agent → Egress app) and checks how each task ends in `GetTask`, and that only a released task has a result file in the orchestrator's result store (RustFS on port 9100). Every task it queues is a code task in `python-runner:1`, with the small `site_analysis` files in `Code.cs`. It covers the three demo cases, cancelling, study versions across `my-tre` and `other-tre`, and a set of deliberately invalid tasks:
 
 | Gate | Case | Expected end |
 |---|---|---|
@@ -153,6 +164,8 @@ In the live run, approve case 1 and reject case 3 (with a reason) in the Egress 
 | Output approval | reviewer rejects | `CANCELED`, `rejected_at_output_approval`, `rejected_by_reviewer`, the reason; no result |
 | Output approval | result overwritten after it was registered, then approved | `SYSTEM_ERROR`, `result_changed_after_review`; no result |
 | Cancel | a queued task, a running task, a task waiting for review, a cancel at the same time as an approval | `CANCELED`, `canceled`; no review left open, no result in the TRE or the orchestrator |
+| Study versions | a version for `my-tre` and `other-tre`: `my-tre` released, `other-tre` queued | version `open`; a second submission gets 409 `study_version_open`; cancelling ends it (`other-tre` `canceled`) and version 2 is accepted |
+| Study versions | cancel while `my-tre` waits for review and `other-tre` is queued | version `canceling`, a new version accepted at once; `ended` once `my-tre` confirms |
 
 "Image not approved" cannot happen on this stack (Submission accepts only `python-runner:1`, and the Agent approves it); unit tests cover it.
 
