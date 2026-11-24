@@ -313,7 +313,7 @@ The Agent runs a code task in a Docker container, through the Docker socket (`Fe
 
 A `running` code task that has no run and no saved result (the run was lost, or the start failed part-way) is started again, so its code runs again. The Agent logs this as a warning.
 
-The Agent also removes old runs at every poll (the sweep). A run is removed when its task has a saved result, or when the task is not pending and the run is older than twice `MaxRunMinutes`. The sweep also removes staged data that has no run container (volumes, which can hold a copy of the dataset, or a staging container), as a removal or a failed start that was cut short leaves it. If one removal fails, the sweep goes on with the others and the next poll tries again.
+The Agent also removes old runs at every poll (the sweep). A run is removed when its task has a saved result, or when the task is not pending and the run is older than twice `MaxRunMinutes`. The sweep also removes staged data that has no run container (volumes, which can hold a copy of the dataset, or a staging container), as a removal or a failed start that was cut short leaves it. If one removal fails, the sweep goes on with the others and the next poll tries again. Use one Agent per Docker daemon. The sweep treats staged data without a run container as left over, which is safe only because the same Agent's poll stages and starts runs, one poll at a time. A second Agent on the same daemon could remove the other Agent's staged data while it starts a run.
 
 The container:
 
