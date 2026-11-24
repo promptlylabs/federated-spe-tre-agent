@@ -338,7 +338,7 @@ What the hash check catches: code changed on the way or in storage without its t
 
 The Agent runs a code task in a Docker container, through the Docker socket (`FederatedTaskSettings:DockerEndpoint`). The poll moves a run one step and never waits for it:
 
-1. The input checks pass (the image is approved, one `.csv` and a `schema.json` are in the dataset folder). If the TRE already runs `MaxConcurrentRuns` code containers, the task is not started and keeps its phase. A `queued` task stays `queued`.
+1. The input checks pass (the image is approved, one `.csv` and a `schema.json` are in the dataset folder). If the TRE already holds `MaxConcurrentRuns` code runs, the task is not started and keeps its phase. Every run that is still present counts, including one that has exited and is not removed yet, not only those that are running. A `queued` task stays `queued`.
 2. A `queued` task is reported `running`. The Agent hashes the CSV and stages the CSV, `schema.json` and the code into Docker volumes, then starts the container. The poll returns, and the task stays `running`.
 3. At each later poll the Agent finds the container. While it runs, nothing happens. If it has run for `MaxRunMinutes`, the Agent kills it and reports `timeout`.
 4. When the container has exited, the Agent reads `/outputs/result.json`, checks it and maps it (see "Result of a code run"). It saves the result file, removes the run, and the task goes to output approval as any other.
@@ -346,7 +346,7 @@ The Agent runs a code task in a Docker container, through the Docker socket (`Fe
 
 A `running` code task that has no run and no saved result (the run was lost, or the start failed part-way) is started again, so its code runs again. The Agent logs this as a warning.
 
-The Agent also removes old runs at every poll (the sweep). A run is removed when its task has a saved result, or when the task is not pending and the run is older than twice `MaxRunMinutes`.
+The Agent also removes old runs at every poll (the sweep). A run is removed when its task has a saved result, or when the task is not pending and the run is older than twice `MaxRunMinutes`. The sweep also removes staged data that has no run container (volumes, which can hold a copy of the dataset, or a staging container), as a removal or a failed start that was cut short leaves it. If one removal fails, the sweep goes on with the others and the next poll tries again.
 
 The container:
 
@@ -365,7 +365,7 @@ Limits:
 | Memory | `resources.ram_gb` | `DefaultRamGb` | `MaxRamGb` |
 | `/tmp` (disk) | `resources.disk_gb` | `DefaultDiskGb` | `MaxDiskGb` |
 
-A task with no value gets the default. A value above the maximum is reduced to the maximum, and the Agent logs it. (Submission refuses such a request at intake. The Agent clamps it too, because its own maximum can be lower than Submission's.) A very small value is raised to a floor, and logged: memory at least 256 MiB, `/tmp` at least 16 MiB, CPU at least 0.01 cores. Docker reads 0 as no limit, so a floor keeps every run limited.
+A task with no value, or a value that is 0 or less or not a finite number, gets the default. The default is itself capped at the maximum. A value above the maximum is reduced to the maximum, and the Agent logs it. (Submission refuses such a request at intake. The Agent clamps it too, because its own maximum can be lower than Submission's.) A very small value is raised to a floor, and logged: memory at least 256 MiB, `/tmp` at least 16 MiB, CPU at least 0.01 cores. Docker reads 0 as no limit, so a floor keeps every run limited.
 
 Every file the code writes, in `/outputs` or in `/tmp`, is capped at the `/tmp` allowance by an `fsize` ulimit. **Known limitation:** many files that are each under that size can still fill the host's disk through `/outputs`, which is a volume with no size limit. Production needs a size-limited volume, or the limits of the operator's pod.
 
@@ -382,6 +382,10 @@ The Agent maps `result.json` (format in `runner/README.md`) as follows. It never
 - More than 65,536 bytes: `result_too_large`, with the same message as `invalid_result`.
 
 **Known limitation:** at the hospital, a researcher sees only which kind of failure happened, not the column, line or exception. To find the cause, reproduce it in the SPE with synthetic data (`run-analysis --debug` there), or ask the TRE admin, who sees the runner's full message in the Agent log. The reason: an error report does not go through output approval, and the code can write `result.json` itself, so the Agent cannot pass on any text from it.
+
+**Known limitation:** a little still reaches the researcher without output approval, chosen by the code: which failure code it ends with, whether it succeeds at all, and how long it runs (visible in the phase times). No text the code writes is forwarded.
+
+**Known limitation:** the Agent holds the whole CSV in memory while it stages it, so a very large upload can exhaust the Agent's memory. Uploaders must keep a dataset within the runner's 256 MiB limit.
 
 Count/mean tasks and the `5s-tes/federated-ops:1` image are still supported and are to be removed later.
 
@@ -466,9 +470,9 @@ TODO: researcher access scoped by study once study_id → project mapping exists
 | `invalid_task` | The task does not follow the profile. The message says which rule failed. |
 | `image_not_approved` | The executor image is not in this TRE's `ApprovedImages`. The message names the image. |
 | `invalid_dataset_name` | The name does not match `^[a-z0-9][a-z0-9_-]{0,62}$`. |
-| `dataset_not_found` | No `.csv` file under `dataset/<name>/`. |
+| `dataset_not_found` | No `.csv` file under `dataset/<name>/`. From a code run, the runner found no dataset file (the input checks normally catch this first); the message is "the runner found no dataset file". |
 | `schema_not_found` | A code task, and no `schema.json` in `dataset/<name>/`. An input check, so the task is rejected, and the message names the dataset. If the runner itself finds no schema, the message is "the runner found no schema.json for the dataset". |
-| `ambiguous_dataset` | More than one `.csv` file under `dataset/<name>/`. |
+| `ambiguous_dataset` | More than one `.csv` file under `dataset/<name>/`. From a code run, the runner found more than one dataset file (the input checks normally catch this first); the message is "the runner found more than one dataset file". |
 | `invalid_dataset` | The file is empty, is not valid CSV (for example a stray `"` inside a field), or has two columns with the same name. The message gives the line number or the column name, never the data. For a code run the message is "the runner could not read the dataset as CSV". |
 | `unknown_operation` | The operation is not `count` or `mean`. |
 | `invalid_filter` | The operator is not `eq`, `gt`, `lt`, `gte` or `lte`, or the filter is not `<column>:<op>:<value>`. |
@@ -481,8 +485,7 @@ TODO: researcher access scoped by study once study_id → project mapping exists
 | `timeout` | A code run was still going after `MaxRunMinutes`, and the Agent killed it. The message is "the code ran longer than the TRE's limit of N minutes". |
 | `out_of_memory` | A code run ended without `result.json` and Docker says it was killed for memory. The message is "the code ran out of memory". |
 | `run_failed` | A code run ended without `result.json` for any other reason. The message is "the run ended without a result". |
-| `dataset_not_found`, `ambiguous_dataset` | From a code run, if the runner finds no dataset file or more than one (the input checks normally catch this first). The messages are "the runner found no dataset file" and "the runner found more than one dataset file". |
-| `dataset_too_large` | Runner code, as `invalid_dataset` below. The message is "the dataset is larger than the runner's 256 MiB limit". |
+| `dataset_too_large` | Runner code, like `invalid_dataset` above. The message is "the dataset is larger than the runner's 256 MiB limit". |
 | `invalid_schema` | Runner code. The message is "the dataset's schema.json is not valid". |
 | `schema_mismatch` | Runner code. The message is "the dataset does not match its schema.json". |
 | `code_error` | Runner code. The message is "the code could not be imported, has no site_analysis, or site_analysis raised an exception". |
@@ -558,7 +561,7 @@ Agent.Api creates the buckets and policies at startup. Settings are in the `Fede
 | `MaxConcurrentRuns` | `2` |
 | `DockerEndpoint` | `unix:///var/run/docker.sock` |
 
-The last nine settings are for code tasks (see "Running a code task"). `MaxRunMinutes` is the longest a run may take. The Default and Max values are CPU cores, RAM in GB and `/tmp` disk in GB; a request above a max is reduced to it. `MaxConcurrentRuns` is how many code containers may run at once on this Agent. `DockerEndpoint` is the Docker daemon that starts them. The values are placeholders until the hospitals confirm their capacity. For a dev stack, see [dev/federated](../dev/federated/README.md).
+The last nine settings are for code tasks (see "Running a code task"). `MaxRunMinutes` is the longest a run may take. The Default and Max values are CPU cores, RAM in GB and `/tmp` disk in GB; a request above a max is reduced to it. `MaxConcurrentRuns` is how many code runs this Agent may hold at once; every run still present counts, including one that has exited and is not removed yet. `DockerEndpoint` is the Docker daemon that starts them. At startup the Agent logs an error, and still starts, if `MaxConcurrentRuns` or `MaxRunMinutes` is 0 or less, or if it cannot reach Docker. The values are placeholders until the hospitals confirm their capacity. For a dev stack, see [dev/federated](../dev/federated/README.md).
 
 `AllowedExtensions` sets only which files the upload policy accepts. A list you configure replaces the default. The Agent reads only `.csv` files, whatever this setting holds.
 

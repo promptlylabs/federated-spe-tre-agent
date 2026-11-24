@@ -155,7 +155,7 @@ In the live run, approve case 1 and reject case 3 (with a reason) in the Egress 
 |---|---|---|
 | Hospital input checks | dataset the hospital does not hold | `CANCELED`, `rejected_by_input_checks`, `dataset_not_found` |
 | Hospital input checks | a dataset folder with two `.csv` files | `CANCELED`, `rejected_by_input_checks`, `ambiguous_dataset` |
-| Submission's task profile | unknown operation, invalid filter, an image other than `5s-tes/federated-ops:1` | Enqueue refused with 400 (`unknown_operation`, `invalid_filter`, `invalid_task`); no task |
+| Submission's task profile | unknown operation, invalid filter, an image Submission does not accept (neither `5s-tes/federated-ops:1` nor `python-runner:1`) | Enqueue refused with 400 (`unknown_operation`, `invalid_filter`, `invalid_task`); no task |
 | Output approval | reviewer approves | `COMPLETE`, `released`, result stored with the reviewed SHA-256 |
 | Output approval | reviewer rejects | `CANCELED`, `rejected_at_output_approval`, `rejected_by_reviewer`, the reason; no result |
 | Output approval | result overwritten after it was registered, then approved | `SYSTEM_ERROR`, `result_changed_after_review`; no result |
