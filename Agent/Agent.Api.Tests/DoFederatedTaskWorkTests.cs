@@ -1880,6 +1880,20 @@ public class DoFederatedTaskWorkTests
     }
 
     [Fact]
+    public async Task Execute_count_or_mean_task_never_asks_whether_a_run_exists()
+    {
+        // Only code tasks have runs; asking Docker for a count or mean task would stall it while Docker is down.
+        var client = OneMean();
+        var execution = new FakeExecution(() => ExecutionResult.Ok(SubstituteDocument())) { HasRun = true };
+
+        await Work(client, new ThrowingReader(), execution: execution).Execute();
+
+        Assert.Empty(execution.HasRunCalls);
+        Assert.Equal("dataset/cohort_2024/data.csv", Assert.Single(execution.Runs).FileKey);
+        Assert.Equal(new[] { "progress:running", "report:COMPLETEEnum" }, client.Order);
+    }
+
+    [Fact]
     public async Task Execute_substituted_execution_error_is_reported_as_executor_error()
     {
         var client = OneMean();

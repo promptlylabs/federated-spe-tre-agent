@@ -131,6 +131,29 @@ namespace Agent.Api.Models
         /// <summary>How many researcher-code containers may run at the same time on this Agent.</summary>
         public int MaxConcurrentRuns { get; set; } = 2;
 
+        /// <summary>
+        /// A message for the site admin when a code-task setting stops code tasks from working: MaxConcurrentRuns of 0 or
+        /// less (no code task ever starts) or MaxRunMinutes of 0 or less (every run times out at once). Logged as an
+        /// error at startup; the settings are still used. Null when both are above 0.
+        /// </summary>
+        public string? RunSettingsProblem()
+        {
+            var problems = new List<string>();
+            if (MaxConcurrentRuns <= 0)
+            {
+                problems.Add($"FederatedTaskSettings:MaxConcurrentRuns is {MaxConcurrentRuns}, so no code task will ever start; " +
+                             "code tasks keep their phase");
+            }
+
+            if (MaxRunMinutes <= 0)
+            {
+                problems.Add($"FederatedTaskSettings:MaxRunMinutes is {MaxRunMinutes}, so every code run will fail with timeout " +
+                             "at the first check");
+            }
+
+            return problems.Count == 0 ? null : string.Join(". ", problems) + ". Set the value above 0.";
+        }
+
         /// <summary>Docker endpoint the Agent uses to start the containers that run researcher code.</summary>
         public string DockerEndpoint { get; set; } = "unix:///var/run/docker.sock";
 

@@ -199,9 +199,10 @@ namespace Agent.Api
                 }
 
                 // A run of researcher code started by an earlier poll passed the input checks and was marked running
-                // then; it is only checked now. Without a run, the task is checked and started.
+                // then; it is only checked now. Without a run, the task is checked and started. Only code tasks have
+                // runs, so a count or mean task never asks (and never waits on Docker).
                 string? fileKey = null;
-                if (!await _execution.HasRunAsync(storeKey, CancellationToken.None))
+                if (!prepared.Spec!.IsCodeTask || !await _execution.HasRunAsync(storeKey, CancellationToken.None))
                 {
                     // The hospital's input checks run before the task is marked running and before any data is read.
                     // A task that fails one is rejected; one the TRE cannot judge now keeps its phase.

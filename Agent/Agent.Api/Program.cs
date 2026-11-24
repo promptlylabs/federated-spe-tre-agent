@@ -136,6 +136,8 @@ builder.Services.AddSingleton(federatedTaskSettings);
 builder.Services.AddSingleton(new AgentStartTime(TimeProvider.System.GetUtcNow()));
 if (federatedTaskSettings.ApprovedImagesProblem() is { } approvedImagesProblem)
     Log.Error("Federated tasks: {Problem}", approvedImagesProblem);
+if (federatedTaskSettings.RunSettingsProblem() is { } runSettingsProblem)
+    Log.Error("Federated tasks: {Problem}", runSettingsProblem);
 
 
 var DmnPath = new FiveSafesTes.Core.Models.DmnPath();
@@ -350,6 +352,19 @@ using (var scope = app.Services.CreateScope())
     if (!await minioTreHelper.PutCannedPolicyAsync(federatedTaskSettings.OutputReadPolicyName, outputReadPolicy))
     {
         Log.Error("Could not create output read policy {PolicyName}", federatedTaskSettings.OutputReadPolicyName);
+    }
+
+    // Code tasks run through Docker. Don't fail startup if it is unreachable: code tasks are not run until it is
+    // back, and count and mean tasks do not need it. Checked once, as a hint for the site admin.
+    try
+    {
+        using var dockerPing = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await app.Services.GetRequiredService<IDockerClient>().System.PingAsync(dockerPing.Token);
+    }
+    catch (Exception ex)
+    {
+        Log.Error(ex, "Federated tasks: Docker at FederatedTaskSettings:DockerEndpoint {DockerEndpoint} is not reachable; code tasks cannot run until it is",
+            federatedTaskSettings.DockerEndpoint);
     }
 }
 

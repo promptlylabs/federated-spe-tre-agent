@@ -136,4 +136,42 @@ public class FederatedTaskSettingsTests
 
         Assert.Equal(["other:1"], settings.ApprovedImages);
     }
+
+    [Fact]
+    public void RunSettingsProblem_NullForDefaults() =>
+        Assert.Null(new FederatedTaskSettings().RunSettingsProblem());
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void RunSettingsProblem_FlagsMaxConcurrentRunsZeroOrLess(int value)
+    {
+        var problem = new FederatedTaskSettings { MaxConcurrentRuns = value }.RunSettingsProblem();
+
+        Assert.NotNull(problem);
+        Assert.Contains("FederatedTaskSettings:MaxConcurrentRuns", problem);
+        Assert.DoesNotContain("MaxRunMinutes", problem);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-5)]
+    public void RunSettingsProblem_FlagsMaxRunMinutesZeroOrLess(int value)
+    {
+        var problem = new FederatedTaskSettings { MaxRunMinutes = value }.RunSettingsProblem();
+
+        Assert.NotNull(problem);
+        Assert.Contains("FederatedTaskSettings:MaxRunMinutes", problem);
+        Assert.DoesNotContain("MaxConcurrentRuns", problem);
+    }
+
+    [Fact]
+    public void RunSettingsProblem_NamesBothWhenBothAreWrong()
+    {
+        var problem = new FederatedTaskSettings { MaxConcurrentRuns = 0, MaxRunMinutes = 0 }.RunSettingsProblem();
+
+        Assert.NotNull(problem);
+        Assert.Contains("MaxConcurrentRuns", problem);
+        Assert.Contains("MaxRunMinutes", problem);
+    }
 }
