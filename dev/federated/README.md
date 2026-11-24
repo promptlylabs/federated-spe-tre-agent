@@ -18,7 +18,7 @@ docker compose -f dev/federated/docker-compose.yml down -v         # stop and de
 
 On start, three one-shot steps prepare the test data:
 - `seed-tre` registers the TRE `my-tre` in Submission;
-- `seed-dataset` uploads `data/cohort.csv` as `dataset/cohort_2024/cohort.csv`;
+- `seed-dataset` uploads `data/cohort.csv` as `dataset/cohort_2024/cohort.csv`, and `data/schema.json` next to it (code tasks need it);
 - `seed-egress-creds` stores the `egress-app` login (realm `tre-test`) in the Egress app, so the app can send decisions back to the Agent.
 
 If the stored login cannot be used (for example it was stored before the Egress app moved to `Shared/FiveSafesTes.Core`, whose encryption format is different, or with another `EncryptionSettings:Key`), the Egress API cannot send decisions to the Agent. Run the step again; it replaces the stored login:
@@ -26,6 +26,8 @@ If the stored login cannot be used (for example it was stored before the Egress 
 ```bash
 docker compose -f dev/federated/docker-compose.yml up seed-egress-creds
 ```
+
+The `python-runner` service only builds the runner image `python-runner:1` (from `runner/`) on your Docker daemon; its container exits at once. The image is amd64, so on Apple silicon it runs emulated and slowly.
 
 Keycloak keeps no data: recreating its container (for example after a realm file changes) gives it new signing keys. Restart `agent-api`, `submission-api`, `egress-api` and `egress-ui` after that, or they reject the new tokens.
 
@@ -92,13 +94,32 @@ echo '{"tampered":true}' | docker run --rm -i --network federated-dev_default -e
 
 The task then ends as `SYSTEM_ERROR` with `result_changed_after_review`, and nothing is uploaded.
 
-To test your own data, upload a CSV in the RustFS console to `federated-datasets/dataset/<name>/`, with exactly one `.csv` per folder. Then run `./task.sh run <name> count`.
+To test your own data, upload a CSV in the RustFS console to `federated-datasets/dataset/<name>/`, with exactly one `.csv` per folder. Then run `./task.sh run <name> count`. For a code task, also upload a `schema.json` for it to the same folder (format in `runner/README.md`).
 
 Where the result files are:
 - **Orchestrator:** bucket `federated-results` on the second RustFS (console http://localhost:9101/rustfs/console/, `orchadmin` / `orchadmin123`), key `<treId>/<taskId>/<sha256>.json`. `task.sh result` reads it through Submission.
 - **TRE:** bucket `federated-outputs` on the TRE RustFS (console http://localhost:9001/rustfs/console/, `rustfsadmin` / `rustfsadmin123`), key `<taskId>.json`. The review record is next to it, as `<taskId>.review.json`, with the registration marker `<taskId>.registered` (empty) once the Egress app has the task.
 
 Logs: `docker compose -f dev/federated/docker-compose.yml logs -f agent-api` (and `egress-api`, `egress-ui`)
+
+### Code tasks
+
+A code task runs a Python file that defines `site_analysis(df)` (see `runner/README.md`) in a locked-down `python-runner:1` container. `task.sh` sends the file inline, with its SHA-256 as `fed.code_sha256`:
+
+```bash
+./task.sh run cohort_2024 code code/analysis.py   # RUNNING {"phase": "waiting_for_output_approval", ...}
+./task.sh approve <task-id>                       # COMPLETE {"phase": "released", ...}
+./task.sh result <task-id>                        # "result": {"kind": "analysis", "n": 3, "value": {"n": 3, "mean_age": 40.0}}
+```
+
+A run spans several polls: one starts the container, later ones check it and collect `result.json`, so a code task takes about two minutes to reach review. Code that raises ends as `EXECUTOR_ERROR`, `code_error`, with a fixed message (no data values). Code that runs longer than `MaxRunMinutes` (5 on this stack) ends as `EXECUTOR_ERROR`, `timeout`. `./task.sh cancel <task-id>` on a running code task stops and removes its container.
+
+The Agent starts the run containers on your Docker daemon, through the mounted `/var/run/docker.sock`; for that it runs as root on this stack (dev only). Each run's container and volume carry the label `fed.task-id` and are removed when the run ends. To check nothing is left:
+
+```bash
+docker ps -a --filter label=fed.task-id
+docker volume ls --filter label=fed.task-id
+```
 
 ## Demo
 
@@ -139,7 +160,7 @@ In the live run, approve case 1 and reject case 3 (with a reason) in the Egress 
 | Output approval | reviewer rejects | `CANCELED`, `rejected_at_output_approval`, `rejected_by_reviewer`, the reason; no result |
 | Output approval | result overwritten after it was registered, then approved | `SYSTEM_ERROR`, `result_changed_after_review`; no result |
 
-"Image not approved" cannot happen on this stack (the profile allows one image, which the Agent approves); unit tests cover it.
+"Image not approved" cannot happen on this stack (Submission accepts only `5s-tes/federated-ops:1` and `python-runner:1`, and the Agent approves both); unit tests cover it.
 
 With the stack running, from the repo root:
 

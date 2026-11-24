@@ -135,6 +135,11 @@ services:
     build:
       context: ../..
       dockerfile: Agent/Agent.Api/Dockerfile
+    # Dev only: the Agent runs code tasks as sibling containers on the host's Docker daemon, through its socket.
+    # The image runs as user app, which cannot open the mounted socket, so the Agent runs as root here.
+    user: root
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
     environment:
       <<: *kc-dare-control
       ASPNETCORE_ENVIRONMENT: Development
@@ -170,6 +175,10 @@ services:
       MinioTRESettings__Url: http://rustfs:9000
       MinioTRESettings__AccessKey: rustfsadmin
       MinioTRESettings__SecretKey: rustfsadmin123
+      # Count/mean tasks use 5s-tes/federated-ops:1; code tasks run in python-runner:1 (built by the python-runner service).
+      FederatedTaskSettings__ApprovedImages: "5s-tes/federated-ops:1,python-runner:1"
+      # Short, so the timeout path can be tried by hand in a few minutes.
+      FederatedTaskSettings__MaxRunMinutes: "5"
       JobSettings__federatedTaskSchedule: "1"
       # The Agent's other jobs need services this stack doesn't run; switch them off to keep logs readable.
       JobSettings__syncSchedule: "0"
@@ -305,7 +314,16 @@ services:
         condition: service_started
     restart: "no"
 
-  # One-shot: uploads the sample dataset dataset/cohort_2024/cohort.csv into the TRE bucket.
+  # Build-only: puts the runner image python-runner:1 on the host's Docker daemon, where the Agent starts code runs.
+  # The container itself exits at once. The runner Dockerfile pins linux/amd64 (emulated on Apple silicon).
+  python-runner:
+    build: ../../runner
+    image: python-runner:1
+    platform: linux/amd64
+    entrypoint: ["true"]
+    restart: "no"
+
+  # One-shot: uploads the sample dataset dataset/cohort_2024/cohort.csv and its schema.json into the TRE bucket.
   seed-dataset:
     image: amazon/aws-cli:2.15.0
     environment:
@@ -320,6 +338,7 @@ services:
         until aws --endpoint-url http://rustfs:9000 s3 ls >/dev/null 2>&1; do echo "waiting for RustFS"; sleep 3; done
         aws --endpoint-url http://rustfs:9000 s3 mb s3://federated-datasets 2>/dev/null || true
         aws --endpoint-url http://rustfs:9000 s3 cp /seed/cohort.csv s3://federated-datasets/dataset/cohort_2024/cohort.csv
+        aws --endpoint-url http://rustfs:9000 s3 cp /seed/schema.json s3://federated-datasets/dataset/cohort_2024/schema.json
     depends_on:
       rustfs:
         condition: service_started

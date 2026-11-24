@@ -1,0 +1,6 @@
+{
+  "columns": [
+    {"name": "age", "type": "integer"},
+    {"name": "sex", "type": "string"}
+  ]
+}
