@@ -362,6 +362,59 @@ public class DockerCodeRunnerTests
     }
 
     [DockerFact]
+    public async Task FileLargerThanDiskLimit_WriteFails()
+    {
+        // The request's /tmp allowance is 256 MiB; the file size limit is the same on the outputs volume.
+        const string code = """
+            def site_analysis(df):
+                chunk = b"0" * (1024 * 1024)
+                try:
+                    with open("/outputs/big.bin", "wb") as f:
+                        for _ in range(300):
+                            f.write(chunk)
+                    failed = False
+                except OSError:
+                    failed = True
+                return {"n": 0, "write_failed": failed}
+            """;
+        var runner = Runner();
+        var taskId = NewTaskId();
+        try
+        {
+            var (_, result) = await RunToEndAsync(runner, Request(taskId, code));
+
+            Assert.Equal("ok", result.GetProperty("status").GetString());
+            Assert.True(result.GetProperty("result").GetProperty("write_failed").GetBoolean());
+        }
+        finally
+        {
+            await RemoveAndAssertNothingLeftAsync(runner, taskId);
+        }
+    }
+
+    [Theory]
+    [InlineData(0L, 256L * MiB, 1.0)]
+    [InlineData(5L * MiB, 256L * MiB, 1.0)]
+    [InlineData(2048L * MiB, 0L, 1.0)]
+    [InlineData(2048L * MiB, 256L * MiB, 0.0)]
+    [InlineData(2048L * MiB, 256L * MiB, 1e-12)]
+    [InlineData(2048L * MiB, 256L * MiB, double.NaN)]
+    public async Task LimitsThatDoNotLimit_Rejected_BeforeDockerIsUsed(long memoryBytes, long tmpBytes, double cpuCores)
+    {
+        var request = Request(NewTaskId(), "def site_analysis(df):\n    return {'n': 0}\n") with
+        {
+            MemoryBytes = memoryBytes,
+            TmpBytes = tmpBytes,
+            CpuCores = cpuCores
+        };
+        // A client with no daemon behind it: any Docker call would fail with something other than ArgumentException.
+        using var unused = new DockerClientConfiguration(new Uri("unix:///nonexistent/docker.sock")).CreateClient();
+
+        await Assert.ThrowsAsync<ArgumentException>(
+            () => new DockerCodeRunner(unused, _settings).StartAsync(request, CancellationToken.None));
+    }
+
+    [DockerFact]
     public async Task LargeResultFile_ReadStopsAtLimit()
     {
         const string code = """
@@ -415,6 +468,10 @@ public class DockerCodeRunnerTests
             Assert.Equal(request.MemoryBytes, host.MemorySwap);
             Assert.Equal(1_000_000_000, host.NanoCPUs);
             Assert.Equal($"rw,noexec,nosuid,size={request.TmpBytes}", host.Tmpfs["/tmp"]);
+            var fsize = Assert.Single(host.Ulimits);
+            Assert.Equal("fsize", fsize.Name);
+            Assert.Equal(request.TmpBytes, fsize.Soft);
+            Assert.Equal(request.TmpBytes, fsize.Hard);
             Assert.Equal(
                 ["run-analysis", "/code/analysis.py", $"/data/{Dataset}", "/outputs/result.json"],
                 inspect.Config.Cmd);

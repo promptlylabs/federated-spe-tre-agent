@@ -107,6 +107,21 @@ public class CodeExecutionTests
     }
 
     [Fact]
+    public async Task Limits_TinyRequests_AreRaisedToFloors()
+    {
+        // Docker reads 0 as no limit, so a tiny request must never round down to 0. TES cpu_cores is a whole number,
+        // so a tiny CPU value can only come from the site's default.
+        _settings.DefaultCpuCores = 1e-12;
+        await Execution().RunAsync(CodeTask(new TesResources { RamGb = 1e-12, DiskGb = 1e-12 }), Spec,
+            CsvKey, CancellationToken.None);
+
+        var request = Assert.Single(_runner.Started);
+        Assert.Equal(0.01, request.CpuCores);
+        Assert.Equal(256L * 1024 * 1024, request.MemoryBytes);
+        Assert.Equal(16L * 1024 * 1024, request.TmpBytes);
+    }
+
+    [Fact]
     public async Task Limits_AreDefaultedAndClamped()
     {
         await Execution().RunAsync(CodeTask(), Spec, CsvKey, CancellationToken.None);

@@ -28,6 +28,7 @@ namespace Agent.Api.FederatedTasks
         private const string RunUser = "1001:0";
 
         private const long PidsLimit = 256;
+        private const long MinMemoryBytes = 6 * 1024 * 1024;
         private const UnixFileMode FileMode = UnixFileMode.UserRead | UnixFileMode.GroupRead | UnixFileMode.OtherRead;
 
         private const UnixFileMode DirectoryMode = FileMode | UnixFileMode.UserExecute | UnixFileMode.GroupExecute |
@@ -101,6 +102,7 @@ namespace Agent.Api.FederatedTasks
 
         public async Task StartAsync(CodeRunRequest request, CancellationToken ct)
         {
+            CheckLimits(request);
             var taskId = request.TaskId;
             await RemoveAsync(taskId, ct);
             try
@@ -137,6 +139,22 @@ namespace Agent.Api.FederatedTasks
                 throw;
             }
         }
+
+        /// <summary>
+        /// Docker reads a memory, CPU or tmpfs size of 0 as no limit, so a run never starts with one. Checked before
+        /// anything is created. Docker's own least memory is 6 MiB.
+        /// </summary>
+        private static void CheckLimits(CodeRunRequest request)
+        {
+            if (request.MemoryBytes < MinMemoryBytes || request.TmpBytes <= 0 || NanoCpus(request.CpuCores) <= 0)
+            {
+                throw new ArgumentException(
+                    $"Run limits for task {request.TaskId} would not limit the run: memory {request.MemoryBytes} bytes, " +
+                    $"/tmp {request.TmpBytes} bytes, {request.CpuCores} CPU cores");
+            }
+        }
+
+        private static long NanoCpus(double cores) => double.IsFinite(cores) ? (long)(cores * 1e9) : 0;
 
         /// <summary>
         /// Fills the data and code volumes through a container that is created but never started. Mounting the outputs
@@ -195,10 +213,13 @@ namespace Agent.Api.FederatedTasks
                     CapDrop = ["ALL"],
                     SecurityOpt = ["no-new-privileges"],
                     PidsLimit = PidsLimit,
-                    NanoCPUs = (long)(request.CpuCores * 1e9),
+                    NanoCPUs = NanoCpus(request.CpuCores),
                     Memory = request.MemoryBytes,
                     MemorySwap = request.MemoryBytes,
                     Tmpfs = new Dictionary<string, string> { ["/tmp"] = $"rw,noexec,nosuid,size={request.TmpBytes}" },
+                    // No file the code writes, in /outputs (a volume without a size limit) or /tmp, can be larger than
+                    // the run's disk allowance. Many smaller files are not capped (known limit of the PoC).
+                    Ulimits = [new Ulimit { Name = "fsize", Soft = request.TmpBytes, Hard = request.TmpBytes }],
                     LogConfig = new LogConfig { Type = "none" },
                     Mounts =
                     [

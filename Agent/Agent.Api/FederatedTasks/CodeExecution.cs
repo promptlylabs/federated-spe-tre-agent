@@ -25,6 +25,11 @@ namespace Agent.Api.FederatedTasks
         private const string SchemaFileName = "schema.json";
         private const long BytesPerGiB = 1024L * 1024 * 1024;
 
+        // Floors for a tiny request: Docker reads a memory, CPU or tmpfs size of 0 as no limit at all.
+        private const double MinCpuCores = 0.01;
+        private const double MinMemoryBytes = 256 * 1024 * 1024;
+        private const double MinTmpBytes = 16 * 1024 * 1024;
+
         private readonly ICodeRunner _runner;
         private readonly IDatasetStore _store;
         private readonly IResultOutputStore _outputs;
@@ -121,9 +126,15 @@ namespace Agent.Api.FederatedTasks
                     new StagedFile(dataFolder + SchemaFileName, schema),
                     new StagedFile("code/analysis.py", codeStream)
                 ],
-                Limit(taskId, "cpu_cores", resources?.CpuCores, _settings.DefaultCpuCores, _settings.MaxCpuCores),
-                (long)(Limit(taskId, "ram_gb", resources?.RamGb, _settings.DefaultRamGb, _settings.MaxRamGb) * BytesPerGiB),
-                (long)(Limit(taskId, "disk_gb", resources?.DiskGb, _settings.DefaultDiskGb, _settings.MaxDiskGb) * BytesPerGiB));
+                AtLeast(taskId, "cpu_cores",
+                    Limit(taskId, "cpu_cores", resources?.CpuCores, _settings.DefaultCpuCores, _settings.MaxCpuCores),
+                    MinCpuCores),
+                (long)AtLeast(taskId, "ram_gb bytes",
+                    Limit(taskId, "ram_gb", resources?.RamGb, _settings.DefaultRamGb, _settings.MaxRamGb) * BytesPerGiB,
+                    MinMemoryBytes),
+                (long)AtLeast(taskId, "disk_gb bytes",
+                    Limit(taskId, "disk_gb", resources?.DiskGb, _settings.DefaultDiskGb, _settings.MaxDiskGb) * BytesPerGiB,
+                    MinTmpBytes));
 
             await _runner.StartAsync(request, ct);
             return ExecutionResult.InProgress();
@@ -142,6 +153,19 @@ namespace Agent.Api.FederatedTasks
         }
 
         /// <summary>The task's value, or the default when it gives none; never more than the TRE's maximum.</summary>
+        /// <summary>The value, raised to the floor when it is below it.</summary>
+        private static double AtLeast(string taskId, string field, double value, double floor)
+        {
+            if (value >= floor)
+            {
+                return value;
+            }
+
+            Log.Information("Federated tasks: task {TaskId} gets {Field} {Floor}, the least a run gets, instead of {Value}",
+                taskId, field, floor, value);
+            return floor;
+        }
+
         private static double Limit(string taskId, string field, double? requested, double fallback, double max)
         {
             if (requested is not { } value || !double.IsFinite(value) || value <= 0)
