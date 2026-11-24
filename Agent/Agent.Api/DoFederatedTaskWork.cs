@@ -238,11 +238,17 @@ namespace Agent.Api
                     // poll and is resumed. A transport failure here throws and leaves the task for the next poll.
                     if (task.State == TesState.QUEUEDEnum && !await ReportRunningAsync(taskId))
                         return Hold.None;
+
+                    // A RUNNING code task with no run and no saved result lost its run (the Agent lost it, or the
+                    // start failed). It is started again, which runs the code again, so say so.
+                    if (task.State == TesState.RUNNINGEnum && prepared.Spec!.IsCodeTask)
+                        Log.Warning("Federated tasks: task {TaskId} is running but has no run at this TRE; starting it again", taskId);
                 }
 
                 // The task is running now. If the bucket fails during the read, it stays running and is resumed at the
                 // next poll, under the same time limit as a failed listing. Any other fault cannot be fixed by
-                // waiting, so it is reported at once.
+                // waiting, so it is reported at once. Once a report is settled, the task's run (if any) is removed:
+                // it is removed after every run, whatever the outcome.
                 ExecutionResult executed;
                 try
                 {
@@ -250,12 +256,14 @@ namespace Agent.Api
                 }
                 catch (DatasetStoreException ex)
                 {
-                    await RetryOrGiveUpAsync(task, taskId, ex, "read");
+                    if (await RetryOrGiveUpAsync(task, taskId, ex, "read"))
+                        await _execution.RemoveRunAsync(storeKey, CancellationToken.None);
                     return Hold.None;
                 }
                 catch (Exception ex)
                 {
-                    await ReportErrorAsync(InternalError(taskId, ex));
+                    if (await ReportErrorAsync(InternalError(taskId, ex)))
+                        await _execution.RemoveRunAsync(storeKey, CancellationToken.None);
                     return Hold.None;
                 }
 
@@ -667,16 +675,17 @@ namespace Agent.Api
         /// A dataset store failure is retried at the next poll, but not for ever: a bucket that is wrongly configured
         /// or denied would otherwise leave the task unfinished with nothing the orchestrator can see.
         /// </summary>
-        private async Task RetryOrGiveUpAsync(TesTask task, string taskId, Exception ex, string action)
+        /// <returns>True when the task was given up and the error report is settled; false when it is retried.</returns>
+        private async Task<bool> RetryOrGiveUpAsync(TesTask task, string taskId, Exception ex, string action)
         {
             if (!HasWaitedTooLong(task))
             {
                 Log.Warning(ex, "Federated tasks: the dataset bucket could not be {Action} for task {TaskId}; it keeps its phase and is tried again at the next poll",
                     action, taskId);
-                return;
+                return false;
             }
 
-            await ReportErrorAsync(InternalError(taskId, ex));
+            return await ReportErrorAsync(InternalError(taskId, ex));
         }
 
         /// <summary>

@@ -2131,6 +2131,72 @@ public class DoFederatedTaskWorkTests
     }
 
     [Fact]
+    public async Task RunThatThrows_ReportsInternalErrorAndRemovesRun()
+    {
+        var client = OneCodeTask(TesState.RUNNINGEnum);
+        var execution = new FakeExecution(() => throw new InvalidOperationException("docker crashed")) { HasRun = true };
+
+        await CodeWork(client, execution).Execute();
+
+        var report = Assert.Single(client.Reports);
+        Assert.Equal(TesState.SYSTEMERROREnum, report.State);
+        Assert.Equal("internal_error", report.ErrorCode);
+        Assert.Equal(new[] { T1 }, execution.Removed);
+    }
+
+    [Fact]
+    public async Task RunThatThrows_ErrorReportNotAccepted_KeepsRun()
+    {
+        var client = OneCodeTask(TesState.RUNNINGEnum);
+        client.Outcomes.Enqueue(new FederatedReportOutcome(503, null, null, null, null));
+        var execution = new FakeExecution(() => throw new InvalidOperationException("docker crashed")) { HasRun = true };
+
+        await CodeWork(client, execution).Execute();
+
+        Assert.Single(client.Reports);
+        Assert.Empty(execution.Removed);
+    }
+
+    [Fact]
+    public async Task RunStoreFailure_PastGiveUpWindow_ReportsAndRemovesRun()
+    {
+        var client = OneCodeTask(TesState.RUNNINGEnum);
+        client.Pending[0].CreationTime = Now.AddMinutes(-600);
+        var execution = new FakeExecution(() => throw new DatasetStoreException("staging failed", new IOException("store down"))) { HasRun = true };
+
+        await CodeWork(client, execution).Execute();
+
+        Assert.Equal("internal_error", Assert.Single(client.Reports).ErrorCode);
+        Assert.Equal(new[] { T1 }, execution.Removed);
+    }
+
+    [Fact]
+    public async Task RunStoreFailure_WithinGiveUpWindow_KeepsRun()
+    {
+        var client = OneCodeTask(TesState.RUNNINGEnum);
+        var execution = new FakeExecution(() => throw new DatasetStoreException("staging failed", new IOException("store down"))) { HasRun = true };
+
+        await CodeWork(client, execution).Execute();
+
+        Assert.Empty(client.Calls);
+        Assert.Empty(execution.Removed);
+    }
+
+    [Fact]
+    public async Task RunningCodeTask_WithoutRun_IsStartedAgain()
+    {
+        var client = OneCodeTask(TesState.RUNNINGEnum);
+        var execution = new FakeExecution(ExecutionResult.InProgress());
+
+        await CodeWork(client, execution).Execute();
+
+        var run = Assert.Single(execution.Runs);
+        Assert.Equal("dataset/cohort_2024/data.csv", run.FileKey);
+        Assert.Empty(client.ProgressCalls);
+        Assert.Empty(client.Calls);
+    }
+
+    [Fact]
     public async Task Sweep_GetsThePendingTaskIdsInCanonicalForm()
     {
         var client = new FakeClient();
@@ -2232,6 +2298,41 @@ public class DoFederatedTaskWorkTests
             var outputs = new FakeResultOutputStore();
             outputs.Files[T1] = Encoding.UTF8.GetBytes("{\"schemaVersion\":1}");
             return outputs;
+        }
+
+        [Fact]
+        public async Task RunningCodeTask_WithoutRun_LogsRestartWarning()
+        {
+            var client = OneCodeTask(TesState.RUNNINGEnum);
+            var execution = new FakeExecution(ExecutionResult.InProgress());
+
+            var events = await Logged("starting it again", () => CodeWork(client, execution).Execute());
+
+            Assert.Equal(Serilog.Events.LogEventLevel.Warning, Assert.Single(events).Level);
+        }
+
+        [Theory]
+        [InlineData(TesState.QUEUEDEnum, false)]
+        [InlineData(TesState.RUNNINGEnum, true)]
+        public async Task RestartWarning_OnlyForRunningCodeTaskWithoutRun(TesState state, bool hasRun)
+        {
+            var client = OneCodeTask(state);
+            var execution = new FakeExecution(ExecutionResult.InProgress()) { HasRun = hasRun };
+
+            var events = await Logged("starting it again", () => CodeWork(client, execution).Execute());
+
+            Assert.Empty(events);
+        }
+
+        [Fact]
+        public async Task RestartWarning_NotForRunningOperationTask()
+        {
+            var client = OneMean();
+            client.Pending[0].State = TesState.RUNNINGEnum;
+
+            var events = await Logged("starting it again", () => Work(client, Reader()).Execute());
+
+            Assert.Empty(events);
         }
 
         [Fact]
