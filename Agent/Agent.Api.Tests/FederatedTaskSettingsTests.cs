@@ -123,6 +123,14 @@ public class FederatedTaskSettingsTests
     }
 
     [Fact]
+    public void ApprovedImagesProblem_IgnoresLeftoverOpsImage()
+    {
+        // Names the old image on purpose: an upgraded hospital whose list still has only the old image must get the startup error.
+        Assert.NotNull(new FederatedTaskSettings { ApprovedImages = ["5s-tes/federated-ops:1"] }.ApprovedImagesProblem());
+        Assert.Null(new FederatedTaskSettings { ApprovedImages = ["5s-tes/federated-ops:1", "python-runner:1"] }.ApprovedImagesProblem());
+    }
+
+    [Fact]
     public void FromConfiguration_single_ApprovedImages_value_replaces_indexed_entries()
     {
         // appsettings lists ApprovedImages:0; an environment variable FederatedTaskSettings__ApprovedImages overrides it.

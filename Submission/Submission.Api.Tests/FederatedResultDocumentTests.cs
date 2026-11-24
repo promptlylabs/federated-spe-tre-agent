@@ -254,7 +254,7 @@ public class FederatedResultDocumentTests
     [InlineData("{\"kind\":\"analysis\",\"n\":-1,\"value\":{}}", "field 'result.n' must be a non-negative integer")]
     [InlineData("{\"kind\":\"analysis\",\"n\":\"1\",\"value\":{}}", "field 'result.n' must be a non-negative integer")]
     [InlineData("{\"kind\":\"analysis\",\"n\":1,\"value\":[1]}", "field 'result.value' must be a JSON object")]
-    [InlineData("{\"kind\":\"scalar\",\"n\":1,\"value\":{}}", "result.kind does not match the task")]
+    [InlineData("{\"kind\":\"scalar\",\"n\":1,\"value\":{}}", "result.kind must be 'analysis'")]
     public void Invalid_analysis_documents_fail(string result, string message)
     {
         var validation = ValidateCode(result);
@@ -304,7 +304,7 @@ public class FederatedResultDocumentTests
             Encoding.UTF8.GetBytes(Json(operation: "mean", result: scalar)), oldRow);
 
         Assert.False(forCodeRow.IsValid);
-        Assert.Equal("result.kind does not match the task", forCodeRow.Message);
+        Assert.Equal("result.kind must be 'analysis'", forCodeRow.Message);
         Assert.False(forOldRow.IsValid);
     }
 

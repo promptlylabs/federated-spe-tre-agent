@@ -92,7 +92,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             var kind = result.GetProperty("kind");
             if (kind.ValueKind != JsonValueKind.String || kind.GetString() != "analysis")
             {
-                return Invalid("result.kind does not match the task");
+                return Invalid("result.kind must be 'analysis'");
             }
 
             if (MissingField(result, ["n", "value"]) is { } missingResult)
@@ -152,7 +152,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
 
             if (doc.Result.Kind != "analysis")
             {
-                return Invalid("result.kind does not match the task");
+                return Invalid("result.kind must be 'analysis'");
             }
 
             if (!Sha256Pattern.IsMatch(doc.DatasetSha256!))
