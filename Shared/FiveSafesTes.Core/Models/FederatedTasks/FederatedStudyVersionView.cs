@@ -54,7 +54,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         [JsonProperty("state")]
         public TesState State { get; set; }
 
-        [JsonProperty("times")]
+        [JsonProperty("times", IsReference = false)]
         public Dictionary<string, string> Times { get; set; } = [];
 
         [JsonProperty("error_code", NullValueHandling = NullValueHandling.Ignore)]

@@ -138,12 +138,17 @@ namespace Submission.Api.Tests
         private static Guid EnqueuedVersionId(IActionResult result) =>
             Guid.Parse(Assert.IsType<TesCreateTaskResponse>(Assert.IsType<OkObjectResult>(result).Value).Id);
 
-        [Fact]
-        public async Task Enqueue_TwoSites_CreatesVersionAndOnePartEach()
+        [Theory]
+        [InlineData("fed.sites")]
+        [InlineData("FED.SITES")]
+        public async Task Enqueue_TwoSites_CreatesVersionAndOnePartEach(string sitesKey)
         {
             using var db = NewDb();
+            var task = AnalysisTask();
+            task.Tags!.Remove("fed.sites");
+            task.Tags[sitesKey] = "tre-a|tre-b";
 
-            var versionId = EnqueuedVersionId(await ControllerFor(db, "dare-admin").Enqueue(TwoSiteTask()));
+            var versionId = EnqueuedVersionId(await ControllerFor(db, "dare-admin").Enqueue(task));
 
             var version = db.FederatedStudyVersions.Include(v => v.Parts).Single();
             Assert.Equal(versionId, version.VersionId);
@@ -154,7 +159,10 @@ namespace Submission.Api.Tests
             {
                 Assert.Equal(part.TreName == "tre-a" ? 1 : 2, part.TreId);
                 Assert.Equal(FederatedTaskPhase.Queued, part.Phase);
-                Assert.Equal(version.TesTaskJson.Replace("\"fed.sites\":\"tre-a|tre-b\"", $"\"fed.sites\":\"{part.TreName}\""), part.TesTaskJson);
+                Assert.Equal(version.TesTaskJson.Replace($"\"{sitesKey}\":\"tre-a|tre-b\"", $"\"fed.sites\":\"{part.TreName}\""), part.TesTaskJson);
+                var sitesKeys = JsonConvert.DeserializeObject<TesTask>(part.TesTaskJson)!.Tags!
+                    .Where(t => t.Key.Equals("fed.sites", StringComparison.OrdinalIgnoreCase)).ToList();
+                Assert.Equal(new[] { new KeyValuePair<string, string>("fed.sites", part.TreName) }, sitesKeys);
             }
         }
 
@@ -1423,6 +1431,26 @@ namespace Submission.Api.Tests
             Assert.Equal("{\"error_code\":\"task_not_found\",\"error_message\":\"task not found\"}", json);
         }
 
+        [Fact]
+        public void StudyVersionView_SerializesWithNoReferenceId()
+        {
+            // The same settings Submission.Api registers globally.
+            var settings = new JsonSerializerSettings
+            {
+                ReferenceLoopHandling = ReferenceLoopHandling.Ignore,
+                PreserveReferencesHandling = PreserveReferencesHandling.Objects
+            };
+            var view = new FederatedStudyVersionView
+            {
+                Hospitals = [new FederatedHospitalView { Tre = "tre-a", Times = new Dictionary<string, string> { ["queued_at"] = "2026-01-01T00:00:00Z" } }]
+            };
+
+            var json = JsonConvert.SerializeObject(view, settings);
+
+            Assert.DoesNotContain("$id", json);
+            Assert.Contains("queued_at", json);
+        }
+
         private static Task<IActionResult> Cancel(ApplicationDbContext db, Guid versionId) =>
             ControllerFor(db, "dare-admin").Cancel(versionId.ToString());
 
@@ -1441,9 +1469,9 @@ namespace Submission.Api.Tests
         {
             using var db = NewDb();
             var version = NewTwoSiteVersion(db);
+            SeedAtPhase(db, FederatedTaskPhase.WaitingForOutputApproval, treId: 2, version: version);
             var released = SeedAtPhase(db, FederatedTaskPhase.Released, treId: 1, version: version);
             released.ResultSha256 = new string('a', 64);
-            SeedAtPhase(db, FederatedTaskPhase.WaitingForOutputApproval, treId: 2, version: version);
             db.SaveChanges();
 
             var view = ViewOf(await ControllerFor(db, "dare-admin").GetStudy("study-1"));
@@ -1777,6 +1805,21 @@ namespace Submission.Api.Tests
             Assert.Equal(new[] { TesState.RUNNINGEnum, TesState.RUNNINGEnum }, tasks.Select(t => t.State).ToArray());
             Assert.Equal(new FederatedTaskPhase?[] { FederatedTaskPhase.Running, FederatedTaskPhase.WaitingForOutputApproval },
                 tasks.Select(FederatedTaskPhases.PhaseOf).ToArray());
+        }
+
+        [Fact]
+        public async Task GetPending_returns_canceling_before_an_older_running_task()
+        {
+            using var db = NewDb();
+            var start = DateTime.UtcNow.AddHours(-2);
+            SeedAtPhase(db, FederatedTaskPhase.Running, submittedAt: start);
+            var canceling = SeedAtPhase(db, FederatedTaskPhase.Canceling, submittedAt: start.AddMinutes(10));
+
+            var result = await AgentControllerFor(db, "tre-a-client").GetPendingTasksForTre();
+
+            var tasks = Assert.IsType<List<TesTask>>(Assert.IsType<OkObjectResult>(result).Value);
+            Assert.Equal(2, tasks.Count);
+            Assert.Equal(canceling.TaskId.ToString(), tasks[0].Id);
         }
 
         [Fact]

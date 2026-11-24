@@ -55,6 +55,6 @@ case "${1:-}" in
   run) shift; run "$@" ;;
   approve) shift; decide_and_wait "$1" 1 ;;
   reject) shift; [ -n "${2:-}" ] || { echo "a reason is required: ./task.sh reject <task-id> \"<reason>\"" >&2; exit 1; }; decide_and_wait "$1" 2 "$2" ;;
-  cancel) shift; cancel "$1"; echo "cancel sent; waiting for my-tre to confirm..."; wait_while "$(part "$1")" 150 canceling ;;
+  cancel) shift; cancel "$1"; echo "cancel sent; waiting for my-tre to confirm..."; id=$(part "$1"); wait_while "$id" 150 canceling ;;
   *) sed -n '2,22p' "$0"; exit 1 ;;
 esac

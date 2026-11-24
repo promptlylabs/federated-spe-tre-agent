@@ -29,7 +29,12 @@ namespace Submission.Api.Services
         {
             var copy = JsonConvert.DeserializeObject<TesTask>(JsonConvert.SerializeObject(submitted))!;
             ClearServerOwnedFields(copy);
-            copy.Tags!["fed.sites"] = site;
+            // Parse reads the tag case-insensitively but Tags is case-sensitive: drop every spelling, then set the canonical key.
+            foreach (var key in copy.Tags!.Keys.Where(k => k.Equals(FederatedTesProfile.SitesTag, StringComparison.OrdinalIgnoreCase)).ToList())
+            {
+                copy.Tags.Remove(key);
+            }
+            copy.Tags[FederatedTesProfile.SitesTag] = site;
 
             var part = new FederatedTask
             {
