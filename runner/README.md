@@ -16,8 +16,11 @@ base, with ACRO and the same thresholds, before PoC task 2.4 runs researcher
 code with it. Until then, code that works in the SPE may fail here, for example
 any code that uses `acro`. See "Base image" below.
 
-The image is not yet used. Starting the pod from a federated task is PoC
-task 2.4.
+The Agent runs this image for a federated code task. On the dev stack it
+starts a Docker container with the restrictions under "Isolation" (see
+[`docs/federated-tasks.md`](../docs/federated-tasks.md), "Running a code task",
+and [`dev/federated`](../dev/federated/README.md)). In production the hospital
+operator is the runtime: it starts the pod with the same restrictions.
 
 ## Command
 
@@ -29,7 +32,7 @@ run-analysis [--debug] <code.py> <dataset dir> <result.json>
 code to stderr. Use it only in the SPE, against synthetic data: a traceback
 can contain data values. `result.json` is the same with or without it. The
 hospital never passes `--debug`; the Agent, not the researcher, sets the
-command (PoC task 2.4).
+command.
 
 The wrapper does these steps in order. If a step fails, it writes an error
 result and stops.
@@ -141,7 +144,18 @@ The pod must have:
 
 The researcher's code can write anything to stdout and stderr, for example
 `print(df)`. Only `result.json` is kept free of data values. Whatever runs the
-pod (2.4) must not return the container's logs to the researcher.
+image must not keep or return the container's logs. The Agent's Docker runs use
+the log driver `none`, so stdout and stderr are discarded, and the Agent reads
+only `/outputs/result.json` (at most 65,536 bytes). The hospital operator must
+do the same.
+
+The Agent's Docker run also has no network, a read-only root file system, user
+`1001:0`, all capabilities dropped, `no-new-privileges`, at most 256 processes,
+swap off, and limits for CPU, memory and `/tmp` from the task and the TRE's
+settings. An `fsize` ulimit caps every file the code writes at the `/tmp`
+allowance. Many smaller files can still fill the host's disk through
+`/outputs`, because a Docker volume has no size limit: production needs a
+size-limited volume, or the operator's pod limits.
 
 pip, uv, micropipenv, virtualenv, and the pip and setuptools wheels that
 `ensurepip` uses are removed, so code cannot install packages. The list of
