@@ -81,6 +81,32 @@ public class FederatedTaskSettingsTests
     }
 
     [Fact]
+    public void CodeRunDefaults()
+    {
+        var s = new FederatedTaskSettings();
+        Assert.Equal(30, s.MaxRunMinutes);
+        Assert.Equal(1, s.DefaultCpuCores);
+        Assert.Equal(4, s.MaxCpuCores);
+        Assert.Equal(8, s.DefaultRamGb);
+        Assert.Equal(16, s.MaxRamGb);
+        Assert.Equal(1, s.DefaultDiskGb);
+        Assert.Equal(4, s.MaxDiskGb);
+        Assert.Equal(2, s.MaxConcurrentRuns);
+        Assert.Equal("unix:///var/run/docker.sock", s.DockerEndpoint);
+    }
+
+    [Theory]
+    [InlineData("python-runner:1")]
+    [InlineData("registry.example/spms/python-runner:1")]
+    [InlineData("5s-tes/federated-ops:1")]
+    public void ApprovedImagesProblem_NullForKnownImageNames(string image) =>
+        Assert.Null(new FederatedTaskSettings { ApprovedImages = [image] }.ApprovedImagesProblem());
+
+    [Fact]
+    public void ApprovedImagesProblem_FlagsTypo() =>
+        Assert.NotNull(new FederatedTaskSettings { ApprovedImages = ["pyhton-runner:1"] }.ApprovedImagesProblem());
+
+    [Fact]
     public void ApprovedImagesProblem_is_null_when_the_list_is_empty_or_has_the_profile_image()
     {
         Assert.Null(new FederatedTaskSettings().ApprovedImagesProblem());
@@ -90,10 +116,11 @@ public class FederatedTaskSettingsTests
     [Fact]
     public void ApprovedImagesProblem_names_the_profile_image_when_the_list_lacks_it()
     {
-        var warning = new FederatedTaskSettings { ApprovedImages = ["docker.io/5s-tes/federated-ops:1"] }.ApprovedImagesProblem();
+        var warning = new FederatedTaskSettings { ApprovedImages = ["docker.io/5s-tes/federated-opz:1"] }.ApprovedImagesProblem();
 
         Assert.NotNull(warning);
-        Assert.Contains("'5s-tes/federated-ops:1'", warning);
+        Assert.Contains("python-runner", warning);
+        Assert.Contains("federated-ops", warning);
         Assert.Contains("image_not_approved", warning);
     }
 

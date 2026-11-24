@@ -82,16 +82,57 @@ namespace Agent.Api.Models
         private string[] _approvedImages = [];
 
         /// <summary>
-        /// A message for the site admin when the list is set but holds none of the images the federated profile accepts:
-        /// every federated task is then rejected with image_not_approved. That can be a deliberate refusal or a typo
-        /// (for example a registry prefix). The Agent cannot tell them apart, so it logs this as an error at startup but
-        /// still applies the list. Null otherwise.
+        /// A message for the site admin when the list is set but holds no image the Agent runs: an entry whose image name
+        /// (the last '/' segment, before the ':' tag) is python-runner or federated-ops. Every task is then rejected with
+        /// image_not_approved. That can be a deliberate refusal or a typo. The Agent cannot tell them apart, so it logs
+        /// this as an error at startup but still applies the list. Null otherwise, and when the list is empty.
         /// </summary>
         public string? ApprovedImagesProblem() =>
-            ApprovedImages.Length == 0 || ApprovedImages.Contains(FederatedTesProfile.ExecutorImage, StringComparer.Ordinal)
+            ApprovedImages.Length == 0 || ApprovedImages.Any(image => KnownImageNames.Contains(ImageName(image)))
                 ? null
-                : $"FederatedTaskSettings:ApprovedImages does not list '{FederatedTesProfile.ExecutorImage}', the image every federated task uses, " +
-                  "so every federated task will be rejected with image_not_approved. If that is not intended, check the list for a typo or a registry prefix.";
+                : $"FederatedTaskSettings:ApprovedImages lists neither '{RunnerImageName}' nor '{OpsImageName}', the images federated tasks use, " +
+                  "so every federated task will be rejected with image_not_approved. If that is not intended, check the list for a typo.";
+
+        private const string RunnerImageName = "python-runner";
+        private const string OpsImageName = "federated-ops";
+        private static readonly string[] KnownImageNames = [RunnerImageName, OpsImageName];
+
+        private static string ImageName(string image)
+        {
+            var lastSegment = image[(image.LastIndexOf('/') + 1)..];
+            var tag = lastSegment.IndexOf(':');
+            return tag < 0 ? lastSegment : lastSegment[..tag];
+        }
+
+        /// <summary>
+        /// The longest, in minutes, that researcher code may run in its container. After it the container is killed and the
+        /// task fails with timeout.
+        /// </summary>
+        public int MaxRunMinutes { get; set; } = 30;
+
+        /// <summary>CPU cores a run gets when the task does not ask for a number.</summary>
+        public double DefaultCpuCores { get; set; } = 1;
+
+        /// <summary>The most CPU cores a task may ask for.</summary>
+        public double MaxCpuCores { get; set; } = 4;
+
+        /// <summary>RAM, in GB, a run gets when the task does not ask for an amount.</summary>
+        public double DefaultRamGb { get; set; } = 8;
+
+        /// <summary>The most RAM, in GB, a task may ask for.</summary>
+        public double MaxRamGb { get; set; } = 16;
+
+        /// <summary>Scratch disk, in GB, a run gets when the task does not ask for an amount.</summary>
+        public double DefaultDiskGb { get; set; } = 1;
+
+        /// <summary>The most scratch disk, in GB, a task may ask for.</summary>
+        public double MaxDiskGb { get; set; } = 4;
+
+        /// <summary>How many researcher-code containers may run at the same time on this Agent.</summary>
+        public int MaxConcurrentRuns { get; set; } = 2;
+
+        /// <summary>Docker endpoint the Agent uses to start the containers that run researcher code.</summary>
+        public string DockerEndpoint { get; set; } = "unix:///var/run/docker.sock";
 
         public static FederatedTaskSettings FromConfiguration(IConfiguration configuration)
         {
