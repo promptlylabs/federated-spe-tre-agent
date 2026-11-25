@@ -21,11 +21,12 @@ public class DoFederatedAggregationWorkTests
     private readonly FakeClient _client = new();
     private readonly FakeCodeRunner _runner = new();
     private readonly FederatedTaskSettings _settings = new() { Role = FederatedTaskSettings.AggregatorRole, ApprovedImages = [Image], MaxRunMinutes = 5 };
-    private readonly TimeProvider _clock = new FixedClock();
+    private readonly FixedClock _clock = new();
 
     private sealed class FixedClock : TimeProvider
     {
-        public override DateTimeOffset GetUtcNow() => Now;
+        public DateTimeOffset At { get; set; } = Now;
+        public override DateTimeOffset GetUtcNow() => At;
     }
 
     private DoFederatedAggregationWork Work() => new(_client, _runner, _settings, _clock);
@@ -153,8 +154,12 @@ public class DoFederatedAggregationWorkTests
         _client.Status = 503;
 
         await Work().Execute();
+        _clock.At = Now.AddMinutes(1);
+        await Work().Execute();
 
         Assert.Empty(_runner.Removed);
+        // The same bytes each time, so a retried report stores the same file under the same key.
+        Assert.Equal(_client.Reports[0].File, _client.Reports[1].File);
     }
 
     [Theory]
@@ -214,6 +219,21 @@ public class DoFederatedAggregationWorkTests
         await Work().Execute();
 
         Assert.Equal(new[] { "old", "orphan" }, _runner.Removed.Order());
+    }
+
+    /// <summary>
+    /// Submission leaves a version out when its storage is briefly down; its run, finished or not, must survive that poll,
+    /// as a hospital Agent keeps a run that isn't pending until it is twice MaxRunMinutes old.
+    /// </summary>
+    [Fact]
+    public async Task Keeps_a_recent_run_whose_version_was_left_out_of_this_poll()
+    {
+        _runner.States["skipped"] = new CodeRunState(CodeRunStatus.Exited, Now.AddMinutes(-2), Now, 0, false, null);
+        _runner.CreatedAt["skipped"] = Now.AddMinutes(-2);
+
+        await Work().Execute();
+
+        Assert.Empty(_runner.Removed);
     }
 
     [Fact]

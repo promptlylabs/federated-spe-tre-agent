@@ -221,10 +221,12 @@ namespace Submission.Api.Controllers
                 }
 
                 var now = DateTime.UtcNow;
+                // Also for a final report with no running before it (lost, or an earlier run collected after a retry), so
+                // the audit trail always has a start.
+                version.AggregationStartedAt ??= now;
                 switch (phase)
                 {
                     case FederatedAggregationPhases.Running:
-                        version.AggregationStartedAt ??= now;
                         break;
                     case FederatedAggregationPhases.Failed:
                         FederatedStudyOutcomes.Fail(version, now, form.ErrorCode!, FailureMessages[form.ErrorCode!]);

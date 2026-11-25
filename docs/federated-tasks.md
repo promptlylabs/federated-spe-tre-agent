@@ -262,7 +262,8 @@ Each hospital returns a partial result; the researcher's `aggregate(results)`, i
    - `aggregated`: Submission checks the pooled document (below) against the version, stores it under `studies/<versionId>/<sha256>.json` in `federated-results`, apart from the site results, and the outcome becomes `aggregated` with `pooled_result_sha256`.
    - `failed`: one of `invalid_task`, `image_not_approved`, `code_error`, `invalid_result`, `result_too_large`, `timeout`, `out_of_memory`, `run_failed`, `internal_error`. Submission stores the code and a fixed message; it takes no text from the aggregator. A `results.json` the runner can't read is reported as `internal_error`, since the aggregator wrote it.
    - A report for a version that is no longer `ready_for_aggregation` gets 409 `task_already_finished`, except the same final report sent again (200).
-5. Nothing `aggregate()` writes (output, traceback, exception text) reaches Submission or its logs. The runner's own message goes to the aggregator's log only, as at a hospital.
+5. The aggregator removes a run once its report is accepted. Its sweep also removes runs whose version is no longer pending, but only once they are older than twice `MaxRunMinutes`, as a hospital Agent does: Submission leaves a version out of a poll while its storage is briefly unreachable, and that run must survive. A report sent again is the same bytes (`completedAt` is when the run finished), so it is stored under the same key.
+6. Nothing `aggregate()` writes (output, traceback, exception text) reaches Submission or its logs. The runner's own message goes to the aggregator's log only, as at a hospital.
 
 Pooled document:
 

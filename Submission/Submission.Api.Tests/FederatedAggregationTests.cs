@@ -193,6 +193,8 @@ namespace Submission.Api.Tests
             var stored = Reload(version);
             var sha = FederatedResultDocumentJson.Sha256Hex(bytes);
             Assert.Equal(FederatedStudyOutcome.Aggregated, stored.Outcome);
+            // No running report came first (it was lost, or a retry collected an earlier run): the audit trail still has a start.
+            Assert.NotNull(stored.AggregationStartedAt);
             Assert.Equal((_store.Bucket, $"studies/{version.VersionId:D}/{sha}.json", sha), (stored.PooledResultBucket, stored.PooledResultKey, stored.PooledResultSha256));
             Assert.Equal(bytes, _store.Objects[stored.PooledResultKey!]);
 
@@ -244,6 +246,7 @@ namespace Submission.Api.Tests
 
             var stored = Reload(version);
             Assert.Equal((FederatedStudyOutcome.Failed, code), (stored.Outcome, stored.AggregationErrorCode));
+            Assert.NotNull(stored.AggregationStartedAt);
             Assert.False(string.IsNullOrWhiteSpace(stored.OutcomeMessage));
         }
 

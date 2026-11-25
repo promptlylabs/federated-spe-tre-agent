@@ -53,12 +53,15 @@ namespace Agent.Api
             var pending = jobs.Select(j => j.VersionId.ToString("D")).ToHashSet(StringComparer.Ordinal);
 
             // A run whose version is no longer pending was reported (or the version was retried, timed out or decided
-            // otherwise): it is never used again. Staged data without a run is left from a start cut short.
+            // otherwise). Submission also leaves a version out for a poll when its storage is briefly down, so a run is
+            // removed only once it is older than twice MaxRunMinutes, as a hospital Agent does; reported runs are removed
+            // right after their report anyway. Staged data without a run is left from a start cut short.
+            var staleAfter = TimeSpan.FromMinutes(2 * _settings.MaxRunMinutes);
             try
             {
                 foreach (var run in await _runner.ListAsync(CancellationToken.None))
                 {
-                    if (!pending.Contains(run.TaskId))
+                    if (!pending.Contains(run.TaskId) && _clock.GetUtcNow() - run.CreatedAt > staleAfter)
                     {
                         await _runner.RemoveAsync(run.TaskId, CancellationToken.None);
                     }
@@ -233,7 +236,9 @@ namespace Agent.Api
                 VersionId = job.VersionId,
                 CodeSha256 = job.CodeSha256,
                 Sites = sites,
-                CompletedAt = _clock.GetUtcNow(),
+                // When the run finished, not when it was collected: a report sent again is the same bytes, stored under the
+                // same key.
+                CompletedAt = state.FinishedAt ?? _clock.GetUtcNow(),
                 Result = new FederatedPooledResult { N = n, Value = value.Clone() }
             }.Serialize();
 
