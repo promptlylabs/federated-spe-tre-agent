@@ -10,12 +10,16 @@ public class SemgrepCodeScannerTests
     private const string Version = "2026-11-1";
     private const string Sha = "0000000000000000000000000000000000000000000000000000000000000000";
 
-    // Trimmed from semgrep 1.185.0 --json output (the config path's directories prefix check_id).
+    // Trimmed from semgrep 1.185.0 --json output (the config path's directories prefix check_id). Line 7 is
+    // "import socket, subprocess": one rule, two messages.
     private const string TwoResults = """
         {"version":"1.185.0","results":[
           {"check_id":"tmp.ScanRules.import-not-allowed","path":"/tmp/analysis.py","start":{"line":7,"col":1,"offset":78},
-           "end":{"line":7,"col":14,"offset":91},
+           "end":{"line":7,"col":26,"offset":103},
            "extra":{"message":"'socket' is not on this hospital's list of allowed imports","metadata":{},"severity":"ERROR"}},
+          {"check_id":"tmp.ScanRules.import-not-allowed","path":"/tmp/analysis.py","start":{"line":7,"col":1,"offset":78},
+           "end":{"line":7,"col":26,"offset":103},
+           "extra":{"message":"'subprocess' is not on this hospital's list of allowed imports","metadata":{},"severity":"ERROR"}},
           {"check_id":"tmp.ScanRules.dynamic-code","path":"/tmp/analysis.py","start":{"line":3,"col":9,"offset":53},
            "end":{"line":3,"col":13,"offset":57},
            "extra":{"message":"runs code made from text, or looks up a name put together while it runs, so what it does can't be checked in advance","metadata":{},"severity":"ERROR"}}
@@ -36,11 +40,33 @@ public class SemgrepCodeScannerTests
         ],"paths":{"scanned":["/tmp/analysis.py"]}}
         """;
 
+    // Rule files Semgrep 1.185.0 can't load: a bad pattern, invalid YAML, a rule without its message.
     private const string RuleParseError = """
         {"version":"1.185.0","results":[],"errors":[
           {"code":2,"level":"error","type":"Rule parse error","rule_id":"tmp.broken",
            "message":"Rule parse error in rule tmp.broken:\n Invalid pattern for Python: Stdlib.Parsing.Parse_error\n----- pattern -----\neval(\n----- end pattern -----\n"}
         ],"paths":{"scanned":[]}}
+        """;
+
+    private const string InvalidYaml = """
+        {"version":"1.185.0","results":[],"errors":[
+          {"code":5,"level":"error","type":"SemgrepError","message":"Invalid YAML file rules.yaml:\n\twhile parsing a flow sequence"},
+          {"code":7,"level":"error","type":"SemgrepError","message":"invalid configuration file found (1 configs were invalid)"}
+        ],"paths":{"scanned":[]}}
+        """;
+
+    private const string MissingMessage = """
+        {"version":"1.185.0","results":[],"errors":[
+          {"code":4,"level":"error","type":"InvalidRuleSchemaError","long_msg":"One of these properties is missing: 'message'",
+           "short_msg":"Invalid rule schema","spans":[]},
+          {"code":7,"level":"error","type":"SemgrepError","message":"invalid configuration file found (1 configs were invalid)"}
+        ],"paths":{"scanned":[]}}
+        """;
+
+    private const string Timeout = """
+        {"version":"1.185.0","results":[],"errors":[
+          {"code":3,"level":"warn","type":"Timeout","rule_id":"tmp.dynamic-code","message":"Timeout when running tmp.dynamic-code on /tmp/analysis.py"}
+        ],"paths":{"scanned":["/tmp/analysis.py"]}}
         """;
 
     [Fact]
@@ -54,6 +80,7 @@ public class SemgrepCodeScannerTests
                 new CodeScanFinding("dynamic-code", 3,
                     "runs code made from text, or looks up a name put together while it runs, so what it does can't be checked in advance"),
                 new CodeScanFinding("import-not-allowed", 7, "'socket' is not on this hospital's list of allowed imports"),
+                new CodeScanFinding("import-not-allowed", 7, "'subprocess' is not on this hospital's list of allowed imports"),
             ],
             result.Findings);
         Assert.Equal(Version, result.RulesVersion);
@@ -81,13 +108,18 @@ public class SemgrepCodeScannerTests
         Assert.Equal("parse-error line 3: the code could not be parsed", CodeScanMessages.Format(result.Findings));
     }
 
-    [Fact]
-    public void ParseOutput_OtherError_ScannerFailed()
+    [Theory]
+    [InlineData(RuleParseError, CodeScanKind.RulesUnavailable, "Rule parse error")]
+    [InlineData(InvalidYaml, CodeScanKind.RulesUnavailable, "Invalid YAML")]
+    [InlineData(MissingMessage, CodeScanKind.RulesUnavailable, "'message'")]
+    [InlineData(Timeout, CodeScanKind.ScannerFailed, "Timeout")]
+    public void ParseOutput_OtherError_RulesUnavailableOrScannerFailed(string json, CodeScanKind kind, string detail)
     {
-        var result = SemgrepCodeScanner.ParseOutput(RuleParseError, Version, Sha);
+        var result = SemgrepCodeScanner.ParseOutput(json, Version, Sha);
 
-        Assert.Equal(CodeScanKind.ScannerFailed, result.Kind);
-        Assert.Contains("Rule parse error", result.Detail);
+        Assert.Equal(kind, result.Kind);
+        Assert.Empty(result.Findings);
+        Assert.Contains(detail, result.Detail);
     }
 
     [Fact]

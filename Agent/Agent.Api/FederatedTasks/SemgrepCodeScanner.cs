@@ -8,7 +8,7 @@ namespace Agent.Api.FederatedTasks
 {
     /// <summary>
     /// Scans researcher code with Semgrep and the hospital's rule file, offline: local rules only, no metrics, no version
-    /// check. The code and a copy of the rule file are written to a new temporary directory (so the hashed rules are the
+    /// check. Suppression comments in the code ("# nosemgrep") are ignored: only the hospital decides what is allowed. The code and a copy of the rule file are written to a new temporary directory (so the hashed rules are the
     /// rules that ran), and the directory is always deleted. The code's text never leaves this class.
     /// </summary>
     public sealed class SemgrepCodeScanner : ICodeScanner
@@ -22,6 +22,13 @@ namespace Agent.Api.FederatedTasks
         private static readonly HashSet<string> ParseErrorTypes =
             ["PartialParsing", "Syntax error", "Lexical error", "Other syntax error"];
 
+        /// <summary>Semgrep's error types for a rule file it cannot load (probed on 1.185.0).</summary>
+        private static readonly HashSet<string> RuleFileErrorTypes =
+            ["Rule parse error", "InvalidRuleSchemaError", "UnknownLanguageError", "Invalid YAML", "Missing keys"];
+
+        /// <summary>The messages of Semgrep's generic SemgrepError when the rule file is invalid YAML or not a rule file.</summary>
+        private static readonly string[] RuleFileErrorMessages = ["Invalid YAML", "invalid configuration file found"];
+
         private readonly FederatedTaskSettings _settings;
 
         public SemgrepCodeScanner(FederatedTaskSettings settings)
@@ -33,7 +40,7 @@ namespace Agent.Api.FederatedTasks
 
         public async Task<CodeScanResult> ScanAsync(string code, CancellationToken ct)
         {
-            var rulesPath = _settings.ScanRulesPath ?? DefaultRulesPath;
+            var rulesPath = string.IsNullOrWhiteSpace(_settings.ScanRulesPath) ? DefaultRulesPath : _settings.ScanRulesPath;
             byte[] rules;
             try
             {
@@ -58,7 +65,10 @@ namespace Agent.Api.FederatedTasks
                 var codeFile = Path.Combine(dir.FullName, "analysis.py");
                 await File.WriteAllBytesAsync(rulesCopy, rules, ct);
                 await File.WriteAllTextAsync(codeFile, code, new UTF8Encoding(false), ct);
-                return await RunSemgrepAsync(dir.FullName, rulesCopy, codeFile, version, sha, ct);
+                var result = await RunSemgrepAsync(dir.FullName, rulesCopy, codeFile, version, sha, ct);
+                return result.Kind == CodeScanKind.RulesUnavailable
+                    ? result with { Detail = $"Semgrep cannot use the rule file {rulesPath}: {result.Detail}" }
+                    : result;
             }
             finally
             {
@@ -76,6 +86,12 @@ namespace Agent.Api.FederatedTasks
         private async Task<CodeScanResult> RunSemgrepAsync(
             string dir, string rulesFile, string codeFile, string version, string sha, CancellationToken ct)
         {
+            // CancelAfter throws on a negative time, and zero would kill every scan at once (RunSettingsProblem logs it).
+            if (_settings.ScanTimeoutSeconds <= 0)
+            {
+                return Failed(version, sha, $"FederatedTaskSettings:ScanTimeoutSeconds is {_settings.ScanTimeoutSeconds}; set it above 0");
+            }
+
             var start = new ProcessStartInfo(_settings.SemgrepPath)
             {
                 RedirectStandardOutput = true,
@@ -86,7 +102,7 @@ namespace Agent.Api.FederatedTasks
             foreach (var arg in new[]
                      {
                          "--config", rulesFile, "--json", "--metrics=off", "--disable-version-check", "--no-git-ignore",
-                         codeFile
+                         "--disable-nosem", codeFile
                      })
             {
                 start.ArgumentList.Add(arg);
@@ -146,7 +162,7 @@ namespace Agent.Api.FederatedTasks
                 return Failed(version, sha, $"Semgrep exited with {process.ExitCode} and no readable JSON: {error}");
             }
 
-            if (result.Kind == CodeScanKind.ScannerFailed)
+            if (result.Kind is CodeScanKind.ScannerFailed or CodeScanKind.RulesUnavailable)
             {
                 return result with { Detail = $"{result.Detail} (exit {process.ExitCode}): {error}" };
             }
@@ -159,7 +175,8 @@ namespace Agent.Api.FederatedTasks
 
         /// <summary>
         /// Reads Semgrep's JSON output: results become findings (rule id without the path prefix Semgrep adds), a parse
-        /// error becomes a "parse-error" finding with its line, and any other error makes the scan fail.
+        /// error becomes a "parse-error" finding with its line, an error in the rule file makes the rules unavailable (the
+        /// task is held), and any other error makes the scan fail.
         /// </summary>
         internal static CodeScanResult ParseOutput(string json, string version, string sha)
         {
@@ -167,6 +184,7 @@ namespace Agent.Api.FederatedTasks
             var root = document.RootElement;
             var findings = new List<CodeScanFinding>();
             var otherErrors = new List<string>();
+            var ruleFileError = false;
 
             foreach (var error in root.GetProperty("errors").EnumerateArray())
             {
@@ -180,8 +198,19 @@ namespace Agent.Api.FederatedTasks
                 else
                 {
                     // Logged only: an error that is not a parse error is about the rules or Semgrep, not the code.
-                    otherErrors.Add($"{typeName}: {(error.TryGetProperty("message", out var m) ? m.GetString() : "")}");
+                    var message = error.TryGetProperty("message", out var m) ? m.GetString() :
+                        error.TryGetProperty("long_msg", out var l) ? l.GetString() : null;
+                    otherErrors.Add($"{typeName}: {message}");
+                    ruleFileError |= typeName != null && (RuleFileErrorTypes.Contains(typeName) ||
+                        (typeName == "SemgrepError" && message != null &&
+                         RuleFileErrorMessages.Any(prefix => message.StartsWith(prefix, StringComparison.Ordinal))));
                 }
+            }
+
+            if (ruleFileError)
+            {
+                // The hospital's config, not the researcher's code or the install: hold the task until it is fixed.
+                return new CodeScanResult(CodeScanKind.RulesUnavailable, [], null, null, string.Join(" | ", otherErrors));
             }
 
             if (otherErrors.Count > 0)
@@ -198,11 +227,12 @@ namespace Agent.Api.FederatedTasks
                     match.GetProperty("extra").GetProperty("message").GetString() ?? ""));
             }
 
-            // One line can match the same rule more than once.
+            // One line can match the same rule more than once; "import socket, subprocess" names both modules.
             var unique = findings
-                .DistinctBy(f => (f.RuleId, f.Line))
+                .DistinctBy(f => (f.RuleId, f.Line, f.Message))
                 .OrderBy(f => f.Line)
                 .ThenBy(f => f.RuleId, StringComparer.Ordinal)
+                .ThenBy(f => f.Message, StringComparer.Ordinal)
                 .ToList();
             return new CodeScanResult(
                 unique.Count == 0 ? CodeScanKind.Clean : CodeScanKind.Findings, unique, version, sha, null);

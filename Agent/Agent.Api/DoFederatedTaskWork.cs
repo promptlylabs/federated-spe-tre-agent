@@ -124,7 +124,7 @@ namespace Agent.Api
 
             // One line per poll, not per task, so a backlog does not flood the log.
             if (held > 0)
-                Log.Error("Federated tasks: FederatedTaskSettings:ApprovedImages is not configured; {Count} task(s) were not checked or run and keep their phase",
+                Log.Error("Federated tasks: FederatedTaskSettings:ApprovedImages is not configured or the code-scan rule file is not usable (see the errors above); {Count} task(s) were not checked or run and keep their phase",
                     held);
             if (heldForEgress > 0)
                 Log.Error("Federated tasks: FederatedEgressSettings BaseUrl/ClientId/ClientSecret are not configured; {Count} result(s) are held for output approval and not released",

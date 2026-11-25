@@ -4,8 +4,8 @@ using FiveSafesTes.Core.Models.FederatedTasks;
 namespace Agent.Api.FederatedTasks
 {
     /// <summary>
-    /// What a scan found. <see cref="CodeScanKind.RulesUnavailable"/>: the hospital's rule file is missing, unreadable or
-    /// has no version line (a broken config, not the researcher's fault). <see cref="CodeScanKind.ScannerFailed"/>: the
+    /// What a scan found. <see cref="CodeScanKind.RulesUnavailable"/>: the hospital's rule file is missing, unreadable,
+    /// has no version line, or Semgrep cannot load it (a broken config, not the researcher's fault). <see cref="CodeScanKind.ScannerFailed"/>: the
     /// scanner itself failed or ran too long.
     /// </summary>
     public enum CodeScanKind { Clean, Findings, RulesUnavailable, ScannerFailed }

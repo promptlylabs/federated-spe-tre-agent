@@ -1,4 +1,4 @@
-import socket
+import socket  # nosemgrep
 
 
 def site_analysis(df):

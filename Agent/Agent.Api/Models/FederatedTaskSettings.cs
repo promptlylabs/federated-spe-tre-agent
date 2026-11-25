@@ -132,8 +132,9 @@ namespace Agent.Api.Models
 
         /// <summary>
         /// A message for the site admin when a code-task setting stops code tasks from working: MaxConcurrentRuns of 0 or
-        /// less (no code task ever starts) or MaxRunMinutes of 0 or less (every run times out at once). Logged as an
-        /// error at startup; the settings are still used. Null when both are above 0.
+        /// less (no code task ever starts), MaxRunMinutes of 0 or less (every run times out at once) or ScanTimeoutSeconds
+        /// of 0 or less (every code scan fails). Logged as an error at startup; the settings are still used. Null when all
+        /// are above 0.
         /// </summary>
         public string? RunSettingsProblem()
         {
@@ -150,13 +151,20 @@ namespace Agent.Api.Models
                              "at the first check");
             }
 
+            if (ScanTimeoutSeconds <= 0)
+            {
+                problems.Add($"FederatedTaskSettings:ScanTimeoutSeconds is {ScanTimeoutSeconds}, so every code scan will fail and " +
+                             "every code task will fail with internal_error");
+            }
+
             return problems.Count == 0 ? null : string.Join(". ", problems) + ". Set the value above 0.";
         }
 
         /// <summary>
         /// The hospital's code-scan rule file (Semgrep YAML whose first line is "# version: &lt;text&gt;"). Null means the
-        /// default rules shipped with the Agent (ScanRules/default.yaml next to the app). A missing or unreadable file, or
-        /// one without the version line, holds every code task until it is fixed.
+        /// default rules shipped with the Agent (ScanRules/default.yaml next to the app), as does an empty value. A missing
+        /// or unreadable file, one without the version line, or one Semgrep cannot load holds every code task until it is
+        /// fixed.
         /// </summary>
         public string? ScanRulesPath { get; set; }
 
