@@ -121,6 +121,10 @@ services:
       FederatedResultsStorageSettings__Url: http://rustfs-orchestrator:9000
       FederatedResultsStorageSettings__AccessKey: orchadmin
       FederatedResultsStorageSettings__SecretKey: orchadmin123
+      # 30 minutes is longer than a run (MaxRunMinutes 5) plus a live review (DEMO_REVIEW_MINUTES 15), so the deadline never
+      # cuts off the demo; the timeout itself is unit-tested only. A 15-second sweep shows an early end (R2) quickly.
+      FederatedTaskSettings__StudyTimeoutMinutes: "30"
+      FederatedTaskSettings__StudySweepSeconds: "15"
     ports:
       - "5034:8080"
     depends_on:

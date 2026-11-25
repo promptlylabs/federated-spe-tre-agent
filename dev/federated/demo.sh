@@ -75,6 +75,38 @@ wait_while_phase() {
   done
 }
 
+# Prints "state|outcome|outcome_message" for a study version, or "unknown||" if it cannot be read.
+study_view() {
+  study "$1" 2>/dev/null | python3 -c '
+import sys, json
+try:
+    v = json.load(sys.stdin)
+except Exception:
+    print("unknown||"); sys.exit()
+print("|".join([v.get("state") or "unknown", v.get("outcome") or "", (v.get("outcome_message") or "").replace("|", "/")]))'
+}
+
+# show_study <version-id> <my-tre phase>: what the study as a whole did. A study needs 2 hospitals and other-tre has no
+# Agent here, so a released case leaves the study open, and a refused one ends it incomplete at the next sweep (15 s).
+show_study() {
+  local version=$1 phase=$2 start=$SECONDS state outcome message
+  if [ "$phase" = released ]; then
+    say "   ${DIM}Study still open: waiting for a second hospital (other-tre has no Agent on this stack)${X}"
+    return 0
+  fi
+  while :; do
+    IFS='|' read -r state outcome message <<<"$(study_view "$version")"
+    [ -n "$outcome" ] && break
+    if [ $((SECONDS - start)) -ge 60 ]; then
+      stop "The study had no outcome after 60 s" "version $version · $state"
+      FAILURES=$((FAILURES + 1)); return 1
+    fi
+    waiting "Waiting for the study's outcome…" "$((SECONDS - start))s" >&2
+    sleep 2
+  done
+  stop "Study ended ${outcome}: ${message}" "the other hospital's request was cancelled"
+}
+
 # The released result in plain words: what the code returned (result.value) and how many people it is based on
 # (result.n), e.g. '{"n": 3, "mean_age": 40.0} (from 3 records)'.
 result_words() {
@@ -135,7 +167,7 @@ run_case() {
   heading "Case $n of $CASES · $title"
   say "${DIM}${ask}${X}"
   echo
-  # Each case is its own study, sent to my-tre only; the hospital's part of it is the task followed below.
+  # Each case is its own study, sent to my-tre and other-tre; my-tre's part of it is the task followed below.
   if ! version=$(enqueue "$@" 2>/dev/null) || ! id=$(part "$version" 2>/dev/null); then
     stop "The request could not be sent to the hospital"; FAILURES=$((FAILURES + 1))
     SUMMARY+=("$n|$title|request failed|no"); return
@@ -196,6 +228,8 @@ run_case() {
         outcome="$state/$phase/$code"; decision="$state" ;;
     esac
   fi
+
+  case "$phase" in released|rejected_by_input_checks|rejected_at_output_approval) show_study "$version" "$phase" ;; esac
 
   # Checked in the result store itself. A result is stored only when it was released.
   case $(stored_result "$id") in

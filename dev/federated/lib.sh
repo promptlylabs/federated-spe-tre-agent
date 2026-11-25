@@ -35,12 +35,12 @@ cached_login() {
 token() { cached_login submission "$KEYCLOAK" Dare-Control-API dev-dare-control-api-secret control-admin 'ControlAdmin1!'; }
 
 # Prints the TES body of a code task: the Python file inline, fed.code_sha256 the SHA-256 of its bytes.
-# The hospitals are $SITES (default my-tre; e.g. "my-tre|other-tre"). The study is $STUDY_ID, by default a new one per
-# call, so one run never waits for another's open version.
+# The hospitals are $SITES (default "my-tre|other-tre": a study needs at least 2). The study is $STUDY_ID, by default a
+# new one per call, so one run never waits for another's open version.
 code_task_body() {
   local dataset=$1 file=$2
   [ -f "$file" ] || { echo "no such file: $file" >&2; return 1; }
-  python3 - "$dataset" "$file" "${SITES:-my-tre}" "${STUDY_ID:-}" <<'PY'
+  python3 - "$dataset" "$file" "${SITES:-my-tre|other-tre}" "${STUDY_ID:-}" <<'PY'
 import hashlib, json, sys, uuid
 dataset, path, sites = sys.argv[1], sys.argv[2], sys.argv[3]
 study = sys.argv[4] or f"study-{uuid.uuid4().hex[:12]}"
@@ -86,7 +86,7 @@ if not ids:
 print(ids[0])' "${2:-my-tre}"
 }
 
-# study <version-id>: prints the study version (state open, canceling or ended, and each hospital's phase) as JSON.
+# study <version-id>: prints the study version (state open, canceling or ended, its outcome, and each hospital's phase) as JSON.
 study() {
   [ $# -eq 1 ] || { echo "usage: study <version-id>" >&2; return 1; }
   curl -sf "$SUBMISSION/api/FederatedTask/GetStudyVersion?id=$1" -H "Authorization: Bearer $(token)" | python3 -m json.tool

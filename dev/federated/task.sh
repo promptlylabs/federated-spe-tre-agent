@@ -3,7 +3,7 @@
 #
 #   ./task.sh enqueue <dataset> <file.py>       queue a study version that runs the Python file on the dataset, prints its id
 #   ./task.sh part <version-id> [tre]           print a hospital's task id in the version (default my-tre)
-#   ./task.sh study <version-id>                show the version: open, canceling or ended, and each hospital's phase
+#   ./task.sh study <version-id>                show the version: open, canceling or ended, its outcome, and each hospital's phase
 #   ./task.sh get <task-id>                     show a hospital's state, phase, phase times and result location
 #   ./task.sh result <task-id>                  download and print the result file
 #   ./task.sh run <dataset> <file.py>           enqueue, wait until my-tre's result waits for output approval
@@ -11,8 +11,8 @@
 #   ./task.sh reject <task-id> "<reason>"       reject the result in the Egress app, wait for the report
 #   ./task.sh cancel <version-id>               cancel the version as an admin, wait for my-tre to confirm
 #
-# Each enqueue is a new study unless STUDY_ID is set; the hospitals are SITES (default my-tre). other-tre has no Agent:
-#   SITES='my-tre|other-tre' ./task.sh run cohort_2024 code/analysis.py
+# Each enqueue is a new study unless STUDY_ID is set; the hospitals are SITES (default 'my-tre|other-tre'; a study
+# needs at least 2). other-tre has no Agent, so its part stays queued.
 #
 # Examples:
 #   ./task.sh run cohort_2024 code/analysis.py  -> RUNNING, phase waiting_for_output_approval

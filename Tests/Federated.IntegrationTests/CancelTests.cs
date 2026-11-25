@@ -2,7 +2,7 @@ using Xunit;
 
 namespace Federated.IntegrationTests;
 
-/// <summary>The orchestrator cancels a one-hospital study version: the hospital closes the review, removes the result and confirms.</summary>
+/// <summary>The orchestrator cancels a study version: my-tre closes the review, removes the result and confirms; other-tre's queued part ends at once.</summary>
 [Collection(StackCollection.Name)]
 public class CancelTests
 {
