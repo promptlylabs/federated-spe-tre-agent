@@ -15,7 +15,7 @@ import socket
 import socket as s
 # ruleid: import-not-allowed
 from socket import create_connection
-# ruleid: import-not-allowed
+# ruleid: import-not-allowed, back-door
 from urllib.request import urlopen
 # ruleid: import-not-allowed
 from http import *
@@ -61,6 +61,9 @@ getattr(df, "age")
 smf.ols("age ~ C(sex)", data=df)
 # ok: dynamic-code
 re.compile(r"\d+")
+# ok: dynamic-code
+if __name__ == "__main__":
+    site_analysis(df)
 
 # --- process-call -----------------------------------------------------------------------------------------------------
 # ruleid: import-not-allowed
@@ -97,8 +100,16 @@ from pandas import read_pickle
 getattr(df, "to_csv")("/data/x")
 # ruleid: file-access
 getattr(pd, "read_csv")("/data/other.csv")
+# ruleid: file-access
+arr.dump("/tmp/x")
+# ruleid: file-access
+scipy.sparse.save_npz("/tmp/x", m)
+# ruleid: file-access
+np.lib.npyio.DataSource("/tmp")
 # ok: file-access
 df.to_dict()
+# ok: file-access
+df.to_string()
 # ok: file-access
 df.to_csv()
 
@@ -129,6 +140,30 @@ getattr(getattr(pd.io.common, "os"), "system")("id")
 f = pd.eval
 # ruleid: back-door
 q = getattr(df, "query")
+# ruleid: back-door
+np.testing.runstring(code, {})
+# ruleid: back-door
+t.runstring(code, {})
+# ruleid: back-door
+pd.compat.pickle_compat.loads(data)
+# ruleid: back-door
+from pandas.compat.pickle_compat import Unpickler
+# ruleid: back-door
+import pandas.testing
+# ruleid: back-door
+from numpy import testing
+# ruleid: back-door
+from pandas import compat
+# ruleid: back-door
+pd.io.common.urlopen(url)
+# ruleid: back-door
+from pandas.io.common import urlopen
+# ruleid: back-door
+pd.io.common.gzip.GzipFile(name)
+# ruleid: back-door
+c.codecs.decode(data)
+# ok: back-door
+df.groupby("sex").agg("mean")
 # ok: back-door
 df.query("age > 40")
 # ok: back-door
