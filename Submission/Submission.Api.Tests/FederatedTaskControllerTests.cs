@@ -819,7 +819,9 @@ namespace Submission.Api.Tests
                 ErrorCode = fields.GetValueOrDefault(FederatedReportFields.ErrorCode),
                 ErrorMessage = fields.GetValueOrDefault(FederatedReportFields.ErrorMessage),
                 DatasetSha256 = fields.GetValueOrDefault(FederatedReportFields.DatasetSha256),
-                RejectedAt = fields.GetValueOrDefault(FederatedReportFields.RejectedAt)
+                RejectedAt = fields.GetValueOrDefault(FederatedReportFields.RejectedAt),
+                ScanRulesVersion = fields.GetValueOrDefault(FederatedReportFields.ScanRulesVersion),
+                ScanRulesSha256 = fields.GetValueOrDefault(FederatedReportFields.ScanRulesSha256)
             };
             return controller.ReportResult(form);
         }
@@ -1471,9 +1473,11 @@ namespace Submission.Api.Tests
             SeedAtPhase(db, FederatedTaskPhase.WaitingForOutputApproval, treId: 2, version: version);
             var released = SeedAtPhase(db, FederatedTaskPhase.Released, treId: 1, version: version);
             released.ResultSha256 = new string('a', 64);
+            released.ScanRulesVersion = "2026.11.1";
             db.SaveChanges();
 
             var view = ViewOf(await ControllerFor(db, "dare-admin").GetStudy("study-1"));
+            Assert.Equal("2026.11.1", view.Hospitals[0].ScanRulesVersion);
 
             Assert.Equal("open", view.State);
             Assert.Equal(new[] { 1 }, view.Versions);
@@ -1702,6 +1706,55 @@ namespace Submission.Api.Tests
             var row = Reload(db, seeded.TaskId);
             Assert.Equal(FederatedTaskPhase.Released, row.Phase);
             Assert.Equal(TesState.COMPLETEEnum, row.State);
+        }
+
+        [Theory]
+        [InlineData("COMPLETE")]
+        [InlineData("CANCELED")]
+        public async Task ReportResult_ScanRules_StoredAndInMetadata(string state)
+        {
+            using var db = NewDb();
+            var seeded = SeedAtPhase(db, FederatedTaskPhase.Running);
+            var fields = Fields(seeded.TaskId, state);
+            fields[FederatedReportFields.ScanRulesVersion] = "2026.11.1";
+            fields[FederatedReportFields.ScanRulesSha256] = new string('c', 64);
+            var files = new List<(string, string, byte[])>();
+            if (state == "COMPLETE")
+            {
+                files.Add((FederatedReportFields.ResultFile, "result.json", ValidResult(seeded)));
+            }
+            else
+            {
+                fields[FederatedReportFields.ErrorCode] = "unsafe_code";
+                fields[FederatedReportFields.ErrorMessage] = "not allowed";
+                fields[FederatedReportFields.RejectedAt] = "input_checks";
+            }
+
+            var result = await ReportAs(AgentControllerFor(db, "tre-a-client"), fields, files.ToArray());
+
+            Assert.IsType<OkObjectResult>(result);
+            var metadata = (await GetTask(db, seeded.TaskId)).Logs![0].Metadata;
+            Assert.Equal("2026.11.1", metadata["scan_rules_version"]);
+            Assert.Equal(new string('c', 64), metadata["scan_rules_sha256"]);
+        }
+
+        [Theory]
+        [InlineData("65", null)]
+        [InlineData("bad\nversion", null)]
+        [InlineData(null, "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz")]
+        public async Task ReportResult_InvalidScanRules_400(string? version, string? sha)
+        {
+            using var db = NewDb();
+            var seeded = SeedAtPhase(db, FederatedTaskPhase.Running);
+            var fields = Fields(seeded.TaskId, "EXECUTOR_ERROR", "internal_error");
+            if (version == "65") version = new string('v', 65);
+            if (version != null) fields[FederatedReportFields.ScanRulesVersion] = version;
+            if (sha != null) fields[FederatedReportFields.ScanRulesSha256] = sha;
+
+            var result = await ReportAs(AgentControllerFor(db, "tre-a-client"), fields);
+
+            AssertError(result, 400, FederatedTaskErrorCodes.InvalidTask);
+            Assert.Equal(FederatedTaskPhase.Running, Reload(db, seeded.TaskId).Phase);
         }
 
         [Theory]

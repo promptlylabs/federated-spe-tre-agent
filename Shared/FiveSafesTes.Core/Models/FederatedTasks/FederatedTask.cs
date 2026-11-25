@@ -55,6 +55,14 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         [MaxLength(64)]
         public string? DatasetSha256 { get; set; }
 
+        /// <summary>Version label of the code-scan rules the TRE applied; null when the report did not carry one.</summary>
+        [MaxLength(64)]
+        public string? ScanRulesVersion { get; set; }
+
+        /// <summary>Lowercase hex SHA-256 of the code-scan rules the TRE applied.</summary>
+        [MaxLength(64)]
+        public string? ScanRulesSha256 { get; set; }
+
         /// <summary>Reserved for VER-3.</summary>
         public string? ManifestHash { get; set; }
 
@@ -191,6 +199,16 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             if (DatasetSha256 is not null)
             {
                 metadata["dataset_sha256"] = DatasetSha256;
+            }
+
+            if (ScanRulesVersion is not null)
+            {
+                metadata["scan_rules_version"] = ScanRulesVersion;
+            }
+
+            if (ScanRulesSha256 is not null)
+            {
+                metadata["scan_rules_sha256"] = ScanRulesSha256;
             }
 
             task.Logs =

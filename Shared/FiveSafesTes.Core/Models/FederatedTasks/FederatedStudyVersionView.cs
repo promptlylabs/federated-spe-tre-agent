@@ -62,5 +62,11 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
 
         [JsonProperty("result_sha256", NullValueHandling = NullValueHandling.Ignore)]
         public string? ResultSha256 { get; set; }
+
+        [JsonProperty("scan_rules_version", NullValueHandling = NullValueHandling.Ignore)]
+        public string? ScanRulesVersion { get; set; }
+
+        [JsonProperty("scan_rules_sha256", NullValueHandling = NullValueHandling.Ignore)]
+        public string? ScanRulesSha256 { get; set; }
     }
 }

@@ -27,6 +27,7 @@ namespace Submission.Api.Controllers
     {
         /// <summary>Attempts at one report when other reports for the same task keep winning the race.</summary>
         private const int MaxReportAttempts = 3;
+        private const int MaxScanRulesVersionLength = 64;
 
         /// <summary>Attempts at one submission when concurrent submissions of the same study keep taking the version number.</summary>
         private const int MaxEnqueueAttempts = 3;
@@ -219,6 +220,17 @@ namespace Submission.Api.Controllers
                 return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "RejectedAt is only accepted with state CANCELED");
             }
 
+            if (form.ScanRulesVersion is not null && (form.ScanRulesVersion.Length > MaxScanRulesVersionLength || form.ScanRulesVersion.Any(char.IsControl)))
+            {
+                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask,
+                    $"ScanRulesVersion must be at most {MaxScanRulesVersionLength} characters with no control characters");
+            }
+
+            if (form.ScanRulesSha256 is not null && !Sha256Hex.IsMatch(form.ScanRulesSha256))
+            {
+                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "ScanRulesSha256 must be 64 lowercase hex characters");
+            }
+
             var files = Request.Form.Files;
             FederatedTaskPhase? rejectedPhase = null;
 
@@ -353,6 +365,8 @@ namespace Submission.Api.Controllers
                     t.ResultKey = key;
                     t.ResultSha256 = sha;
                     t.DatasetSha256 = datasetSha;
+                    t.ScanRulesVersion = form.ScanRulesVersion;
+                    t.ScanRulesSha256 = form.ScanRulesSha256;
                 };
                 response.ResultBucket = bucket;
                 response.ResultKey = key;
@@ -370,11 +384,15 @@ namespace Submission.Api.Controllers
                     {
                         t.Reject(rejected, DateTime.UtcNow, errorCode, form.ErrorMessage!);
                         t.DatasetSha256 = form.DatasetSha256;
+                        t.ScanRulesVersion = form.ScanRulesVersion;
+                        t.ScanRulesSha256 = form.ScanRulesSha256;
                     }
                     : t =>
                     {
                         t.Fail(DateTime.UtcNow, state.Value, errorCode, form.ErrorMessage);
                         t.DatasetSha256 = form.DatasetSha256;
+                        t.ScanRulesVersion = form.ScanRulesVersion;
+                        t.ScanRulesSha256 = form.ScanRulesSha256;
                     };
             }
 
