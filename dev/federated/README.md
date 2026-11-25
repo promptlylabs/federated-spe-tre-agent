@@ -65,7 +65,7 @@ The `uploader` login through the RustFS console's "TRE Keycloak" button loops. T
 
 ## Pooling
 
-When a study is `ready_for_aggregation`, the `aggregator` service (the Agent image in the Aggregator role) runs the researcher's `aggregate(results)` on the released results, within about a minute, and Submission stores the pooled result in the orchestrator's RustFS under `studies/<versionId>/`. Every file in `code/` defines both `site_analysis` and `aggregate`; Submission refuses code without `aggregate`. With only my-tre's Agent here, a study reaches `ready_for_aggregation` only when the integration tests release `other-tre`'s result themselves. A ready study that isn't pooled in 10 minutes fails with `aggregation_timeout`; `RetryAggregation` reopens it. `./task.sh pooled <version-id>` shows the version's outcome and pooled hash. See "Pooling the results" in `docs/federated-tasks.md`.
+When a study is `ready_for_aggregation`, the `aggregator` service (the Agent image in the Aggregator role) runs the researcher's `aggregate(results)` on the released results, within about a minute, and Submission stores the pooled result in the orchestrator's RustFS under `studies/<versionId>/`. Every file in `code/` defines both `site_analysis` and `aggregate`; Submission refuses code without `aggregate`. With only my-tre's Agent here, a study reaches `ready_for_aggregation` only when the integration tests release `other-tre`'s result themselves. A ready study that isn't pooled in 10 minutes fails with `aggregation_timeout`; `RetryAggregation` reopens it. `./task.sh pooled <version-id>` shows the version's outcome and the pooled result; `./task.sh audit <version-id>` shows its audit trail. See "Pooling the results" in `docs/federated-tasks.md`.
 
 ## Try it
 
@@ -248,6 +248,7 @@ The Agent image installs Python and a pinned Semgrep (`ScanRules/requirements.tx
 | Pooling | `my-tre` releases (its reviewer approves), the test releases `other-tre`'s result | outcome `aggregated`; the pooled result in `studies/<versionId>/` has the summed `n` and the `n`-weighted mean, and its hash is `pooled_result_sha256` |
 | Pooling | as above, but `aggregate()` raises | outcome `failed`, `aggregation_error_code` `code_error`; no pooled result |
 | Pooling | code with no `aggregate` | Enqueue refused with 400 `invalid_task` |
+| Audit (3.4) | the pooled study above; the R2 study | `GetStudyResult` serves the pooled file and `GetStudyAudit` shows the submitter, both hospitals' phases and hashes, and the pooled hash; for R2, `incomplete`, no pooled hash, and `GetStudyResult` 404 |
 
 "Image not approved" cannot happen on this stack (Submission accepts only `python-runner:1`, and the Agent approves it); unit tests cover it.
 

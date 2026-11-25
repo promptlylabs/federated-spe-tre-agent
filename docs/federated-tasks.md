@@ -283,6 +283,34 @@ Stuck or broken pooling. A version that waits longer than `AggregationTimeoutMin
 
 **Known limitation:** `aggregate()` is researcher code, so it could pass one hospital's result through unchanged. In the PoC, only DAAMS export approval checks the pooled result.
 
+### Reading a pooled result
+
+`GET /api/FederatedTask/GetStudyResult?id=<versionId>` (`dare-control-admin`) returns the pooled document as the attachment `<versionId>.json`, with `X-Content-Type-Options: nosniff`, after checking its SHA-256 against `pooled_result_sha256`, as `GetTaskResult` does for a hospital's result. It reads only under `studies/`, so a hospital's own result is never served from here. Errors: 404 `study_not_found`; 404 `result_not_found` for a version with no pooled result (any outcome but `aggregated`) or a file missing from storage; 503 `storage_unavailable`; 500 `internal_error` when the stored file does not match its hash. Delivering the pooled result to researchers is 4.2.
+
+### Audit trail
+
+`GET /api/FederatedTask/GetStudyAudit?id=<versionId>` (`dare-control-admin`) shows how a version's result was produced (plain JSON):
+
+```json
+{
+  "study_id": "study-001", "version": 2, "version_id": "5f0c9a52-…",
+  "submitted_by": "control-admin", "submitted_at": "…", "code_sha256": "<hex>", "deadline_at": "…",
+  "outcome": "aggregated", "outcome_reason": "all_final", "outcome_message": "…", "outcome_at": "…",
+  "ready_at": "…", "aggregation_started_at": "…", "aggregation_error_code": null, "pooled_result_sha256": "<hex>",
+  "hospitals": [
+    { "tre": "hosp-a", "task_id": "…", "result_sha256": "<hex>",
+      "phases": [ { "phase": "queued", "at": "…" }, { "phase": "running", "at": "…" },
+                  { "phase": "waiting_for_output_approval", "at": "…" }, { "phase": "released", "at": "…" } ] },
+    { "tre": "hosp-b", "task_id": "…", "result_sha256": null,
+      "phases": [ …, { "phase": "rejected_at_output_approval", "at": "…", "error_code": "rejected_by_reviewer" } ] }
+  ]
+}
+```
+
+Without a pooled result, `pooled_result_sha256` is null and `outcome`, `outcome_reason` and `aggregation_error_code` say why. Reviewer names are not included: they stay in each hospital's review record (`federated-outputs/<taskId>.review.json`); the orchestrator records the decision and its time. `submitted_by` is the submitter's `preferred_username`, recorded from versions submitted after this change.
+
+Audit log. Submission also writes an entry to its audit log (`AuditLogs`) in the same save as each change: `FederatedStudySubmitted` (Enqueue), `FederatedStudyCanceled` (Cancel), `FederatedPooledResultStored` (with the pooled hash) and `FederatedAggregationRetried`. Each has the user from the token (the aggregator's service account for a stored pooled result), the caller's IP, and the version ID, study and version number as JSON in `HistoricFormData`.
+
 ### Reporting a result
 
 `POST /api/FederatedTask/ReportResult` is `multipart/form-data`.
