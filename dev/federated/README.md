@@ -155,22 +155,23 @@ In the live run, approve case 1 and reject case 4 (with a reason) in the Egress 
 
 ## Code-scan rules
 
-Before the dataset is touched, the Agent scans the researcher's code with Semgrep and the hospital's rule file, and refuses code a rule finds (`rejected_by_input_checks`, `unsafe_code`, with the rule and line in the message). See "Code scan" in [docs/federated-tasks.md](../../docs/federated-tasks.md) for the outcomes and settings. The Agent image ships the default rules, `Agent/Agent.Api/ScanRules/default.yaml`, version `2026-11-1`. Each task records the version and SHA-256 of the rules it was checked with (`scan_rules_version`, `scan_rules_sha256` in `GetTask`).
+Before the dataset is touched, the Agent scans the researcher's code with Semgrep and the hospital's rule file, and refuses code a rule finds (`rejected_by_input_checks`, `unsafe_code`, with the rule and line in the message). See "Code scan" in [docs/federated-tasks.md](../../docs/federated-tasks.md) for the outcomes and settings. The Agent image ships the default rules, `Agent/Agent.Api/ScanRules/default.yaml`, version `2026-11-1`. Each task records the version and SHA-256 of the rules it was checked with (`scan_rules_version`, `scan_rules_sha256` in `GetTask`). Suppression comments in the researcher's code (`# nosemgrep`, `# nosem`) are ignored, so code can't switch a rule off.
 
 ### What the default rules refuse
 
 - **Imports not on the allowed list** (`import-not-allowed`). Allowed: `pandas`, `numpy`, `scipy`, `math`, `statistics`, `collections`, `itertools`, `functools`, `operator`, `datetime`, `decimal`, `fractions`, `re`, `json`, `typing`, `dataclasses`, `enum`, and their submodules. Anything else is refused, including what nobody thought of (`socket`, `os`, `subprocess`, `requests`, ...). `statsmodels` is not on the list because the runner image does not have it yet; add it once it does.
 - **Code made from text, or names put together while it runs** (`dynamic-code`): `eval`, `exec`, `compile`, `__import__`, `importlib`, `globals`, `locals`, `vars`, `breakpoint`; `getattr`/`setattr`/`delattr` with a name that is not written out; attributes such as `__class__`, `__subclasses__`, `__globals__`; text (for example a formula or query) that mentions Python's internals, `os.`, `sys.`, `subprocess.` and similar, or calls `eval(`, `open(` and similar.
 - **Starting programs or using the operating system** (`process-call`): `subprocess`, `os.system`, `os.popen`, `os.exec*`, `os.spawn*`, `fork`, `kill` and the like, also through `getattr` with the name written out.
-- **Reading or writing files** (`file-access`): `open`, pandas `read_*` and the writers (`to_excel`, `to_parquet`, `to_pickle`, ...; `to_csv`, `to_json` and the like only when given a path), numpy `load`/`save`/`loadtxt`/`savetxt`/`genfromtxt`/`fromfile`/`tofile`. The code gets its data as `df` and returns a dict; it never needs files.
-- **Back doors in allowed packages** (`back-door`): `numpy.ctypeslib`, `numpy.f2py`, `numpy.distutils`, `scipy.io`, `pd.HDFStore`, `pd.ExcelWriter`, `np.memmap`, `typing.get_type_hints`; modules reached through an allowed package (`pd.io.common.os`, `.sys`, `.socket`, ...); `operator.attrgetter`/`methodcaller` with a name that is not written out; `df.query`, `df.eval` and `pd.eval` unless called directly with written-out text (`df.query("age > 40")` passes, `df.query(expr)` and `f = pd.eval` are refused).
+- **Reading or writing files** (`file-access`): `open`, pandas `read_*` and the writers (`to_excel`, `to_parquet`, `to_pickle`, ...; `to_csv`, `to_json` and the like only when given a path), numpy `load`/`save`/`loadtxt`/`savetxt`/`genfromtxt`/`fromfile`/`tofile`/`dump`/`DataSource`, scipy `save_npz`/`load_npz`. The code gets its data as `df` and returns a dict; it never needs files.
+- **Back doors in allowed packages** (`back-door`): `numpy.ctypeslib`, `numpy.f2py`, `numpy.distutils`, `numpy.testing`, `scipy.io`, `scipy._lib`, `pandas.testing`, `pandas.compat`, `pd.HDFStore`, `pd.ExcelWriter`, `np.memmap`, `typing.get_type_hints`, `runstring`, `pickle_compat`, `Unpickler`, `urlopen`; modules reached through an allowed package (`pd.io.common.os`, `.sys`, `.socket`, `.gzip`, `.codecs`, ...); `operator.attrgetter`/`methodcaller` with a name that is not written out; `df.query`, `df.eval` and `pd.eval` unless called directly with written-out text (`df.query("age > 40")` passes, `df.query(expr)` and `f = pd.eval` are refused).
 
 ### What they don't cover
 
 Static analysis of Python can't catch every way out, so the scan is an early, explainable refusal, not the only barrier. Code that gets past it still runs in the locked-down container: no network, read-only root and `/data`, no capabilities. Known gaps of the default rules:
 
 - Formula and query text built only from allowed-looking pieces. patsy formulas and `df.query`/`df.eval` with written-out text run as Python against the code's names; the text check catches the obvious routes, not every one.
-- A dangerous module or object reached under a name the rules don't list, for example a module that an allowed package imports itself under another name (such as `gzip` or `codecs` inside `pd.io.common`).
+- A dangerous module or object reached under a name the rules don't list, for example a module that an allowed package imports itself under another name.
+- pandas methods called by name with a string through `agg`, `apply` or `transform`, for example `df.agg("to_" + "pickle", path)`.
 - Pickle-style tricks through allowed libraries that nobody has listed yet.
 
 And some safe code they refuse (false positives) a researcher may hit:
@@ -178,8 +179,7 @@ And some safe code they refuse (false positives) a researcher may hit:
 - a column read as an attribute with a listed name, such as `df.os` or `df.sys` (use `df["os"]`);
 - text that happens to contain `open(` or `x.os.`;
 - `json.load` (the rule refuses any `load`; `json.loads` passes);
-- `super().__init__()` and other names in double underscores (only `__name__` itself is allowed);
-- `if __name__ == "__main__":`, because the text `"__main__"` looks like Python's internals (`run-analysis` calls `site_analysis` itself, so the block is not needed).
+- `super().__init__()` and other names in double underscores (only `__name__` itself is allowed).
 
 ### A hospital's own rule file
 
@@ -194,9 +194,9 @@ A hospital may replace the default with its own Semgrep YAML file. Mount it into
 ```
 
 - Keep `# version: <text>` as the first line (at most 64 characters), and change it whenever you change the file. The Agent records it with each task, next to the file's SHA-256. Without the line, or if the file is missing or unreadable, the Agent holds every task and logs an error; it does not reject them.
-- Give every rule an `id` and a `message` a data custodian can read: the refusal shows `<id> line <n>: <message>`.
+- Give every rule an `id` and a `message` a data custodian can read: the refusal shows `<id> line <n>: <message>`. An `id` must not contain `.`: the Agent strips the path prefix Semgrep adds to it at the last dot.
 - To allow another import, add it to the list in `import-not-allowed`. It must exist in the runner image (`runner/list-libraries.py` lists what is there).
-- A file Semgrep can't load (a YAML or rule error) fails every task with `internal_error`, so test it first (below).
+- A file Semgrep can't load (a YAML or rule error) also holds every task, and the Agent logs Semgrep's error; test it first (below).
 - The same code may then pass at one hospital and be refused at another.
 
 ### Testing the rules

@@ -535,15 +535,15 @@ Settings (`FederatedTaskSettings`):
 |---|---|---|
 | `ScanRulesPath` | not set: the default rules next to the app (`ScanRules/default.yaml`) | The hospital's rule file, Semgrep YAML. Its first line must be `# version: <text>`; the Agent reads the version from it. Mount the file and set, for example, `FederatedTaskSettings__ScanRulesPath=/rules/hospital.yaml`. |
 | `SemgrepPath` | `/opt/semgrep/bin/semgrep` | The Semgrep the Agent image installs. |
-| `ScanTimeoutSeconds` | `30` | After this Semgrep is killed and the task fails. |
+| `ScanTimeoutSeconds` | `30` | After this Semgrep is killed and the task fails. 0 or less fails every scan; the Agent logs an error at startup. |
 
-The Agent writes the code to a temporary file and runs Semgrep on it offline (local rules only, no metrics, no version check). It reads no data. The outcomes:
+The Agent writes the code to a temporary file and runs Semgrep on it offline (local rules only, no metrics, no version check). Suppression comments in the code (`# nosemgrep`) are ignored. It reads no data. The outcomes:
 
 - **No findings**: the checks go on to the dataset.
 - **Findings, or code that does not parse**: the task is rejected, `rejected_by_input_checks` with `unsafe_code`, and the message names each rule and line (see "Error codes"). Nothing runs and the dataset is not listed or read.
-- **Rule file missing, unreadable, or without the `# version:` line**: every task is held, like an unset `ApprovedImages`. It keeps its phase and is checked again at the next poll; the Agent logs an error. A broken config must not reject research.
+- **Rule file missing, unreadable, without the `# version:` line, or one Semgrep cannot load (a YAML or rule error)**: every task is held, like an unset `ApprovedImages`. It keeps its phase and is checked again at the next poll; the Agent logs an error. A broken config must not reject research.
+  Test a rule file with `ScanRules/test.sh` before you deploy it (see `dev/federated/README.md`).
 - **Semgrep fails or times out**: the task fails, `SYSTEM_ERROR` with `internal_error` and the message "the code scan could not run". Semgrep's error output is in the Agent log. A broken install is not the researcher's fault, so it is not a rejection.
-  A rule file that has its version line but that Semgrep cannot use (a YAML or rule error) also ends here, for every task. Test a rule file with `ScanRules/test.sh` before you deploy it (see `dev/federated/README.md`).
 
 The version and SHA-256 of the rule file used are saved with the task in `federated-outputs` as `<taskId>.scan.json` at the time of the scan, and sent on every final report as `ScanRulesVersion` and `ScanRulesSha256` (see "Reporting a result"). Submission stores them and shows them as `scan_rules_version` and `scan_rules_sha256` in `GetTask` metadata and per hospital in `GetStudy` and `GetStudyVersion`, so DAAMS and the audit trail see which rules each hospital applied. They are not shown on the Egress review page. Change the version line whenever the file changes; the SHA-256 changes on its own.
 
