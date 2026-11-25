@@ -130,6 +130,9 @@ namespace Submission.Api.Migrations
                     b.Property<DateTime>("SubmittedAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("SubmittedBy")
+                        .HasColumnType("text");
+
                     b.Property<string>("TesTaskJson")
                         .IsRequired()
                         .HasColumnType("text");
