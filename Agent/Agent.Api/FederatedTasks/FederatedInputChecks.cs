@@ -34,8 +34,19 @@ namespace Agent.Api.FederatedTasks
     }
 
     /// <summary>
+    /// The dataset store failed after the code scan ran. Carries the rules the scan used, so the caller can keep them
+    /// for the task's reports; <see cref="Exception.InnerException"/> is the store failure.
+    /// </summary>
+    public sealed class InputCheckStoreException(ScanRecord scan, DatasetStoreException inner)
+        : Exception("the dataset store failed after the code scan", inner)
+    {
+        public ScanRecord Scan { get; } = scan;
+    }
+
+    /// <summary>
     /// The hospital's automatic checks on a parsed task, run before it is marked running. The first failure wins.
-    /// Reads no data values. A dataset store failure throws; the caller decides whether to retry or give up.
+    /// Reads no data values. A dataset store failure throws (as <see cref="InputCheckStoreException"/> once the scan has
+    /// run); the caller decides whether to retry or give up.
     /// The format check (FederatedTesProfile.Parse) and the TreName routing run before this step, in the caller: the
     /// task must be parsed to be checked at all.
     /// </summary>
@@ -77,7 +88,17 @@ namespace Agent.Api.FederatedTasks
                 return InputCheckOutcome.Hold();
             }
 
-            return (await CheckAfterScanAsync(scan, spec, task.Id, ct)) with
+            InputCheckOutcome outcome;
+            try
+            {
+                outcome = await CheckAfterScanAsync(scan, spec, task.Id, ct);
+            }
+            catch (DatasetStoreException ex) when (scan is { RulesVersion: { } version, RulesSha256: { } sha })
+            {
+                throw new InputCheckStoreException(new ScanRecord(version, sha), ex);
+            }
+
+            return outcome with
             {
                 ScanRulesVersion = scan.RulesVersion,
                 ScanRulesSha256 = scan.RulesSha256

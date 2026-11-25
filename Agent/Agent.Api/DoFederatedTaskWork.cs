@@ -227,6 +227,15 @@ namespace Agent.Api
                     {
                         checkOutcome = await _checks.RunAsync(task, prepared.Spec!, CancellationToken.None);
                     }
+                    catch (InputCheckStoreException ex)
+                    {
+                        // The scan ran before the dataset store failed: its rules are kept for the give-up report.
+                        scan = ex.Scan;
+                        scanKnown = true;
+                        await _outputs.SaveScanRecordAsync(storeKey, scan, CancellationToken.None);
+                        await RetryOrGiveUpAsync(task, taskId, ex.InnerException!, "listed", ScanRecordAsync);
+                        return Hold.None;
+                    }
                     catch (Exception ex)
                     {
                         await RetryOrGiveUpAsync(task, taskId, ex, "listed", ScanRecordAsync);

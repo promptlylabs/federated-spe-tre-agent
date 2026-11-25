@@ -1723,6 +1723,9 @@ public class DoFederatedTaskWorkTests
         var report = Assert.Single(client.Reports);
         Assert.Equal(TesState.SYSTEMERROREnum, report.State);
         Assert.Equal("internal_error", report.ErrorCode);
+        // The scan ran before the listing failed, so the report names its rules.
+        Assert.Equal("test", report.ScanRulesVersion);
+        Assert.Equal(FakeCodeScanner.Sha, report.ScanRulesSha256);
     }
 
     [Fact]

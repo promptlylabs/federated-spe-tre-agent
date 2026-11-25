@@ -98,7 +98,8 @@ public class FederatedInputChecksTests
     {
         var checks = Checks(new ThrowingResolveReader(), RunnerImage);
 
-        await Assert.ThrowsAsync<DatasetStoreException>(() => Run(checks, Task()));
+        var ex = await Assert.ThrowsAsync<InputCheckStoreException>(() => Run(checks, Task()));
+        Assert.IsType<DatasetStoreException>(ex.InnerException);
     }
 
     [Fact]
