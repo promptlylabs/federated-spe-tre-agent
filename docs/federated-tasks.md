@@ -24,7 +24,7 @@ TODO: refuse fewer than 2 hospitals at intake (ANZE-6130, with the version's tim
 
 1. A `dare-control-admin` user calls `POST /api/FederatedTask/Enqueue` with a TES task. Submission validates it against the federated profile and creates a study version with one task per hospital (see "Studies and versions"), each at the phase `queued`. The response is `{ "id": "<versionId>" }`; `GetStudyVersion` gives each hospital's task ID.
 2. The Agent job `Run Federated Tasks` (`JobSettings:FederatedTaskJobName`) runs every `JobSettings:federatedTaskSchedule` minutes. It calls `GET /api/FederatedTask/GetPendingTasksForTre`. The TRE is taken from the token.
-3. The Agent checks the task against the profile, then runs the hospital's input checks in this order: the executor image is in `ApprovedImages` (see "Approved images"), and the one `.csv` under `dataset/<name>/` is in the dataset bucket, and a `schema.json` is in the same folder. It reads no data values yet. If a check fails, or there is no file or more than one, the task is rejected (`rejected_by_input_checks`). If `ApprovedImages` is not set, the task still gets the profile check, but the hospital's checks do not run. The task is not run or reported, and keeps its phase. A `queued` task rejected here never reaches `running`. A resumed `running` task is checked again, so if its dataset was removed in the meantime it is rejected with a `running_at` in its history. If the dataset bucket cannot be listed, the task keeps its phase and is tried again at the next poll, until `DatasetUnreachableGiveUpMinutes` (default 60) have passed since it was queued, or since the Agent started if that is later. A task that waited while the Agent was down, or while `ApprovedImages` was not set, so gets the full time. Each restart of the Agent gives pending tasks the full time again. After that it fails with `SYSTEM_ERROR` and `internal_error`, so a bucket that is wrongly configured or denied does not leave tasks queued for good.
+3. The Agent checks the task against the profile, then runs the hospital's input checks in this order: the executor image is in `ApprovedImages` (see "Approved images"); the code passes the hospital's code scan (see "Code scan"); the one `.csv` under `dataset/<name>/` is in the dataset bucket; and a `schema.json` is in the same folder. The first failure wins. The scan comes before the dataset, so code the hospital refuses never touches the dataset bucket. It reads no data values yet. If a check fails, or there is no file or more than one, the task is rejected (`rejected_by_input_checks`). If `ApprovedImages` is not set, the task still gets the profile check, but the hospital's checks do not run. The task is not run or reported, and keeps its phase. A `queued` task rejected here never reaches `running`. A resumed `running` task is checked again, so if its dataset was removed in the meantime it is rejected with a `running_at` in its history. If the dataset bucket cannot be listed, the task keeps its phase and is tried again at the next poll, until `DatasetUnreachableGiveUpMinutes` (default 60) have passed since it was queued, or since the Agent started if that is later. A task that waited while the Agent was down, or while `ApprovedImages` was not set, so gets the full time. Each restart of the Agent gives pending tasks the full time again. After that it fails with `SYSTEM_ERROR` and `internal_error`, so a bucket that is wrongly configured or denied does not leave tasks queued for good.
 4. For a `queued` task, the Agent calls `POST /api/FederatedTask/ReportProgress` with the phase `running`. Submission moves the task to `running`. Then the Agent reads the CSV and `schema.json` to stage them for the run. If the bucket fails during the read, or Docker has a fault that may pass by itself (the daemon is down or restarting, a server error, a broken socket or a timeout), the task stays `running` and is resumed at the next poll, with the same `DatasetUnreachableGiveUpMinutes` limit as a failed listing (for a Docker fault, counted from the first fault, so a task that waited long in the queue still gets the whole time). A finished run is kept meanwhile, so its result is collected once Docker is back. A Docker error that waiting can't fix (for example an image that doesn't exist) is reported at once (`internal_error`). A finished run is kept meanwhile, so its result is collected once Docker is back. A Docker error that waiting can't fix (for example an image that doesn't exist) is reported at once (`internal_error`).
 5. The code runs in a container (see "Running a code task"). The Agent starts it and checks it again at each poll, so a poll never waits for the code. The runner checks the CSV against `schema.json`; a file that is not valid CSV fails with `invalid_dataset`. The result is a JSON file (see "Task state and result").
 6. The Agent saves the file in the TRE bucket `federated-outputs` as `<taskId>.json`. If the file is already there from an earlier poll, the Agent reuses it and does not compute again.
@@ -197,7 +197,7 @@ The Agent sends `running` when it picks a `queued` task up, `waiting_for_output_
 
 - `state` is `open`, `canceling` or `ended` (see "Studies and versions"). `canceled_at` is set once the version is cancelled.
 - `versions` lists every version number of the study; only `GetStudy` sends it.
-- `hospitals` is in `fed.sites` order. `phase`, `state` and `times` are each hospital's task phase, TES state and `<phase>_at` times, as in "Task phases and state". `error_code` is there for a rejected or failed part, `result_sha256` for a released one. Result content never is; read it with `GetTaskResult` and the part's `task_id`.
+- `hospitals` is in `fed.sites` order. `phase`, `state` and `times` are each hospital's task phase, TES state and `<phase>_at` times, as in "Task phases and state". `error_code` is there for a rejected or failed part, `result_sha256` for a released one, and `scan_rules_version` and `scan_rules_sha256` for a part whose code was scanned (see "Code scan"). Result content never is; read it with `GetTaskResult` and the part's `task_id`.
 
 ### Cancelling a study version
 
@@ -230,7 +230,11 @@ Each part is safe to repeat, so if one fails the next poll does them again. The 
 | `RejectedAt` | `CANCELED` only, and required there: `input_checks` or `output_approval`. Any other value is 400 `invalid_task`. It is not allowed with another state. |
 | `ErrorCode`, `ErrorMessage` | Error states and `CANCELED`. See the limits above. A rejection (`CANCELED`) also needs a non-empty `ErrorMessage`. |
 | `DatasetSha256` | Error states and `CANCELED`. 64 lowercase hex characters. On `COMPLETE` Submission takes it from the result file. |
+| `ScanRulesVersion` | Optional, any state. The version of the code-scan rules the task was checked with (see "Code scan"). At most 64 characters, no control characters. |
+| `ScanRulesSha256` | Optional, any state. The SHA-256 of that rule file. 64 lowercase hex characters. |
 | `result` (file) | Required for `COMPLETE`. Not allowed for `CANCELED` or an error state. One file only. |
+
+On `COMPLETE` the result file is the only content Submission accepts, with one exception: `ScanRulesVersion` and `ScanRulesSha256`. They are form fields, not part of the result document, so recording the rules does not change the bytes the reviewer approved. The Agent sends both on every final report after the scan ran (released, failed or rejected, including the scan's own rejection), and neither for a task refused before the scan (`invalid_task`, `image_not_approved`).
 
 A report is accepted from any phase that is not final, so a `queued`, `running` or `waiting_for_output_approval` task can be finished. `COMPLETE` moves the task to `released`. `CANCELED` moves it to `rejected_by_input_checks` or `rejected_at_output_approval`, as `RejectedAt` says. `EXECUTOR_ERROR` and `SYSTEM_ERROR` move it to `failed`.
 
@@ -351,7 +355,7 @@ What the hash check catches: code changed on the way or in storage without its t
 
 The Agent runs a code task in a Docker container, through the Docker socket (`FederatedTaskSettings:DockerEndpoint`). The poll moves a run one step and never waits for it:
 
-1. The input checks pass (the image is approved, one `.csv` and a `schema.json` are in the dataset folder). If the TRE already holds `MaxConcurrentRuns` code runs, the task is not started and keeps its phase. Every run that is still present counts, including one that has exited and is not removed yet, not only those that are running. A `queued` task stays `queued`.
+1. The input checks pass (the image is approved, the code passes the code scan, one `.csv` and a `schema.json` are in the dataset folder). If the TRE already holds `MaxConcurrentRuns` code runs, the task is not started and keeps its phase. Every run that is still present counts, including one that has exited and is not removed yet, not only those that are running. A `queued` task stays `queued`.
 2. A `queued` task is reported `running`. The Agent hashes the CSV and stages the CSV, `schema.json` and the code into Docker volumes, then starts the container. The poll returns, and the task stays `running`.
 3. At each later poll the Agent finds the container. While it runs, nothing happens. If it has run for `MaxRunMinutes`, the Agent kills it and reports `timeout`.
 4. When the container has exited, the Agent reads `/outputs/result.json`, checks it and maps it (see "Result of a code run"). It saves the result file, removes the run, and the task goes to output approval as any other.
@@ -410,7 +414,7 @@ A task has a phase. It says where the task is, from intake to release. `GetTask`
 | `running` | `RUNNING` | The Agent has picked the task up. |
 | `waiting_for_output_approval` | `RUNNING` | The result is saved in the TRE and waits for a reviewer's decision in the Egress app. Set by the Agent. |
 | `released` | `COMPLETE` | The result file is stored in the orchestrator. |
-| `rejected_by_input_checks` | `CANCELED` | The task was refused before it ran. The error code is one of `invalid_task`, `image_not_approved`, `invalid_dataset_name`, `dataset_not_found`, `ambiguous_dataset` or `schema_not_found`. |
+| `rejected_by_input_checks` | `CANCELED` | The task was refused before it ran. The error code is one of `invalid_task`, `image_not_approved`, `unsafe_code`, `invalid_dataset_name`, `dataset_not_found`, `ambiguous_dataset` or `schema_not_found`. |
 | `rejected_at_output_approval` | `CANCELED` | A reviewer refused the result. The error code is `rejected_by_reviewer` and the message is the reviewer's reason. |
 | `canceling` | `CANCELING` | The orchestrator cancelled a task a hospital had picked up. The hospital is closing the review and removing the result. |
 | `canceled` | `CANCELED` | The task was cancelled: before any hospital picked it up, or after the hospital confirmed its clean-up. |
@@ -425,7 +429,8 @@ The result is in `logs[0].metadata`. Every key and value is a string.
 - On `released`: `result_bucket`, `result_key` and `result_sha256` (where the result file is stored in the orchestrator, and its SHA-256). On a rejection or a failure: `error_code` and `error_message`.
 
 - The values the code returned are in the result file, not in the metadata.
-- `dataset_sha256` is added whenever the Agent read the dataset file, on success and on errors raised after the read (including `invalid_dataset`). It is the lowercase hex SHA-256 of the exact bytes of the CSV. It is absent when the file was not read: every input-check rejection (`invalid_task`, `image_not_approved`, `invalid_dataset_name`, `dataset_not_found`, `ambiguous_dataset`, `schema_not_found`), `tre_renamed`, and `internal_error` before the read. An empty file gives `invalid_dataset` with the hash.
+- `dataset_sha256` is added whenever the Agent read the dataset file, on success and on errors raised after the read (including `invalid_dataset`). It is the lowercase hex SHA-256 of the exact bytes of the CSV. It is absent when the file was not read: every input-check rejection (`invalid_task`, `image_not_approved`, `unsafe_code`, `invalid_dataset_name`, `dataset_not_found`, `ambiguous_dataset`, `schema_not_found`), `tre_renamed`, and `internal_error` before the read. An empty file gives `invalid_dataset` with the hash.
+- `scan_rules_version` and `scan_rules_sha256` are added whenever the code scan ran: the version and SHA-256 of the hospital's rule file at the time of the scan (see "Code scan"). They are on released, failed and rejected tasks alike, including an `unsafe_code` rejection, and absent for a task refused before the scan (`invalid_task`, `image_not_approved`). A task that waited for output approval reports the rules it was checked with, even if the hospital changed its rule file in the meantime.
 
 ### How the phases fit the standards
 
@@ -474,12 +479,13 @@ TODO: researcher access scoped by study once study_id → project mapping exists
 |---|---|
 | `invalid_task` | The task does not follow the profile. The message says which rule failed. |
 | `image_not_approved` | The executor image is not in this TRE's `ApprovedImages`. The message names the image. |
+| `unsafe_code` | The hospital's code scan refused the code (phase `rejected_by_input_checks`, state `CANCELED`). The message lists each finding as `<rule-id> line <n>: <message>`, sorted by line and separated by `; `, for example `import-not-allowed line 1: 'socket' is not on this hospital's list of allowed imports`. It is cut to 512 characters and then ends with `; … and <k> more`. Code that does not parse gives `parse-error line <n>: the code could not be parsed`. The message never repeats code beyond the name a rule quotes. |
 | `invalid_dataset_name` | The name does not match `^[a-z0-9][a-z0-9_-]{0,62}$`. |
 | `dataset_not_found` | No `.csv` file under `dataset/<name>/`. From a code run, the runner found no dataset file (the input checks normally catch this first); the message is "the runner found no dataset file". |
 | `schema_not_found` | No `schema.json` in `dataset/<name>/`. An input check, so the task is rejected, and the message names the dataset. If the runner itself finds no schema, the message is "the runner found no schema.json for the dataset". |
 | `ambiguous_dataset` | More than one `.csv` file under `dataset/<name>/`. From a code run, the runner found more than one dataset file (the input checks normally catch this first); the message is "the runner found more than one dataset file". |
 | `invalid_dataset` | Runner code. The file is empty, is not UTF-8, is not valid CSV (for example a stray `"` inside a field), or a row has the wrong number of fields. The message is "the runner could not read the dataset as CSV". |
-| `internal_error` | An unexpected failure, for example storage is unreachable. The message is generic, so that bucket names and hosts do not leave the TRE. The details are in the Agent log. |
+| `internal_error` | An unexpected failure, for example storage is unreachable, or the code scan could not run (message "the code scan could not run"). The message is generic, so that bucket names and hosts do not leave the TRE. The details are in the Agent log. |
 | `tre_renamed` | The TRE was renamed in Submission before the task finished. Set by Submission, not the Agent. Enqueue the task again under the new name. |
 | `rejected_by_reviewer` | A hospital reviewer rejected the result in the Egress app (phase `rejected_at_output_approval`, state `CANCELED`). The message is the reviewer's reason, at most 512 characters, with control characters removed. No file is released. |
 | `result_changed_after_review` | The result was approved, but the saved file in `federated-outputs` no longer has the SHA-256 the reviewer saw, or is gone (state `SYSTEM_ERROR`). Nothing is released. |
@@ -516,6 +522,32 @@ Set `FederatedTaskSettings:ApprovedImages` to the executor images that this TRE 
 There is no default, because the site approves the images. Only `appsettings.Development*.json` lists `python-runner:1`. If the list is not set, the Agent logs an error. A task that fails the profile is still rejected. Other new tasks are not run or reported. They keep their phase and run when the list is set. A task whose result file is already saved still goes on to output approval. Every federated task runs in the runner image, so a list without it rejects every federated task at this TRE with `image_not_approved`. The Agent cannot tell a deliberate refusal from a typo, so at startup it logs an error when the list is set but has no image named `python-runner` (with any registry prefix and tag).
 
 The input checks run on every poll until the task's result file is saved, so a resumed `running` task is checked again. After the file is saved, the input checks don't run again: whether the result leaves is the decision of output approval, not of the input checks. If its image was removed from the list in the meantime, the Agent logs a warning and the result still goes on to output approval.
+
+### Code scan
+
+Before the dataset is touched, the Agent scans the researcher's code with [Semgrep](https://semgrep.dev) and the hospital's rule file. It is an automatic, explainable refusal on top of the locked-down run (no network, read-only file system, no capabilities; see "Running a code task"), not the only barrier: static analysis of Python can't prove code harmless. No LLM takes part.
+
+The rules belong to the hospital. The Agent ships a default rule file (`Agent/Agent.Api/ScanRules/default.yaml`, version `2026-11-1`): an allowed list of imports, and forbidden calls even through allowed modules (code made from text, starting processes, file access, and back doors in allowed packages). `dev/federated/README.md` ("Code-scan rules") lists what the default rules cover and what they don't, and how to test a rule file. A hospital may use its own file, so the same code may pass at one hospital and be refused at another.
+
+Settings (`FederatedTaskSettings`):
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `ScanRulesPath` | not set: the default rules next to the app (`ScanRules/default.yaml`) | The hospital's rule file, Semgrep YAML. Its first line must be `# version: <text>`; the Agent reads the version from it. Mount the file and set, for example, `FederatedTaskSettings__ScanRulesPath=/rules/hospital.yaml`. |
+| `SemgrepPath` | `/opt/semgrep/bin/semgrep` | The Semgrep the Agent image installs. |
+| `ScanTimeoutSeconds` | `30` | After this Semgrep is killed and the task fails. |
+
+The Agent writes the code to a temporary file and runs Semgrep on it offline (local rules only, no metrics, no version check). It reads no data. The outcomes:
+
+- **No findings**: the checks go on to the dataset.
+- **Findings, or code that does not parse**: the task is rejected, `rejected_by_input_checks` with `unsafe_code`, and the message names each rule and line (see "Error codes"). Nothing runs and the dataset is not listed or read.
+- **Rule file missing, unreadable, or without the `# version:` line**: every task is held, like an unset `ApprovedImages`. It keeps its phase and is checked again at the next poll; the Agent logs an error. A broken config must not reject research.
+- **Semgrep fails or times out**: the task fails, `SYSTEM_ERROR` with `internal_error` and the message "the code scan could not run". Semgrep's error output is in the Agent log. A broken install is not the researcher's fault, so it is not a rejection.
+  A rule file that has its version line but that Semgrep cannot use (a YAML or rule error) also ends here, for every task. Test a rule file with `ScanRules/test.sh` before you deploy it (see `dev/federated/README.md`).
+
+The version and SHA-256 of the rule file used are saved with the task in `federated-outputs` as `<taskId>.scan.json` at the time of the scan, and sent on every final report as `ScanRulesVersion` and `ScanRulesSha256` (see "Reporting a result"). Submission stores them and shows them as `scan_rules_version` and `scan_rules_sha256` in `GetTask` metadata and per hospital in `GetStudy` and `GetStudyVersion`, so DAAMS and the audit trail see which rules each hospital applied. They are not shown on the Egress review page. Change the version line whenever the file changes; the SHA-256 changes on its own.
+
+Semgrep makes the Agent image larger: about 980 MB instead of about 420 MB. The image installs a pinned Semgrep from PyPI, with hashes, at build time; nothing is downloaded at run time. How hospitals get or build the Agent image is still open (see `dev/federated/README.md`).
 
 ### Runner image
 
@@ -689,6 +721,7 @@ Known risks:
 
 - There is no automatic disclosure control. A reviewer approves each result, but nothing flags a result based on very few people, or one that gives the exact value of one person. The reviewer must catch it.
 - Error reports are not reviewed. Error reports (`EXECUTOR_ERROR`, `SYSTEM_ERROR`, input-check rejections) leave without review. The researcher's code can put data in an exception or in its output, so the Agent never forwards text the code produced: the orchestrator gets a fixed code and message, and the details stay in the TRE logs. The cost is that a researcher sees only the kind of failure (see "Running a code task"). The container's stdout and stderr are never kept.
+- The code scan is not complete. Static analysis of Python can't catch every way to reach the network, files or the system, so code that gets past it still runs only in the locked-down container. `dev/federated/README.md` lists the known gaps of the default rules.
 - The Agent has the Docker socket, which is root-equivalent on the host, and `/outputs` has no size limit beyond the per-file cap. Both are PoC limits (see "Running a code task").
 - Orchestrator admins are trusted not to change stored results or hashes, until signed results are added.
 - Any `dare-control-admin` user can read the results of every study.
