@@ -31,6 +31,7 @@ namespace Submission.Api.Controllers
 
         /// <summary>Attempts at one submission when concurrent submissions of the same study keep taking the version number.</summary>
         private const int MaxEnqueueAttempts = 3;
+        private static readonly Regex AggregateDefinition = new(@"^def aggregate\(", RegexOptions.Multiline | RegexOptions.Compiled);
 
         /// <summary>Upper bound on tasks returned to a TRE Agent in a single poll.</summary>
         private const int MaxPendingTasks = 50;
@@ -76,6 +77,15 @@ namespace Submission.Api.Controllers
             {
                 return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask,
                     $"a study needs at least {FederatedStudyOutcomeReasons.MinimumHospitals} hospitals in fed.sites, so that no single hospital's result is released");
+            }
+
+            // The orchestrator pools the hospitals' results with the same file's aggregate(); without it every hospital
+            // would run and review the study for nothing. A function defined some other way still fails at the aggregator.
+            var code = task.Inputs?.FirstOrDefault(i => i.Path == FederatedTesProfile.CodePath)?.Content ?? "";
+            if (!AggregateDefinition.IsMatch(code))
+            {
+                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask,
+                    "the code has no aggregate(results) function; the orchestrator needs it to pool the hospitals' results");
             }
 
             var tres = await _DbContext.Tres

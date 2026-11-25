@@ -25,7 +25,7 @@ namespace Submission.Api.Services
                     {
                         using var scope = scopes.CreateScope();
                         var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-                        await SweepOnceAsync(db, DateTime.UtcNow, stoppingToken);
+                        await SweepOnceAsync(db, DateTime.UtcNow, settings.AggregationTimeoutMinutes, stoppingToken);
                     }
                     catch (Exception ex) when (!stoppingToken.IsCancellationRequested)
                     {
@@ -40,11 +40,63 @@ namespace Submission.Api.Services
         }
 
         /// <summary>
-        /// Decides each undecided version and saves it on its own. A version that can't be saved (an Agent report or an
-        /// admin cancel changed it meanwhile, or the save failed) is left for the next sweep.
+        /// Decides each undecided version, and fails each version that has waited for the aggregator longer than
+        /// <paramref name="aggregationTimeoutMinutes"/>, saving each on its own. A version that can't be saved (an Agent
+        /// report, the aggregator or an admin changed it meanwhile, or the save failed) is left for the next sweep.
         /// </summary>
-        /// <returns>The number of versions decided.</returns>
-        public static async Task<int> SweepOnceAsync(ApplicationDbContext db, DateTime nowUtc, CancellationToken ct)
+        /// <returns>The number of versions changed.</returns>
+        public static async Task<int> SweepOnceAsync(ApplicationDbContext db, DateTime nowUtc, int aggregationTimeoutMinutes, CancellationToken ct)
+        {
+            return await DecideAsync(db, nowUtc, ct) + await TimeOutAggregationsAsync(db, nowUtc, aggregationTimeoutMinutes, ct);
+        }
+
+        private static async Task<int> TimeOutAggregationsAsync(ApplicationDbContext db, DateTime nowUtc, int timeoutMinutes, CancellationToken ct)
+        {
+            var cutoff = nowUtc.AddMinutes(-timeoutMinutes);
+            var ids = await db.FederatedStudyVersions
+                .Where(x => x.Outcome == FederatedStudyOutcome.ReadyForAggregation && x.ReadyAt <= cutoff)
+                .OrderBy(x => x.Id)
+                .Select(x => x.Id)
+                .ToListAsync(ct);
+
+            var failed = 0;
+            foreach (var id in ids)
+            {
+                try
+                {
+                    var version = await db.FederatedStudyVersions.SingleAsync(x => x.Id == id, ct);
+                    if (!FederatedStudyOutcomes.TimeOutAggregation(version, nowUtc, timeoutMinutes))
+                    {
+                        continue;
+                    }
+
+                    await db.SaveChangesAsync(ct);
+                    failed++;
+                    Log.Warning("Federated study version {VersionId} ({StudyId} v{Version}) was not pooled within {Minutes} minutes: failed, aggregation_timeout",
+                        version.VersionId, version.StudyId, version.Version, timeoutMinutes);
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (DbUpdateConcurrencyException)
+                {
+                    Log.Information("Federated study version {Id} changed while its aggregation was timed out; the next sweep checks it again", id);
+                }
+                catch (Exception ex)
+                {
+                    Log.Error(ex, "Could not time out the aggregation of federated study version {Id}; the next sweep tries again", id);
+                }
+                finally
+                {
+                    db.ChangeTracker.Clear();
+                }
+            }
+
+            return failed;
+        }
+
+        private static async Task<int> DecideAsync(ApplicationDbContext db, DateTime nowUtc, CancellationToken ct)
         {
             // One read of every undecided version with its parts' phases. Most versions just keep waiting, so only those
             // Decide would change are loaded again, tracked, to be decided and saved.

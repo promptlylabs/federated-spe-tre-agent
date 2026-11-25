@@ -26,6 +26,10 @@ namespace Submission.Api.Services
                 OutcomeAt = Utc(version.OutcomeAt),
                 DeadlineAt = DateTime.SpecifyKind(version.DeadlineAt, DateTimeKind.Utc),
                 CanceledAt = version.Outcome == FederatedStudyOutcome.Canceled ? Utc(version.OutcomeAt) : null,
+                ReadyAt = Utc(version.ReadyAt),
+                AggregationStartedAt = Utc(version.AggregationStartedAt),
+                AggregationErrorCode = version.AggregationErrorCode,
+                PooledResultSha256 = version.PooledResultSha256,
                 Hospitals = version.Parts
                     .OrderBy(p => sites.IndexOf(p.TreName))
                     .Select(p => new FederatedHospitalView

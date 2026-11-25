@@ -40,6 +40,21 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         /// <summary>UTC; when the outcome was set.</summary>
         public DateTime? OutcomeAt { get; set; }
 
+        /// <summary>UTC; when the version became ready for aggregation (reset by an admin retry). The aggregation timeout counts from here.</summary>
+        public DateTime? ReadyAt { get; set; }
+
+        /// <summary>UTC; when the aggregator reported that it started pooling.</summary>
+        public DateTime? AggregationStartedAt { get; set; }
+
+        /// <summary>Why aggregation failed (outcome <see cref="FederatedStudyOutcome.Failed"/>).</summary>
+        public string? AggregationErrorCode { get; set; }
+
+        public string? PooledResultBucket { get; set; }
+        public string? PooledResultKey { get; set; }
+
+        /// <summary>SHA-256 of the stored pooled result document.</summary>
+        public string? PooledResultSha256 { get; set; }
+
         public virtual List<FederatedTask> Parts { get; set; } = [];
 
         /// <summary>

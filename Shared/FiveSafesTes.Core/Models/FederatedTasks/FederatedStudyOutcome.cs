@@ -10,7 +10,13 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         Incomplete,
 
         /// <summary>An orchestrator admin cancelled the version.</summary>
-        Canceled
+        Canceled,
+
+        /// <summary>The researcher's aggregate() pooled the released results; the pooled result is stored.</summary>
+        Aggregated,
+
+        /// <summary>Aggregation failed; <see cref="FederatedStudyVersion.AggregationErrorCode"/> says why. No pooled result.</summary>
+        Failed
     }
 
     public static class FederatedStudyOutcomeReasons
@@ -24,11 +30,22 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         public const string TimeoutBelowMinimum = "timeout_below_minimum";
         public const string Canceled = "canceled";
 
+        /// <summary>
+        /// Aggregation failures an admin may retry: the orchestrator's infrastructure, not the researcher's code, failed.
+        /// The same code on the same results and limits would fail again for every other code.
+        /// </summary>
+        public static readonly IReadOnlySet<string> RetryableAggregationCodes = new HashSet<string>
+        {
+            FederatedTaskErrorCodes.AggregationTimeout, FederatedTaskErrorCodes.RunFailed, FederatedTaskErrorCodes.InternalError
+        };
+
         public static string ToWire(this FederatedStudyOutcome outcome) => outcome switch
         {
             FederatedStudyOutcome.ReadyForAggregation => "ready_for_aggregation",
             FederatedStudyOutcome.Incomplete => "incomplete",
             FederatedStudyOutcome.Canceled => "canceled",
+            FederatedStudyOutcome.Aggregated => "aggregated",
+            FederatedStudyOutcome.Failed => "failed",
             _ => throw new ArgumentOutOfRangeException(nameof(outcome), outcome, null)
         };
     }

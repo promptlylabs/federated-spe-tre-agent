@@ -71,6 +71,7 @@ namespace Submission.Api.Tests
             Assert.Equal(reason, version.OutcomeReason);
             Assert.Equal(after, version.Parts.Select(p => p.Phase));
             Assert.Equal(outcome is null ? null : now, version.OutcomeAt);
+            Assert.Equal(outcome == FederatedStudyOutcome.ReadyForAggregation ? now : null, version.ReadyAt);
             if (reason is "minimum_unreachable" or "timeout_below_minimum")
             {
                 Assert.Contains("at least 2", version.OutcomeMessage);
@@ -80,6 +81,24 @@ namespace Submission.Api.Tests
                 // A released hospital has not "still" to release: the count covers both.
                 Assert.Contains("released or can still release", version.OutcomeMessage);
             }
+        }
+
+        [Theory]
+        [InlineData(FederatedStudyOutcome.ReadyForAggregation, 1440, true)]
+        [InlineData(FederatedStudyOutcome.ReadyForAggregation, 1439, false)]
+        [InlineData(FederatedStudyOutcome.Aggregated, 2000, false)]
+        [InlineData(FederatedStudyOutcome.Incomplete, 2000, false)]
+        public void TimeOutAggregation_fails_only_ready_versions_past_the_limit(FederatedStudyOutcome outcome, int minutesReady, bool timedOut)
+        {
+            var version = VersionWith(outcome, FederatedTaskPhase.Released, FederatedTaskPhase.Released);
+            var now = Submitted.AddDays(1);
+            version.ReadyAt = now.AddMinutes(-minutesReady);
+
+            Assert.Equal(timedOut, FederatedStudyOutcomes.TimeOutAggregation(version, now, 1440));
+
+            Assert.Equal(timedOut ? FederatedStudyOutcome.Failed : outcome, version.Outcome);
+            Assert.Equal(timedOut ? "aggregation_timeout" : null, version.AggregationErrorCode);
+            Assert.Equal(timedOut ? now : null, version.OutcomeAt);
         }
 
         [Fact]

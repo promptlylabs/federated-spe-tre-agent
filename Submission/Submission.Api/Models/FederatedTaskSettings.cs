@@ -32,6 +32,12 @@ namespace Submission.Api.Models
         /// <summary>How often the sweep decides study versions' outcomes. Deadlines are in days, so this need not be fast.</summary>
         public int StudySweepSeconds { get; set; } = 300;
 
+        /// <summary>
+        /// How long a version ready for aggregation may wait for the aggregator before it fails with aggregation_timeout
+        /// (an admin can retry it). 24 hours.
+        /// </summary>
+        public int AggregationTimeoutMinutes { get; set; } = 1440;
+
         /// <summary>Settings that would make intake behave wrongly; Submission refuses to start with any.</summary>
         public IReadOnlyList<string> Problems()
         {
@@ -41,6 +47,7 @@ namespace Submission.Api.Models
             if (!(MaxDiskGb > 0) || !double.IsFinite(MaxDiskGb)) problems.Add($"{SectionName}:{nameof(MaxDiskGb)} must be more than 0");
             if (StudyTimeoutMinutes <= 0) problems.Add($"{SectionName}:{nameof(StudyTimeoutMinutes)} must be more than 0");
             if (StudySweepSeconds <= 0) problems.Add($"{SectionName}:{nameof(StudySweepSeconds)} must be more than 0");
+            if (AggregationTimeoutMinutes <= 0) problems.Add($"{SectionName}:{nameof(AggregationTimeoutMinutes)} must be more than 0");
             return problems;
         }
 
