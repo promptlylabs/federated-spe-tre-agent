@@ -141,6 +141,9 @@ namespace Agent.Api.Models
 
         public bool IsAggregator => Role == AggregatorRole;
 
+        /// <summary>The realm role this Agent's service account must have to call Submission's routes for its role.</summary>
+        public string SubmissionRole => IsAggregator ? "dare-federated-aggregator" : "dare-tre-admin";
+
         /// <summary>A setting that stops the Agent from working in its role; the Agent refuses to start with one.</summary>
         public string? RoleProblem() =>
             Role is not (HospitalRole or AggregatorRole) ? "FederatedTaskSettings:Role must be Hospital or Aggregator"

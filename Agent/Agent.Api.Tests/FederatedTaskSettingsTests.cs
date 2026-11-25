@@ -197,4 +197,15 @@ public class FederatedTaskSettingsTests
 
         Assert.Equal(problem, Bind(values).RoleProblem());
     }
+
+    [Theory]
+    [InlineData(null, "dare-tre-admin")]
+    [InlineData("Aggregator", "dare-federated-aggregator")]
+    public void The_service_account_role_follows_the_Agent_s_role(string? role, string expected)
+    {
+        var values = new Dictionary<string, string?> { ["FederatedTaskSettings:ApprovedImages:0"] = "python-runner:1" };
+        if (role != null) values["FederatedTaskSettings:Role"] = role;
+
+        Assert.Equal(expected, Bind(values).SubmissionRole);
+    }
 }
