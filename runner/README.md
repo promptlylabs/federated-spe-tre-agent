@@ -70,6 +70,31 @@ of people the result is based on. Its compact UTF-8 JSON must be 61,440 bytes
 (60 KiB) or less. numpy numbers and arrays are converted to plain numbers and
 lists.
 
+## Pooling: `aggregate(results)`
+
+```sh
+run-analysis [--debug] --aggregate <code.py> <results.json> <result.json>
+```
+
+The orchestrator runs this once the hospitals have released their results (see
+"Pooling the results" in `docs/federated-tasks.md`). `results.json` is a JSON
+array with one item per hospital that released a result: the dict its
+`site_analysis` returned. It holds no hospital names. The same file defines
+both functions:
+
+```python
+def aggregate(results):  # a list of the dicts site_analysis returned
+    n = sum(r["n"] for r in results)
+    return {"n": n, "mean_age": sum(r["n"] * r["mean_age"] for r in results) / n}
+```
+
+The return value has the same rules as `site_analysis`'s (a dict, JSON, `n`,
+61,440 bytes at most), and failures are reported the same way, with
+`aggregate` in the message. The output has no `datasetSha256`. A
+`results.json` that cannot be read or is not a list of dicts gives
+`invalid_dataset`. Results are values, never files: for a graph, return the
+data behind it (bins and counts, points) and draw it in the SPE.
+
 ## `schema.json`
 
 ```json
@@ -102,7 +127,7 @@ An error result has `datasetSha256` only when the CSV was read.
 | `schema_not_found` | No `schema.json`. |
 | `invalid_schema` | `schema.json` cannot be read, is not valid, has an unknown type or names a column twice. |
 | `schema_mismatch` | The CSV columns are not the schema's, or a value is not of its column's type. |
-| `code_error` | The researcher's file could not be imported, has no `site_analysis`, or `site_analysis` raised an exception (also `sys.exit`). |
+| `code_error` | The researcher's file could not be imported, has no `site_analysis` (or `aggregate` with `--aggregate`), or the function raised an exception (also `sys.exit`). |
 | `invalid_result` | The return value is not a dict, cannot be written as JSON, or has no valid `n`. |
 | `result_too_large` | The return value is larger than 61,440 bytes. |
 

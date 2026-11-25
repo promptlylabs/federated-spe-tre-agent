@@ -1,4 +1,5 @@
-"""Import the researcher's file and call its site_analysis(df).
+"""Import the researcher's file and call one of its functions: site_analysis(df) at a hospital, aggregate(results) at
+the orchestrator.
 
 A failure is reported by exception type and line only: the exception text can
 hold data values (for example KeyError: 'F'), so it is never kept in
@@ -32,6 +33,10 @@ def _line_in(code_path: Path, exc: BaseException) -> int | None:
 
 
 def call_site_analysis(code_path: Path, frame: pandas.DataFrame, debug: bool = False) -> object:
+    return call_function(code_path, "site_analysis", frame, debug)
+
+
+def call_function(code_path: Path, function: str, arg: object, debug: bool = False) -> object:
     name = code_path.name
     # Python records the absolute path in tracebacks and SyntaxError, so compare against it: the SPE dry run passes
     # a relative path (run-analysis analysis.py ...).
@@ -56,18 +61,18 @@ def call_site_analysis(code_path: Path, frame: pandas.DataFrame, debug: bool = F
             where = f" at line {line}" if line is not None else ""
             raise AnalysisError("code_error", f"importing {name} raised {type(e).__name__}{where}") from None
 
-        site_analysis = getattr(module, "site_analysis", None)
-        if not callable(site_analysis):
-            raise AnalysisError("code_error", f"{name} has no site_analysis function")
+        func = getattr(module, function, None)
+        if not callable(func):
+            raise AnalysisError("code_error", f"{name} has no {function} function")
 
         try:
-            return site_analysis(frame)
+            return func(arg)
         except BaseException as e:
             if debug:
                 traceback.print_exception(e, file=sys.stderr)
             line = _line_in(resolved, e)
             where = f" at {name} line {line}" if line is not None else ""
-            raise AnalysisError("code_error", f"site_analysis raised {type(e).__name__}{where}") from None
+            raise AnalysisError("code_error", f"{function} raised {type(e).__name__}{where}") from None
     finally:
         if previous is _MISSING:
             sys.modules.pop("analysis", None)
