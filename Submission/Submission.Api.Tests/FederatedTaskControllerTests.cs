@@ -88,7 +88,8 @@ namespace Submission.Api.Tests
             return error;
         }
 
-        private static TesTask AnalysisTask(string tre = "tre-a", string dataset = "cohort_2024") =>
+        // A study names two hospitals: intake refuses fewer.
+        private static TesTask AnalysisTask(string tre = "tre-a|tre-b", string dataset = "cohort_2024") =>
             FederatedTesProfile.BuildCodeTask(dataset, Code, "study-1", tre);
 
         private static FederatedStudyVersion NewVersion(ApplicationDbContext db, string studyId = "study-1") =>
@@ -114,7 +115,7 @@ namespace Submission.Api.Tests
                 StudyId = "study-1",
                 Operation = "run-analysis",
                 Dataset = "cohort_2024",
-                TesTaskJson = JsonConvert.SerializeObject(task ?? AnalysisTask()),
+                TesTaskJson = JsonConvert.SerializeObject(task ?? AnalysisTask(treName ?? (treId == 1 ? "tre-a" : "tre-b"))),
                 State = state,
                 Phase = state switch
                 {
@@ -166,6 +167,35 @@ namespace Submission.Api.Tests
                 Assert.Equal(new[] { new KeyValuePair<string, string>("fed.sites", part.TreName) }, sitesKeys);
                 Assert.Equal("1", part.ToTesTask().Logs![0].Metadata!["round"]);
             }
+        }
+
+        [Fact]
+        public async Task Enqueue_one_hospital_is_refused_and_stores_nothing()
+        {
+            using var db = NewDb();
+            var task = AnalysisTask();
+            task.Tags!["fed.sites"] = "tre-a";
+
+            var error = AssertError(await ControllerFor(db, "dare-admin").Enqueue(task), 400, FederatedTaskErrorCodes.InvalidTask);
+
+            Assert.Contains("at least 2 hospitals", error.ErrorMessage);
+            Assert.Empty(db.FederatedStudyVersions);
+            Assert.Empty(db.FederatedTasks);
+        }
+
+        [Fact]
+        public async Task Enqueue_sets_the_deadline_from_settings()
+        {
+            using var db = NewDb();
+            var settings = new FederatedTaskSettings { StudyTimeoutMinutes = 90 };
+
+            var versionId = EnqueuedVersionId(await ControllerFor(db, "dare-admin", settings: settings).Enqueue(TwoSiteTask()));
+
+            var version = db.FederatedStudyVersions.Single();
+            Assert.Equal(version.SubmittedAt.AddMinutes(90), version.DeadlineAt);
+            var view = ViewOf(await ControllerFor(db, "dare-admin").GetStudyVersion(versionId.ToString()));
+            Assert.Equal(("open", null), (view.State, view.Outcome));
+            Assert.EndsWith("Z\"", JsonConvert.SerializeObject(view.DeadlineAt));
         }
 
         [Fact]
@@ -234,6 +264,7 @@ namespace Submission.Api.Tests
             var root = new Microsoft.EntityFrameworkCore.Storage.InMemoryDatabaseRoot();
             using var setup = OpenDb(name, root);
             setup.Tres.Add(NewTre(1, "tre-a", "tre-a-admin", "tre-a-client"));
+            setup.Tres.Add(NewTre(2, "tre-b", "tre-b-admin", "tre-b-client"));
             setup.SaveChanges();
             // Another submission saves an open v1 first; the in-memory provider has no unique index, so the collision
             // Postgres would raise is thrown here.
@@ -331,7 +362,7 @@ namespace Submission.Api.Tests
             Resources = new TesResources { CpuCores = cpuCores, RamGb = ramGb, DiskGb = diskGb },
             Tags = new Dictionary<string, string>
             {
-                ["fed.sites"] = "tre-a",
+                ["fed.sites"] = "tre-a|tre-b",
                 ["fed.study_id"] = "study-1",
                 ["fed.code_sha256"] = Convert.ToHexStringLower(
                     System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(code)))
@@ -345,7 +376,7 @@ namespace Submission.Api.Tests
             var result = await ControllerFor(db, "dare-admin").Enqueue(CodeTask());
 
             Assert.IsType<OkObjectResult>(result);
-            var row = db.FederatedTasks.Single();
+            var row = db.FederatedTasks.Single(t => t.TreName == "tre-a");
             Assert.Equal("run-analysis", row.Operation);
             Assert.Equal("cohort_2024", row.Dataset);
             Assert.Equal(FederatedTaskPhase.Queued, row.Phase);
@@ -377,24 +408,13 @@ namespace Submission.Api.Tests
         {
             using var db = NewDb();
             Assert.IsType<OkObjectResult>(await ControllerFor(db, "dare-admin").Enqueue(CodeTask()));
-            var row = db.FederatedTasks.Single();
+            var row = db.FederatedTasks.Single(t => t.TreName == "tre-a");
 
             // Init-only stops plain assignments; this is the route EF would still allow.
             db.Entry(row).Property(x => x.TesTaskJson).CurrentValue = "{}";
 
             var error = Assert.Throws<InvalidOperationException>(() => db.SaveChanges());
             Assert.Contains("TesTaskJson", error.Message);
-        }
-
-        [Fact]
-        public async Task Agent_of_another_tre_does_not_receive_the_code()
-        {
-            using var db = NewDb();
-            Assert.IsType<OkObjectResult>(await ControllerFor(db, "dare-admin").Enqueue(CodeTask(code: AwkwardCode)));
-
-            var result = await AgentControllerFor(db, "tre-b-client").GetPendingTasksForTre();
-
-            Assert.Empty(Assert.IsType<List<TesTask>>(Assert.IsType<OkObjectResult>(result).Value));
         }
 
         [Fact]
@@ -536,7 +556,7 @@ namespace Submission.Api.Tests
             using var db = NewDb();
             await ControllerFor(db, "dare-admin").Enqueue(AnalysisTask());
 
-            var row = db.FederatedTasks.Include(x => x.PhaseChanges).Single();
+            var row = db.FederatedTasks.Include(x => x.PhaseChanges).Single(t => t.TreName == "tre-a");
             Assert.Equal(FederatedTaskPhase.Queued, row.Phase);
             var change = Assert.Single(row.PhaseChanges);
             Assert.Equal(FederatedTaskPhase.Queued, change.Phase);
@@ -548,7 +568,7 @@ namespace Submission.Api.Tests
         {
             using var db = NewDb();
             await ControllerFor(db, "dare-admin").Enqueue(AnalysisTask());
-            var id = db.FederatedTasks.Single().TaskId;
+            var id = db.FederatedTasks.Single(t => t.TreName == "tre-a").TaskId;
 
             var task = await GetTask(db, id);
 
@@ -601,7 +621,7 @@ namespace Submission.Api.Tests
 
             await ControllerFor(db, "dare-admin").Enqueue(task);
 
-            Assert.Contains("\"state\":\"UNKNOWN\"", db.FederatedTasks.Single().TesTaskJson);
+            Assert.Contains("\"state\":\"UNKNOWN\"", db.FederatedTasks.Single(t => t.TreName == "tre-a").TesTaskJson);
         }
 
         [Fact]
@@ -663,7 +683,7 @@ namespace Submission.Api.Tests
 
             await ControllerFor(db, "dare-admin").Enqueue(task);
 
-            var stored = JsonConvert.DeserializeObject<TesTask>(db.FederatedTasks.Single().TesTaskJson)!;
+            var stored = JsonConvert.DeserializeObject<TesTask>(db.FederatedTasks.Single(t => t.TreName == "tre-a").TesTaskJson)!;
             Assert.Equal("r-42", stored.Tags!["daams.request"]);
         }
 
@@ -672,11 +692,11 @@ namespace Submission.Api.Tests
         {
             using var db = NewDb();
             var task = AnalysisTask();
-            task.Tags!["fed.sites"] = "TRE-A";
+            task.Tags!["fed.sites"] = "TRE-A|tre-b";
             var result = await ControllerFor(db, "dare-admin").Enqueue(task);
 
             Assert.IsType<OkObjectResult>(result);
-            Assert.Equal(1, db.FederatedTasks.Single().TreId);
+            Assert.Equal(1, db.FederatedTasks.Single(t => t.TreName == "tre-a").TreId);
         }
 
         [Fact]

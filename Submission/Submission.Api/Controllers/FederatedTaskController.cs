@@ -71,6 +71,13 @@ namespace Submission.Api.Controllers
             }
 
             var spec = parsed.Spec!;
+            // Here, not in FederatedTesProfile.Parse: the Agent parses each hospital's part, which names one site.
+            if (spec.Sites.Count < FederatedStudyOutcomeReasons.MinimumHospitals)
+            {
+                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask,
+                    $"a study needs at least {FederatedStudyOutcomeReasons.MinimumHospitals} hospitals in fed.sites, so that no single hospital's result is released");
+            }
+
             var tres = await _DbContext.Tres
                 .AsNoTracking()
                 .Where(x => spec.Sites.Contains(x.Name.ToLower()))
@@ -103,6 +110,7 @@ namespace Submission.Api.Controllers
                     return conflict;
                 }
 
+                var submittedAt = DateTime.UtcNow;
                 var version = new FederatedStudyVersion
                 {
                     VersionId = Guid.NewGuid(),
@@ -111,7 +119,8 @@ namespace Submission.Api.Controllers
                     Sites = string.Join('|', spec.Sites),
                     CodeSha256 = spec.CodeSha256,
                     TesTaskJson = tesTaskJson,
-                    SubmittedAt = DateTime.UtcNow
+                    SubmittedAt = submittedAt,
+                    DeadlineAt = submittedAt.AddMinutes(_settings.StudyTimeoutMinutes)
                 };
                 foreach (var site in spec.Sites)
                 {
