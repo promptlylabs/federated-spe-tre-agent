@@ -22,6 +22,15 @@ COPY rootca.pem /usr/local/share/ca-certificates/chi-ansible.crt
 RUN chmod 644 /usr/local/share/ca-certificates/*.crt && \
 	update-ca-certificates
 
+# Semgrep scans researcher code before it runs (SemgrepCodeScanner). Installed here, pinned with hashes; it runs offline.
+COPY Agent/Agent.Api/ScanRules/requirements.txt /tmp/semgrep-requirements.txt
+RUN apt-get update && \
+	apt-get install -y --no-install-recommends python3 python3-venv && \
+	rm -rf /var/lib/apt/lists/* && \
+	python3 -m venv /opt/semgrep && \
+	/opt/semgrep/bin/pip install --no-cache-dir --require-hashes -r /tmp/semgrep-requirements.txt && \
+	rm -rf /tmp/semgrep-requirements.txt /root/.cache/pip
+
 USER app
 EXPOSE 8080
 EXPOSE 443

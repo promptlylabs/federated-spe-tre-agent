@@ -424,6 +424,7 @@ void AddDependencies(WebApplicationBuilder builder, ConfigurationManager configu
     builder.Services.AddSingleton<IDockerClient>(sp =>
         new DockerClientConfiguration(new Uri(sp.GetRequiredService<FederatedTaskSettings>().DockerEndpoint)).CreateClient());
     builder.Services.AddScoped<ICodeRunner, DockerCodeRunner>();
+    builder.Services.AddSingleton<ICodeScanner, SemgrepCodeScanner>();
     builder.Services.AddScoped<IFederatedTaskExecution, CodeExecution>();
     builder.Services.AddScoped<IResultOutputStore, MinioResultOutputStore>();
     builder.Services.AddScoped<IFederatedTokenSource, KeycloakFederatedTokenSource>();

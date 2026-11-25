@@ -153,6 +153,19 @@ namespace Agent.Api.Models
             return problems.Count == 0 ? null : string.Join(". ", problems) + ". Set the value above 0.";
         }
 
+        /// <summary>
+        /// The hospital's code-scan rule file (Semgrep YAML whose first line is "# version: &lt;text&gt;"). Null means the
+        /// default rules shipped with the Agent (ScanRules/default.yaml next to the app). A missing or unreadable file, or
+        /// one without the version line, holds every code task until it is fixed.
+        /// </summary>
+        public string? ScanRulesPath { get; set; }
+
+        /// <summary>The Semgrep executable that scans researcher code.</summary>
+        public string SemgrepPath { get; set; } = "/opt/semgrep/bin/semgrep";
+
+        /// <summary>The longest, in seconds, a code scan may take. After it Semgrep is killed and the task fails.</summary>
+        public int ScanTimeoutSeconds { get; set; } = 30;
+
         /// <summary>Docker endpoint the Agent uses to start the containers that run researcher code.</summary>
         public string DockerEndpoint { get; set; } = "unix:///var/run/docker.sock";
 
