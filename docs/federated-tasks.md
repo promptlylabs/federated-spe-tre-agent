@@ -14,11 +14,27 @@ To try the flow locally, see [dev/federated](../dev/federated/README.md). It is 
 
 Fan-out. Every hospital gets a copy of the submitted task: the same code byte for byte, the same `fed.code_sha256` and `fed.study_id`, and the same dataset name, which each hospital resolves to its own copy. Only its `fed.sites` differs: it names that hospital alone. The version keeps the task as submitted. If any hospital in `fed.sites` is not registered, the whole submission is refused and nothing is stored, so no hospital starts.
 
-One open version per study. A version is `open` until every part is final (`released`, `rejected_by_input_checks`, `rejected_at_output_approval`, `failed` or `canceled`), or until it is cancelled. A submission for a study whose latest version is open gets 409 `study_version_open`, with the open version's ID. A cancelled version whose hospitals have not all confirmed yet is `canceling`: it no longer blocks a new version, and its hospitals' cleanup carries on in the background. Once every part is final the version is `ended`. Open, canceling and ended are worked out from the parts and the cancel time; nothing else is stored. Two submissions for one study at the same moment cannot both get a version: the version number is unique per study, so the loser reads the study again and gets 409.
+At least 2 hospitals. A study is pooled only from at least 2 hospitals, so that no single hospital's result is ever released. Intake refuses `fed.sites` naming fewer than 2 (400 `invalid_task`), so a study that could never meet the minimum does not use hospitals' compute and reviewers' time.
 
-A cancelled version stops blocking at once because a hospital whose Agent is gone for good would otherwise block the study forever. It is safe: a canceling part can never release a result. At the hospital, each poll hands out canceling parts before queued ones, and the cleanup stops the old run first, so the old and new versions' code do not run together unless that cleanup fails partway (then the hospital's `MaxConcurrentRuns` and `MaxRunMinutes` bound it).
+Outcome. Every version ends with one outcome:
 
-TODO: refuse fewer than 2 hospitals at intake (ANZE-6130, with the version's timeout and overall state). Until then one hospital is accepted.
+| Outcome | Reason | When |
+|---|---|---|
+| `ready_for_aggregation` | `all_final` | Every part is final and at least 2 are `released`. |
+| `ready_for_aggregation` | `timeout` | The deadline passed with at least 2 `released`. The parts still working are cancelled. |
+| `incomplete` | `minimum_unreachable` | Fewer than 2 parts are `released` or can still be. This is decided at once, not at the deadline: for example, in a study for A, B and C where A and B are rejected, C is cancelled. |
+| `incomplete` | `timeout_below_minimum` | The deadline passed with fewer than 2 `released`. The parts still working are cancelled. |
+| `canceled` | `canceled` | An orchestrator admin cancelled the version (see "Cancelling a study version"). |
+
+Only `released` counts. `rejected_by_input_checks`, `rejected_at_output_approval`, `failed` and `canceled` do not. An `incomplete` version releases nothing to researchers; researchers will only ever get pooled results (3.3). Admins can still read a hospital's released result with `GetTaskResult`. The outcome also has a sentence for people, `outcome_message`, for example "only 1 hospital(s) can still release a result; a study needs at least 2".
+
+Deadline. Each version's deadline is its submission time plus `FederatedTaskSettings:StudyTimeoutMinutes` (default 7 days), fixed at intake: changing the setting does not move the deadline of versions already submitted. The deadline does not limit a run (the Agent's `MaxRunMinutes` does that). It limits how long one hospital, a reviewer who does not answer or an Agent that is gone, can hold up the others.
+
+The sweep. A hospital that goes silent sends nothing, so Submission decides outcomes on a timer: at startup, then every `FederatedTaskSettings:StudySweepSeconds` (default 300). It decides each version that has no outcome yet, and saves each on its own. When it decides, it cancels every unfinished part as an admin cancel does (`queued` → `canceled`, picked up → `canceling` until the hospital confirms). If a hospital's report changes a part at the same moment, the sweep's save loses and the next sweep decides again. So an outcome can show up to one interval after the last hospital finished.
+
+One open version per study. A version is `open` until it has an outcome. Then it is `canceling` while a part is still `canceling` at its hospital, and `ended` once every part is final. Only an open version blocks: a submission for a study whose latest version is open gets 409 `study_version_open`, with the open version's ID. A decided version whose hospitals are still cleaning up does not block, and their cleanup carries on in the background. Two submissions for one study at the same moment cannot both get a version: the version number is unique per study, so the loser reads the study again and gets 409.
+
+A decided version stops blocking at once because a hospital whose Agent is gone for good would otherwise block the study forever. It is safe: a canceling part can never release a result. At the hospital, each poll hands out canceling parts before queued ones, and the cleanup stops the old run first, so the old and new versions' code do not run together unless that cleanup fails partway (then the hospital's `MaxConcurrentRuns` and `MaxRunMinutes` bound it).
 
 ## Flow
 
@@ -140,7 +156,7 @@ Every 4xx from these endpoints has the same JSON body. Its keys are the same as 
 | 409 | `study_version_open` | `Enqueue` for a study whose latest version is still open. The body also has `version_id`, the open version. Cancel it or wait for it to end. |
 | 409 | `task_busy` | `ReportProgress`, `ReportResult` or `Cancel` lost a race with other reports for the same task or version three times in a row; or `Enqueue` lost the version number to other submissions of the same study three times. Nothing was recorded. Send it again. |
 | 409 | `task_canceling` | `ReportResult` or `ReportProgress` for a task the orchestrator is cancelling. Only the cancel confirmation (`ReportProgress` with `canceled`) is accepted. See "Cancelling a study version". |
-| 409 | `task_already_finished` | `Cancel` for a version that ended without being cancelled: every part is already final. |
+| 409 | `task_already_finished` | `Cancel` for a version that already has an outcome other than `canceled`. |
 | 500 | `internal_error` | `GetTaskResult`: the stored file does not match its SHA-256. The file is not returned. |
 | 503 | `storage_unavailable` | The orchestrator bucket cannot be reached, or `ReportResult` lost a race and could not read the task again. For `ReportResult` the task keeps its phase and the Agent sends the report again at the next poll. |
 
@@ -183,6 +199,11 @@ The Agent sends `running` when it picks a `queued` task up, `waiting_for_output_
   "submitted_at": "2026-11-24T18:00:00Z",
   "code_sha256": "<lowercase hex SHA-256 of the code>",
   "state": "open",
+  "outcome": null,
+  "outcome_reason": null,
+  "outcome_message": null,
+  "outcome_at": null,
+  "deadline_at": "2026-12-01T18:00:00Z",
   "canceled_at": null,
   "versions": [1, 2],
   "hospitals": [
@@ -195,18 +216,19 @@ The Agent sends `running` when it picks a `queued` task up, `waiting_for_output_
 }
 ```
 
-- `state` is `open`, `canceling` or `ended` (see "Studies and versions"). `canceled_at` is set once the version is cancelled.
+- `state` is `open`, `canceling` or `ended`, and `outcome`, `outcome_reason`, `outcome_message` and `outcome_at` are set once the version is decided (see "Studies and versions"). `deadline_at` is fixed at intake. `canceled_at` is `outcome_at` when an admin cancelled the version.
+- None of this is a TES state. Each hospital's `state` is. When the TES API for studies comes (ANZE-6134), a version maps to the standard states without new ones: `open` → `RUNNING`, `canceling` → `CANCELING`, `ready_for_aggregation` → `RUNNING` until the pooled result is stored, then `COMPLETE`, and `incomplete` or `canceled` → `CANCELED` with the reason in metadata, as a rejected part is `CANCELED` with its `error_code` today.
 - `versions` lists every version number of the study; only `GetStudy` sends it.
 - `hospitals` is in `fed.sites` order. `phase`, `state` and `times` are each hospital's task phase, TES state and `<phase>_at` times, as in "Task phases and state". `error_code` is there for a rejected or failed part, `result_sha256` for a released one, and `scan_rules_version` and `scan_rules_sha256` for a part whose code was scanned (see "Code scan"). Result content never is; read it with `GetTaskResult` and the part's `task_id`.
 
 ### Cancelling a study version
 
-`POST /api/FederatedTask/Cancel?id=<versionId>` cancels a whole study version. It needs the `dare-control-admin` role. It records the version's cancel time and cancels every unfinished part, in one save. A 200 response is the version, as `GetStudyVersion` returns it. There is no cancel of one hospital's part from the API.
+`POST /api/FederatedTask/Cancel?id=<versionId>` cancels a whole study version. It needs the `dare-control-admin` role. It gives the version the `canceled` outcome and cancels every unfinished part, in one save. A 200 response is the version, as `GetStudyVersion` returns it. There is no cancel of one hospital's part from the API.
 
 - A `queued` part, which no hospital has picked up, moves straight to `canceled`. If the Agent picked it up at the same moment, its `running` report is refused, and it does not run the task.
 - A `running` or `waiting_for_output_approval` part moves to `canceling`. It stays in `GetPendingTasksForTre` (listed first, even if the TRE was renamed since) until the hospital confirms. A TRE rename does not fail it.
 - Final parts keep their phase. A version with every part final after the cancel is `ended`; one with a part still `canceling` is `canceling`. Either way it no longer blocks a new version of the study.
-- A version already cancelled: 200, nothing changes. A version that ended without a cancel: 409 `task_already_finished`. An unknown version ID: 404 `study_not_found`.
+- A version already cancelled: 200, nothing changes. A version with another outcome (`ready_for_aggregation` or `incomplete`): 409 `task_already_finished`. A version whose parts are all final but which the sweep has not decided yet is cancelled. An unknown version ID: 404 `study_not_found`.
 
 While a task is `canceling`, Submission refuses every `ReportResult` (an approved result, a rejection or an error) with 409 `task_canceling`, before any file is written. So a reviewer's decision made at the same moment as a cancel never releases the result: the task can only end `canceled`.
 
@@ -314,7 +336,7 @@ A code task runs the researcher's Python file with `run-analysis` in an approved
 | `outputs` | Exactly 1: `path` `/outputs/result.json`, `type` `FILE`, `url` `result://`. TES requires a `url`; any real address is refused, so no runtime can upload the result past output approval. The result goes through output approval at the hospital and back to Submission, as for every task. |
 | `volumes` | Must be null or empty. |
 | `resources` | May be left out. If given, `cpu_cores`, `ram_gb` and `disk_gb` must each be more than 0 and at most `MaxCpuCores`, `MaxRamGb` and `MaxDiskGb`. `zones`, `preemptible` and `backend_parameters` must not be set. |
-| `tags` | `fed.sites` lists the hospitals (TREs) the study version goes to, separated by `\|`, for example `hosp-a\|hosp-b`. Each entry is trimmed and lowercased. An empty entry, a TRE named twice or more than 20 TREs is refused (`invalid_task`), and so is the whole submission if any entry is not a registered TRE. One TRE is accepted for now (see "Studies and versions"). `fed.study_id` must not be empty. Both are at most 1024 characters, the limit for strings in the result document. `fed.code_sha256` is required: the lowercase hex SHA-256 of the code's UTF-8 bytes. It must match the code, so the hash the hospital reviews is the hash of the code that runs. `fed.round` is optional and must be `1`: a study version runs one round of analysis, and later rounds (federated learning) come after the PoC. Without it the round is 1. Tags without the `fed.` prefix are kept and ignored. |
+| `tags` | `fed.sites` lists the hospitals (TREs) the study version goes to, separated by `\|`, for example `hosp-a\|hosp-b`. Each entry is trimmed and lowercased. Fewer than 2 TREs, an empty entry, a TRE named twice or more than 20 TREs is refused (`invalid_task`), and so is the whole submission if any entry is not a registered TRE (see "Studies and versions"). `fed.study_id` must not be empty. Both are at most 1024 characters, the limit for strings in the result document. `fed.code_sha256` is required: the lowercase hex SHA-256 of the code's UTF-8 bytes. It must match the code, so the hash the hospital reviews is the hash of the code that runs. `fed.round` is optional and must be `1`: a study version runs one round of analysis, and later rounds (federated learning) come after the PoC. Without it the round is 1. Tags without the `fed.` prefix are kept and ignored. |
 | `name`, `description` | Accepted and ignored. |
 
 The dataset name must match `^[a-z0-9][a-z0-9_-]{0,62}$`.
@@ -340,7 +362,7 @@ Example:
   "outputs": [{ "path": "/outputs/result.json", "url": "result://", "type": "FILE" }],
   "resources": { "cpu_cores": 2, "ram_gb": 8 },
   "tags": {
-    "fed.sites": "my-tre",
+    "fed.sites": "my-tre|other-tre",
     "fed.study_id": "study-001",
     "fed.code_sha256": "<lowercase hex SHA-256 of the content>"
   }
@@ -691,10 +713,12 @@ What a code task may ask for is set in the section `FederatedTaskSettings`:
 | `MaxCpuCores` | `4` | The largest `resources.cpu_cores`. |
 | `MaxRamGb` | `16` | The largest `resources.ram_gb`. |
 | `MaxDiskGb` | `20` | The largest `resources.disk_gb`. |
+| `StudyTimeoutMinutes` | `10080` (7 days) | A study version's deadline, from intake (see "Studies and versions"). |
+| `StudySweepSeconds` | `300` | How often the sweep decides study versions' outcomes. |
 
 These are Submission's settings. The Agent has its own `MaxCpuCores`, `MaxRamGb` and `MaxDiskGb` (see "Buckets and policies"), with their own defaults (the disk maximum is 4 there, 20 here), and reduces a request to them. Keep Submission's maxima at or below the Agent's. The poll response carries the code of every queued code task, up to 256 KiB each.
 
-The resource defaults are placeholders until the hospitals confirm their capacity. The 256 KiB limit on the code is fixed. Submission refuses to start if a maximum is 0 or less.
+The resource defaults are placeholders until the hospitals confirm their capacity. The 256 KiB limit on the code is fixed. Submission refuses to start if a maximum, `StudyTimeoutMinutes` or `StudySweepSeconds` is 0 or less.
 
 ## Security
 
