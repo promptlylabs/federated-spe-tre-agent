@@ -500,9 +500,14 @@ namespace Submission.Api.Tests
         [InlineData(0L, 16.0, 20.0, "FederatedTaskSettings:MaxCpuCores must be more than 0")]
         [InlineData(4L, -1.0, 20.0, "FederatedTaskSettings:MaxRamGb must be more than 0")]
         [InlineData(4L, 16.0, double.NaN, "FederatedTaskSettings:MaxDiskGb must be more than 0")]
-        public void Non_positive_maximums_are_problems(long cpu, double ram, double disk, string problem)
+        [InlineData(4L, 16.0, 20.0, "FederatedTaskSettings:StudyTimeoutMinutes must be more than 0", 0)]
+        [InlineData(4L, 16.0, 20.0, "FederatedTaskSettings:StudySweepSeconds must be more than 0", 10080, 0)]
+        public void Non_positive_maximums_are_problems(long cpu, double ram, double disk, string problem, int timeoutMinutes = 10080, int sweepSeconds = 300)
         {
-            var settings = new FederatedTaskSettings { MaxCpuCores = cpu, MaxRamGb = ram, MaxDiskGb = disk };
+            var settings = new FederatedTaskSettings
+            {
+                MaxCpuCores = cpu, MaxRamGb = ram, MaxDiskGb = disk, StudyTimeoutMinutes = timeoutMinutes, StudySweepSeconds = sweepSeconds
+            };
 
             Assert.Equal([problem], settings.Problems());
         }

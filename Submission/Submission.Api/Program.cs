@@ -124,6 +124,7 @@ builder.Services.AddSingleton(emailSettings);
 
 
 builder.Services.AddHostedService<ConsumeInternalMessageService>();
+builder.Services.AddHostedService<FederatedStudySweep>();
 var TVP = new TokenValidationParameters
 {
     ValidateAudience = true,

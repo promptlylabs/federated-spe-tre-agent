@@ -23,6 +23,15 @@ namespace Submission.Api.Models
         public double MaxRamGb { get; set; } = 16;
         public double MaxDiskGb { get; set; } = 20;
 
+        /// <summary>
+        /// How long a study version may wait for its hospitals, from intake. It limits how long one hospital (a reviewer who
+        /// doesn't answer, an Agent that is gone) can hold up the others; a run itself is limited by the Agent. 7 days.
+        /// </summary>
+        public int StudyTimeoutMinutes { get; set; } = 10080;
+
+        /// <summary>How often the sweep decides study versions' outcomes. Deadlines are in days, so this need not be fast.</summary>
+        public int StudySweepSeconds { get; set; } = 300;
+
         /// <summary>Settings that would make intake behave wrongly; Submission refuses to start with any.</summary>
         public IReadOnlyList<string> Problems()
         {
@@ -30,6 +39,8 @@ namespace Submission.Api.Models
             if (MaxCpuCores <= 0) problems.Add($"{SectionName}:{nameof(MaxCpuCores)} must be more than 0");
             if (!(MaxRamGb > 0) || !double.IsFinite(MaxRamGb)) problems.Add($"{SectionName}:{nameof(MaxRamGb)} must be more than 0");
             if (!(MaxDiskGb > 0) || !double.IsFinite(MaxDiskGb)) problems.Add($"{SectionName}:{nameof(MaxDiskGb)} must be more than 0");
+            if (StudyTimeoutMinutes <= 0) problems.Add($"{SectionName}:{nameof(StudyTimeoutMinutes)} must be more than 0");
+            if (StudySweepSeconds <= 0) problems.Add($"{SectionName}:{nameof(StudySweepSeconds)} must be more than 0");
             return problems;
         }
 
