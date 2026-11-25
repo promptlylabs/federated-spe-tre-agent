@@ -95,6 +95,7 @@ plain_reason() {
     ambiguous_dataset) echo "the dataset is not clearly identified" ;;
     schema_not_found) echo "the dataset has no schema.json" ;;
     image_not_approved) echo "the hospital has not approved this analysis code" ;;
+    unsafe_code) echo "the code does something the hospital does not allow" ;;
     *) echo "${2:-$1}" ;;
   esac
 }
@@ -125,13 +126,13 @@ review() {
 }
 
 # --- one case ---------------------------------------------------------------------------------------------------------
-# run_case <n> <title> <researcher line> <expected: released|dataset_not_found|rejected_by_reviewer> <dataset> <file.py>
+# run_case <n> <title> <researcher line> <expected: released|dataset_not_found|unsafe_code|rejected_by_reviewer> <dataset> <file.py>
 run_case() {
   local n=$1 title=$2 ask=$3 expected=$4
   shift 4
   local version id view state phase code message outcome left decision
   pause "to start case $n"
-  heading "Case $n of 3 · $title"
+  heading "Case $n of $CASES · $title"
   say "${DIM}${ask}${X}"
   echo
   # Each case is its own study, sent to my-tre only; the hospital's part of it is the task followed below.
@@ -147,6 +148,8 @@ run_case() {
 
   if [ "$phase" = rejected_by_input_checks ]; then
     stop "Stopped by the hospital's checks: $(plain_reason "$code" "$message")" "$state · $phase · $code"
+    # The scan names the rule and the line it refused, so the custodian can follow the decision.
+    [ "$code" = unsafe_code ] && say "   ${A}${message}${X}"
     stop "Nothing ran, nothing left the hospital"
     outcome=$code; decision="stopped by the checks"
   elif [ "$phase" = queued ] || [ -z "$phase" ]; then
@@ -226,7 +229,7 @@ opening() {
   local p
   for p in "${PROMISES[@]}"; do say "  • $p"; done
   echo
-  say "${DIM}Three requests follow: one the hospital approves, one its checks stop, one its reviewer rejects.${X}"
+  say "${DIM}Four requests follow: one the hospital approves, two its checks stop, one its reviewer rejects.${X}"
 }
 
 summary() {
@@ -272,11 +275,14 @@ preflight() {
 preflight
 opening
 CODE=$(dirname "$0")/code
+CASES=4
 run_case 1 "A safe result leaves the hospital" \
   "A researcher asks for the average age in the cohort_2024 dataset." released cohort_2024 "$CODE/analysis.py"
 run_case 2 "A request for data the hospital does not hold" \
   "A researcher asks to count records in a dataset this hospital does not have." dataset_not_found no_such_dataset "$CODE/count_rows.py"
-run_case 3 "The hospital reviewer says no" \
+run_case 3 "Code that tries to reach the network (R1)" \
+  "A researcher sends code that counts records, but first opens a network connection." unsafe_code cohort_2024 "$CODE/open_socket.py"
+run_case 4 "The hospital reviewer says no" \
   "A researcher asks to count the records in cohort_2024." rejected_by_reviewer cohort_2024 "$CODE/count_rows.py"
 pause "for the summary"
 summary

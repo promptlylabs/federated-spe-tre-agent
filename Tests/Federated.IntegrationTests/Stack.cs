@@ -16,7 +16,7 @@ namespace Federated.IntegrationTests;
 /// Enqueue created, or on a 409 study_version_open the version still open.
 /// </summary>
 public record EnqueueOutcome(int Status, string? Id, string? ErrorCode, string? VersionId = null);
-public record TaskView(string State, string? Phase, string? ErrorCode, string? ErrorMessage, string? ResultSha256);
+public record TaskView(string State, string? Phase, string? ErrorCode, string? ErrorMessage, string? ResultSha256, string? ScanRulesVersion = null);
 public record ResultView(byte[] Bytes, string Sha256);
 public record HospitalPart(string Tre, string TaskId, string Phase);
 
@@ -156,7 +156,8 @@ public sealed class SubmissionClient
         var task = JsonNode.Parse(await response.Content.ReadAsStringAsync())!;
         var meta = task["logs"]?.AsArray().FirstOrDefault()?["metadata"];
         string? Meta(string key) => meta?[key]?.GetValue<string>();
-        return new TaskView(task["state"]!.GetValue<string>(), Meta("phase"), Meta("error_code"), Meta("error_message"), Meta("result_sha256"));
+        return new TaskView(task["state"]!.GetValue<string>(), Meta("phase"), Meta("error_code"), Meta("error_message"), Meta("result_sha256"),
+            Meta("scan_rules_version"));
     }
 
     /// <summary>Cancels a study version as an orchestrator admin. Returns the HTTP status and the version's state after it.</summary>
