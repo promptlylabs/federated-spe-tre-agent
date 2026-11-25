@@ -9,6 +9,8 @@ import pandas as pd
 from numpy import mean
 # ok: import-not-allowed
 import scipy.stats
+# ok: import-not-allowed
+import warnings
 # ruleid: import-not-allowed
 import socket
 # ruleid: import-not-allowed

@@ -23,7 +23,7 @@ rules:
       # [\w.]+ because Semgrep also matches "import $MOD" against "from a import b", with $MOD = "a import b".
       - metavariable-regex:
           metavariable: $MOD
-          regex: ^(?!(pandas|numpy|scipy|math|statistics|collections|itertools|functools|operator|datetime|decimal|fractions|re|json|typing|dataclasses|enum)(\.|$))[\w.]+$
+          regex: ^(?!(pandas|numpy|scipy|math|statistics|collections|itertools|functools|operator|datetime|decimal|fractions|re|json|typing|dataclasses|enum|warnings)(\.|$))[\w.]+$
 
   # Code that builds or runs other code while it runs: what it does can't be checked in advance.
   - id: dynamic-code
