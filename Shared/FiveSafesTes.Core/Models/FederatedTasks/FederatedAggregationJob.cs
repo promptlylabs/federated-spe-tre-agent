@@ -18,6 +18,9 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         public string ResultsJson { get; set; } = "[]";
     }
 
+    /// <summary>What the aggregator reports for a version: phase running, aggregated (with the pooled file) or failed (with a code).</summary>
+    public sealed record FederatedAggregationReport(string VersionId, string Phase, string? ErrorCode);
+
     /// <summary>The phases and form fields of an aggregation report (multipart/form-data, file part <c>result</c>).</summary>
     public static class FederatedAggregationPhases
     {

@@ -26,5 +26,11 @@ namespace Agent.Api.FederatedTasks
         /// throws only on a network or token failure.
         /// </summary>
         Task<FederatedReportOutcome> ReportProgressAsync(string taskId, FederatedTaskPhase phase);
+
+        /// <summary>Aggregator role: the study versions ready for aggregation, each with the released hospitals' values.</summary>
+        Task<List<FederatedAggregationJob>> GetPendingAggregationsAsync();
+
+        /// <summary>Aggregator role: reports running, aggregated (with the pooled document) or failed (with a code).</summary>
+        Task<FederatedReportOutcome> ReportAggregationAsync(FederatedAggregationReport report, byte[]? pooledFile);
     }
 }

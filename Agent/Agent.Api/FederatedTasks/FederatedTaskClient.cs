@@ -114,6 +114,41 @@ namespace Agent.Api.FederatedTasks
                 : ErrorOutcome(status, body);
         }
 
+        public async Task<List<FederatedAggregationJob>> GetPendingAggregationsAsync()
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, Url("/api/FederatedAggregation/GetPendingAggregations"));
+            await Authorize(request);
+
+            using var response = await _httpClientFactory.CreateClient().SendAsync(request);
+            response.EnsureSuccessStatusCode();
+
+            var body = await response.Content.ReadAsStringAsync();
+            return JsonConvert.DeserializeObject<List<FederatedAggregationJob>>(body) ?? new List<FederatedAggregationJob>();
+        }
+
+        public async Task<FederatedReportOutcome> ReportAggregationAsync(FederatedAggregationReport report, byte[]? pooledFile)
+        {
+            using var form = new MultipartFormDataContent();
+            form.Add(new StringContent(report.VersionId), FederatedAggregationPhases.VersionIdField);
+            form.Add(new StringContent(report.Phase), FederatedAggregationPhases.PhaseField);
+            if (report.ErrorCode != null)
+                form.Add(new StringContent(report.ErrorCode), FederatedAggregationPhases.ErrorCodeField);
+            if (pooledFile != null)
+            {
+                var file = new ByteArrayContent(pooledFile);
+                file.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+                form.Add(file, FederatedReportFields.ResultFile, "pooled.json");
+            }
+
+            using var request = new HttpRequestMessage(HttpMethod.Post, Url("/api/FederatedAggregation/ReportAggregation")) { Content = form };
+            await Authorize(request);
+
+            using var response = await _httpClientFactory.CreateClient().SendAsync(request);
+            var status = (int)response.StatusCode;
+            var body = await response.Content.ReadAsStringAsync();
+            return status == 200 ? new FederatedReportOutcome(status, null, null, null, null) : ErrorOutcome(status, body);
+        }
+
         private static FederatedReportOutcome ErrorOutcome(int status, string body)
         {
             var error = TryParse<FederatedApiError>(body);

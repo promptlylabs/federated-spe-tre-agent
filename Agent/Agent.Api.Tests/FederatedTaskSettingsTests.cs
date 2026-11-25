@@ -182,4 +182,19 @@ public class FederatedTaskSettingsTests
         Assert.Contains("MaxRunMinutes", problem);
         Assert.Contains("FederatedTaskSettings:ScanTimeoutSeconds", problem);
     }
+
+    [Theory]
+    [InlineData(null, null, null)]
+    [InlineData("Hospital", null, null)]
+    [InlineData("Aggregator", "python-runner:1", null)]
+    [InlineData("Aggregator", null, "FederatedTaskSettings:ApprovedImages must list the image aggregate() runs in when Role is Aggregator")]
+    [InlineData("aggregator", "python-runner:1", "FederatedTaskSettings:Role must be Hospital or Aggregator")]
+    public void Role_problems(string? role, string? image, string? problem)
+    {
+        var values = new Dictionary<string, string?>();
+        if (role != null) values["FederatedTaskSettings:Role"] = role;
+        if (image != null) values["FederatedTaskSettings:ApprovedImages:0"] = image;
+
+        Assert.Equal(problem, Bind(values).RoleProblem());
+    }
 }

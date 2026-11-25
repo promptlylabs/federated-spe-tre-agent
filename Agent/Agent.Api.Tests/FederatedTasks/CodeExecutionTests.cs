@@ -102,8 +102,8 @@ public class CodeExecutionTests
         Assert.Equal(Csv, Encoding.UTF8.GetString(_runner.StagedBytes["data/cohort_2024/cohort.csv"]));
         Assert.Equal(Schema, Encoding.UTF8.GetString(_runner.StagedBytes["data/cohort_2024/schema.json"]));
         Assert.Equal(Code, Encoding.UTF8.GetString(_runner.StagedBytes["code/analysis.py"]));
-        // The request has no command: the runner builds it, never from the task's command array.
-        Assert.DoesNotContain(typeof(CodeRunRequest).GetProperties(), p => p.Name.Contains("Command"));
+        // A hospital run carries no command: the runner builds it from the dataset name, never from the task's command array.
+        Assert.Null(request.Command);
     }
 
     [Fact]

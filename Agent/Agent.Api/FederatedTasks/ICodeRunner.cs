@@ -24,16 +24,21 @@ namespace Agent.Api.FederatedTasks
     /// <summary>A file to stage, relative to the data volume root, e.g. "data/cohort_2024/cohort.csv", "code/analysis.py".</summary>
     public sealed record StagedFile(string RelativePath, Stream Content);
 
-    /// <summary>What to stage and run for a task. The runner builds the command itself; the task's command is never used.</summary>
+    /// <summary>
+    /// What to stage and run for a task. The command is built by the Agent, never taken from the task: by default
+    /// <c>run-analysis /code/analysis.py /data/&lt;dataset&gt; /outputs/result.json</c>; the aggregator passes its own
+    /// <paramref name="Command"/>. <paramref name="DatasetSha256"/> is null when no dataset is staged (aggregation).
+    /// </summary>
     public sealed record CodeRunRequest(
         string TaskId,
         string Image,
         string DatasetName,
-        string DatasetSha256,
+        string? DatasetSha256,
         IReadOnlyList<StagedFile> Files,
         double CpuCores,
         long MemoryBytes,
-        long TmpBytes);
+        long TmpBytes,
+        IReadOnlyList<string>? Command = null);
 
     /// <summary>The run's result.json: <see cref="Bytes"/> null and <see cref="TooLarge"/> false means there is no file.</summary>
     public sealed record ResultFileRead(byte[]? Bytes, bool TooLarge);
