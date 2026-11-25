@@ -59,6 +59,15 @@ namespace Submission.Api.Migrations
         /// <inheritdoc />
         protected override void Down(MigrationBuilder migrationBuilder)
         {
+            migrationBuilder.AddColumn<DateTime>(
+                name: "CanceledAt",
+                table: "FederatedStudyVersions",
+                type: "timestamp with time zone",
+                nullable: true);
+
+            // Keep admin cancels: without CanceledAt the old code reads a cancelled version still cleaning up as open.
+            migrationBuilder.Sql("UPDATE \"FederatedStudyVersions\" SET \"CanceledAt\" = \"OutcomeAt\" WHERE \"Outcome\" = 'Canceled';");
+
             migrationBuilder.DropIndex(
                 name: "IX_FederatedStudyVersions_Outcome",
                 table: "FederatedStudyVersions");
@@ -82,12 +91,6 @@ namespace Submission.Api.Migrations
             migrationBuilder.DropColumn(
                 name: "OutcomeAt",
                 table: "FederatedStudyVersions");
-
-            migrationBuilder.AddColumn<DateTime>(
-                name: "CanceledAt",
-                table: "FederatedStudyVersions",
-                type: "timestamp with time zone",
-                nullable: true);
         }
     }
 }

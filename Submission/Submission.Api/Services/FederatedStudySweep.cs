@@ -46,11 +46,15 @@ namespace Submission.Api.Services
         /// <returns>The number of versions decided.</returns>
         public static async Task<int> SweepOnceAsync(ApplicationDbContext db, DateTime nowUtc, CancellationToken ct)
         {
-            var ids = await db.FederatedStudyVersions
+            // One read of every undecided version with its parts' phases. Most versions just keep waiting, so only those
+            // Decide would change are loaded again, tracked, to be decided and saved.
+            var undecided = await db.FederatedStudyVersions
+                .AsNoTracking()
                 .Where(x => x.Outcome == null)
+                .Include(x => x.Parts)
                 .OrderBy(x => x.Id)
-                .Select(x => x.Id)
                 .ToListAsync(ct);
+            var ids = undecided.Where(v => FederatedStudyOutcomes.Decide(v, nowUtc)).Select(v => v.Id).ToList();
 
             var decided = 0;
             foreach (var id in ids)
@@ -58,7 +62,7 @@ namespace Submission.Api.Services
                 try
                 {
                     var version = await db.FederatedStudyVersions
-                        .Include(x => x.Parts).ThenInclude(x => x.PhaseChanges)
+                        .Include(x => x.Parts)
                         .SingleAsync(x => x.Id == id, ct);
                     var unfinished = version.Parts.Count(p => !FederatedTaskPhases.IsFinal(p.Phase));
                     if (!FederatedStudyOutcomes.Decide(version, nowUtc))

@@ -32,7 +32,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
                 decision = (FederatedStudyOutcome.ReadyForAggregation, FederatedStudyOutcomeReasons.AllFinal,
                     $"{released} hospitals released a result");
             }
-            // Compared on ticks: a DeadlineAt read back from Postgres is Unspecified but holds UTC.
+            // Compared on ticks, so the DateTime kind never shifts it: both hold UTC.
             else if (nowUtc.Ticks >= version.DeadlineAt.Ticks)
             {
                 decision = released >= minimum

@@ -384,10 +384,6 @@ public static class Await
     private static readonly TimeSpan PollEvery = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan TriggerEvery = TimeSpan.FromSeconds(15);
 
-    /// <summary>
-    /// Polls GetTask until done(task) or the timeout. While the task waits for the Agent (phase queued, running or
-    /// canceling), triggers the Agent's poll at the start and every 15 s.
-    /// </summary>
     /// <summary>Polls GetStudyVersion until done(study) or the timeout. The sweep decides outcomes every 15 s on this stack.</summary>
     public static async Task<StudyView> UntilStudyAsync(StackFixture s, string versionId, Func<StudyView, bool> done, TimeSpan timeout)
     {
@@ -402,6 +398,10 @@ public static class Await
         }
     }
 
+    /// <summary>
+    /// Polls GetTask until done(task) or the timeout. While the task waits for the Agent (phase queued, running or
+    /// canceling), triggers the Agent's poll at the start and every 15 s.
+    /// </summary>
     public static async Task<TaskView> UntilAsync(StackFixture s, string id, Func<TaskView, bool> done, TimeSpan timeout)
     {
         var until = DateTime.UtcNow + timeout;
