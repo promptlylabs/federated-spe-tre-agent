@@ -285,7 +285,7 @@ Stuck or broken pooling. A version that waits longer than `AggregationTimeoutMin
 
 ### Reading a pooled result
 
-`GET /api/FederatedTask/GetStudyResult?id=<versionId>` (`dare-control-admin`) returns the pooled document as the attachment `<versionId>.json`, with `X-Content-Type-Options: nosniff`, after checking its SHA-256 against `pooled_result_sha256`, as `GetTaskResult` does for a hospital's result. It reads only under `studies/`, so a hospital's own result is never served from here. Errors: 404 `study_not_found`; 404 `result_not_found` for a version with no pooled result (any outcome but `aggregated`) or a file missing from storage; 503 `storage_unavailable`; 500 `internal_error` when the stored file does not match its hash. Delivering the pooled result to researchers is 4.2.
+`GET /api/FederatedTask/GetStudyResult?id=<versionId>` (`dare-control-admin`) returns the pooled document as the attachment `<versionId>.json`, with `X-Content-Type-Options: nosniff`, after checking its SHA-256 against `pooled_result_sha256`, as `GetTaskResult` does for a hospital's result. It serves only a key under `studies/<versionId>/`, checked on every read, so a hospital's own result is never served from here. Errors: 404 `study_not_found`; 404 `result_not_found` for a version with no pooled result (any outcome but `aggregated`) or a file missing from storage; 503 `storage_unavailable`; 500 `internal_error` when the stored file does not match its hash. Delivering the pooled result to researchers is 4.2.
 
 ### Audit trail
 
@@ -303,9 +303,16 @@ Stuck or broken pooling. A version that waits longer than `AggregationTimeoutMin
                   { "phase": "waiting_for_output_approval", "at": "…" }, { "phase": "released", "at": "…" } ] },
     { "tre": "hosp-b", "task_id": "…", "result_sha256": null,
       "phases": [ …, { "phase": "rejected_at_output_approval", "at": "…", "error_code": "rejected_by_reviewer" } ] }
+  ],
+  "audit_log": [
+    { "type": "study_submitted", "user": "control-admin", "at": "…", "details": "{\"versionId\":\"…\",…}" },
+    { "type": "aggregation_retried", "user": "control-admin", "at": "…", "details": "{…,\"after\":\"run_failed\"}" },
+    { "type": "pooled_result_stored", "user": "service-account-federated-aggregator", "at": "…", "details": "{…,\"pooledResultSha256\":\"…\"}" }
   ]
 }
 ```
+
+`audit_log` is the version's entries from the audit log below, oldest first. It keeps a retried aggregation visible (which failure it followed, and who retried) after the version's own fields have moved on, and shows who cancelled.
 
 Without a pooled result, `pooled_result_sha256` is null and `outcome`, `outcome_reason` and `aggregation_error_code` say why. Reviewer names are not included: they stay in each hospital's review record (`federated-outputs/<taskId>.review.json`); the orchestrator records the decision and its time. `submitted_by` is the submitter's `preferred_username`, recorded from versions submitted after this change.
 

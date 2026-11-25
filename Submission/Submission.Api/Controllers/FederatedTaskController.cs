@@ -706,7 +706,10 @@ namespace Submission.Api.Controllers
                 return StudyNotFound();
             }
 
-            if (version.Outcome != FederatedStudyOutcome.Aggregated || version.PooledResultBucket == null || version.PooledResultKey == null)
+            // Only a key under studies/<versionId>/ is ever served: a hospital's own result can't come out of this route,
+            // whatever the row says.
+            if (version.Outcome != FederatedStudyOutcome.Aggregated || version.PooledResultBucket == null || version.PooledResultKey == null
+                || !version.PooledResultKey.StartsWith($"studies/{version.VersionId:D}/", StringComparison.Ordinal))
             {
                 return Error(StatusCodes.Status404NotFound, FederatedTaskErrorCodes.ResultNotFound,
                     $"version {version.Version} of study '{version.StudyId}' has no pooled result ({version.Outcome?.ToWire() ?? "open"})");
@@ -756,7 +759,27 @@ namespace Submission.Api.Controllers
                 .AsNoTracking()
                 .Include(x => x.Parts).ThenInclude(x => x.PhaseChanges)
                 .FirstOrDefaultAsync(x => x.VersionId == versionId, cancellationToken);
-            return version == null ? StudyNotFound() : Ok(FederatedStudyVersions.ToAudit(version));
+            if (version == null)
+            {
+                return StudyNotFound();
+            }
+
+            var audit = FederatedStudyVersions.ToAudit(version);
+            var types = FederatedAudit.Types.Keys.ToList();
+            var idText = version.VersionId.ToString("D");
+            var entries = await _DbContext.AuditLogs
+                .AsNoTracking()
+                .Where(x => types.Contains(x.LogType) && x.HistoricFormData != null && x.HistoricFormData.Contains(idText))
+                .OrderBy(x => x.Date).ThenBy(x => x.Id)
+                .ToListAsync(cancellationToken);
+            audit.Log = entries.Select(x => new FederatedAuditLogEntry
+            {
+                Type = FederatedAudit.Types[x.LogType],
+                User = x.LoggedInUserName,
+                At = DateTime.SpecifyKind(x.Date, DateTimeKind.Utc),
+                Details = x.HistoricFormData
+            }).ToList();
+            return Ok(audit);
         }
 
         [Authorize(Roles = "dare-control-admin")]

@@ -192,12 +192,24 @@ namespace Submission.Api.Tests
         [InlineData("missing", 404, "result_not_found")]
         [InlineData("storage_down", 503, "storage_unavailable")]
         [InlineData("unknown", 404, "study_not_found")]
+        [InlineData("site_key", 404, "result_not_found")]
         public async Task GetStudyResult_refuses_when_there_is_no_good_pooled_file(string how, int status, string code)
         {
             var version = how == "incomplete" ? Seed(bReleased: false) : Seed(bReleased: true, Encoding.UTF8.GetBytes("{\"pooled\":true}"));
             if (how == "changed") _store.Objects[version.PooledResultKey!] = Encoding.UTF8.GetBytes("{}");
             if (how == "missing") _store.Objects.Remove(version.PooledResultKey!);
             if (how == "storage_down") _store.FailGets = true;
+            if (how == "site_key")
+            {
+                // A pooled key that isn't under studies/<versionId>/ (a hand-edited row, a future caller): a hospital's file
+                // with a matching hash must still never be served from here.
+                var site = version.Parts[0];
+                var bytes = Encoding.UTF8.GetBytes("{\"site\":true}");
+                version.PooledResultKey = FederatedResultKeys.For(site.TreId, site.TaskId, FederatedResultDocumentJson.Sha256Hex(bytes));
+                version.PooledResultSha256 = FederatedResultDocumentJson.Sha256Hex(bytes);
+                _store.Objects[version.PooledResultKey] = bytes;
+                _db.SaveChanges();
+            }
 
             AssertError(await Studies().GetStudyResult(how == "unknown" ? Guid.NewGuid().ToString() : version.VersionId.ToString()), status, code);
         }
@@ -217,6 +229,24 @@ namespace Submission.Api.Tests
             Assert.Equal(At.AddMinutes(2), audit.Hospitals[0].Phases[2].At);
             Assert.Equal(new string('a', 64), audit.Hospitals[0].ResultSha256);
             Assert.EndsWith("Z\"", Newtonsoft.Json.JsonConvert.SerializeObject(audit.SubmittedAt));
+        }
+
+        [Fact]
+        public async Task GetStudyAudit_lists_the_version_s_audit_log_entries_so_a_retry_stays_visible()
+        {
+            var version = Seed(bReleased: true, Encoding.UTF8.GetBytes("{\"pooled\":true}"));
+            var other = Guid.NewGuid();
+            FederatedAudit.Add(_db, LogType.FederatedAggregationRetried, new ClaimsPrincipal(new ClaimsIdentity([new Claim("preferred_username", "bob")], "t")), null,
+                new { versionId = version.VersionId, after = "run_failed" });
+            FederatedAudit.Add(_db, LogType.FederatedStudyCanceled, new ClaimsPrincipal(new ClaimsIdentity([new Claim("preferred_username", "eve")], "t")), null,
+                new { versionId = other });
+            _db.SaveChanges();
+
+            var audit = Assert.IsType<FederatedStudyAuditView>(Assert.IsType<OkObjectResult>(await Studies().GetStudyAudit(version.VersionId.ToString())).Value);
+
+            var entry = Assert.Single(audit.Log);
+            Assert.Equal(("aggregation_retried", "bob"), (entry.Type, entry.User));
+            Assert.Contains("run_failed", entry.Details);
         }
 
         [Fact]

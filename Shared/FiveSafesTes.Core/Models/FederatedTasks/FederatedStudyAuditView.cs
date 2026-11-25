@@ -29,6 +29,24 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         [JsonProperty("pooled_result_sha256")] public string? PooledResultSha256 { get; set; }
 
         [JsonProperty("hospitals")] public List<FederatedHospitalAudit> Hospitals { get; set; } = [];
+
+        /// <summary>
+        /// The version's audit-log entries, oldest first: submitted, cancelled, aggregation retried (with the failure it
+        /// followed), pooled result stored. A retried aggregation stays visible here after the version's fields move on.
+        /// </summary>
+        [JsonProperty("audit_log")] public List<FederatedAuditLogEntry> Log { get; set; } = [];
+    }
+
+    [JsonObject(IsReference = false)]
+    public sealed class FederatedAuditLogEntry
+    {
+        /// <summary>study_submitted, study_canceled, aggregation_retried or pooled_result_stored.</summary>
+        [JsonProperty("type")] public string Type { get; set; } = "";
+        [JsonProperty("user")] public string? User { get; set; }
+        [JsonProperty("at")] public DateTime At { get; set; }
+
+        /// <summary>The entry's JSON details (version, study, and the pooled hash or the failure a retry followed).</summary>
+        [JsonProperty("details")] public string? Details { get; set; }
     }
 
     [JsonObject(IsReference = false)]
