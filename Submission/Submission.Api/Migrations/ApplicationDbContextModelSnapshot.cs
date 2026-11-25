@@ -81,11 +81,24 @@ namespace Submission.Api.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
-                    b.Property<DateTime?>("CanceledAt")
-                        .HasColumnType("timestamp with time zone");
-
                     b.Property<string>("CodeSha256")
                         .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("DeadlineAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("Outcome")
+                        .IsConcurrencyToken()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("OutcomeAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("OutcomeMessage")
+                        .HasColumnType("text");
+
+                    b.Property<string>("OutcomeReason")
                         .HasColumnType("text");
 
                     b.Property<string>("Sites")
@@ -110,6 +123,8 @@ namespace Submission.Api.Migrations
                         .HasColumnType("uuid");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("Outcome");
 
                     b.HasIndex("VersionId")
                         .IsUnique();

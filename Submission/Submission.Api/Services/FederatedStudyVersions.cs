@@ -20,7 +20,12 @@ namespace Submission.Api.Services
                 SubmittedAt = DateTime.SpecifyKind(version.SubmittedAt, DateTimeKind.Utc),
                 CodeSha256 = version.CodeSha256,
                 State = version.State.ToWire(),
-                CanceledAt = version.CanceledAt is { } at ? DateTime.SpecifyKind(at, DateTimeKind.Utc) : null,
+                Outcome = version.Outcome?.ToWire(),
+                OutcomeReason = version.OutcomeReason,
+                OutcomeMessage = version.OutcomeMessage,
+                OutcomeAt = Utc(version.OutcomeAt),
+                DeadlineAt = DateTime.SpecifyKind(version.DeadlineAt, DateTimeKind.Utc),
+                CanceledAt = version.Outcome == FederatedStudyOutcome.Canceled ? Utc(version.OutcomeAt) : null,
                 Hospitals = version.Parts
                     .OrderBy(p => sites.IndexOf(p.TreName))
                     .Select(p => new FederatedHospitalView
@@ -40,16 +45,21 @@ namespace Submission.Api.Services
         }
 
         /// <summary>
-        /// Marks the version cancelled and asks every unfinished part to cancel: a queued part is cancelled at once, a
-        /// running or waiting one waits in canceling until its hospital confirms. Nothing is saved here.
+        /// Gives the version the canceled outcome and asks every unfinished part to cancel: a queued part is cancelled at
+        /// once, a running or waiting one waits in canceling until its hospital confirms. Nothing is saved here.
         /// </summary>
         public static void RequestCancel(FederatedStudyVersion version, DateTime atUtc)
         {
-            version.CanceledAt = atUtc;
+            version.Outcome = FederatedStudyOutcome.Canceled;
+            version.OutcomeReason = FederatedStudyOutcomeReasons.Canceled;
+            version.OutcomeMessage = "cancelled by an orchestrator admin";
+            version.OutcomeAt = atUtc;
             foreach (var part in version.Parts)
             {
                 part.RequestCancel(atUtc);
             }
         }
+
+        private static DateTime? Utc(DateTime? at) => at is { } value ? DateTime.SpecifyKind(value, DateTimeKind.Utc) : null;
     }
 }

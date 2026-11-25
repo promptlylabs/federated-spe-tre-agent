@@ -44,6 +44,9 @@ namespace Submission.Api.Repositories.DbContexts
             modelBuilder.Entity<FederatedStudyVersion>(b =>
             {
                 b.HasIndex(x => new { x.StudyId, x.Version }).IsUnique();
+                // The sweep and an admin cancel must not both decide a version.
+                b.Property(x => x.Outcome).HasConversion<string>().IsConcurrencyToken();
+                b.HasIndex(x => x.Outcome);
                 b.HasIndex(x => x.VersionId).IsUnique();
                 // A version is the audit record of what was submitted; deleting it must not erase its parts.
                 b.HasMany(x => x.Parts).WithOne(x => x.StudyVersion).HasForeignKey(x => x.StudyVersionId).IsRequired().OnDelete(DeleteBehavior.Restrict);

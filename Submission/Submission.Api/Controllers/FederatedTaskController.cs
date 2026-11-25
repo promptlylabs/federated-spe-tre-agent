@@ -573,15 +573,15 @@ namespace Submission.Api.Controllers
                     return StudyNotFound();
                 }
 
-                if (version.CanceledAt is not null)
+                if (version.Outcome == FederatedStudyOutcome.Canceled)
                 {
                     return Ok(FederatedStudyVersions.ToView(version));
                 }
 
-                if (version.State == FederatedStudyVersionState.Ended)
+                if (version.Outcome is { } outcome)
                 {
                     return Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.TaskAlreadyFinished,
-                        $"version {version.Version} of study '{version.StudyId}' already ended");
+                        $"version {version.Version} of study '{version.StudyId}' already ended: {outcome.ToWire()}");
                 }
 
                 FederatedStudyVersions.RequestCancel(version, DateTime.UtcNow);

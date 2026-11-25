@@ -98,7 +98,8 @@ namespace Submission.Api.Tests
                 StudyId = studyId,
                 Version = db.FederatedStudyVersions.Where(v => v.StudyId == studyId).Max(v => (int?)v.Version) + 1 ?? 1,
                 TesTaskJson = "{}",
-                SubmittedAt = DateTime.UtcNow
+                SubmittedAt = DateTime.UtcNow,
+                DeadlineAt = DateTime.UtcNow.AddDays(7)
             };
 
         private static FederatedTask SeedTask(ApplicationDbContext db, int treId, TesState state, TesTask? task = null, string? treName = null, FederatedStudyVersion? version = null)
@@ -208,12 +209,13 @@ namespace Submission.Api.Tests
                 var version = NewVersion(db);
                 if (state == "ended")
                 {
+                    version.Outcome = FederatedStudyOutcome.ReadyForAggregation;
                     SeedTask(db, 1, TesState.COMPLETEEnum, version: version);
                 }
                 else
                 {
-                    // Cancelled, with a part the hospital has not confirmed yet.
-                    version.CanceledAt = DateTime.UtcNow;
+                    // Decided, with a part the hospital has not confirmed cancelling yet.
+                    version.Outcome = FederatedStudyOutcome.Incomplete;
                     var part = SeedTask(db, 1, TesState.QUEUEDEnum, version: version);
                     part.MoveTo(FederatedTaskPhase.Canceling, DateTime.UtcNow);
                     db.SaveChanges();
@@ -1545,7 +1547,9 @@ namespace Submission.Api.Tests
             var view = ViewOf(await Cancel(db, version.VersionId));
 
             Assert.Equal("canceling", view.State);
+            Assert.Equal(("canceled", "canceled"), (view.Outcome, view.OutcomeReason));
             Assert.NotNull(view.CanceledAt);
+            Assert.Equal(view.OutcomeAt, view.CanceledAt);
             Assert.Equal(FederatedTaskPhase.Released, Reload(db, released.TaskId).Phase);
             Assert.Equal(FederatedTaskPhase.Canceled, Reload(db, queued.TaskId).Phase);
             Assert.Equal(FederatedTaskPhase.Canceling, Reload(db, running.TaskId).Phase);
@@ -1556,30 +1560,52 @@ namespace Submission.Api.Tests
             Assert.Equal("ended", ViewOf(await ControllerFor(db, "dare-admin").GetStudyVersion(version.VersionId.ToString())).State);
         }
 
-        [Fact]
-        public async Task Cancel_Twice_NoChange()
+        [Theory]
+        [InlineData(FederatedStudyOutcome.ReadyForAggregation, 409)]
+        [InlineData(FederatedStudyOutcome.Incomplete, 409)]
+        [InlineData(FederatedStudyOutcome.Canceled, 200)]
+        public async Task Cancel_after_an_outcome(FederatedStudyOutcome outcome, int status)
         {
             using var db = NewDb();
             var version = NewTwoSiteVersion(db);
+            var at = new DateTime(2026, 11, 25, 9, 0, 0, DateTimeKind.Utc);
+            (version.Outcome, version.OutcomeAt) = (outcome, at);
             var running = SeedAtPhase(db, FederatedTaskPhase.Running, version: version);
-            var first = ViewOf(await Cancel(db, version.VersionId));
+            if (outcome == FederatedStudyOutcome.Canceled)
+            {
+                running.MoveTo(FederatedTaskPhase.Canceling, at);
+                db.SaveChanges();
+            }
 
-            var second = ViewOf(await Cancel(db, version.VersionId));
+            var result = await Cancel(db, version.VersionId);
 
-            Assert.Equal(first.CanceledAt, second.CanceledAt);
-            Assert.Single(Reload(db, running.TaskId).PhaseChanges, c => c.Phase == FederatedTaskPhase.Canceling);
+            if (status == 409)
+            {
+                AssertError(result, 409, FederatedTaskErrorCodes.TaskAlreadyFinished);
+            }
+            else
+            {
+                Assert.Equal(at, ViewOf(result).CanceledAt);
+            }
+            var stored = db.FederatedStudyVersions.Single();
+            Assert.Equal((outcome, at), (stored.Outcome, stored.OutcomeAt));
+            // Nothing moved: a decided version's parts are not cancelled again.
+            Assert.Equal(outcome == FederatedStudyOutcome.Canceled ? 1 : 0,
+                Reload(db, running.TaskId).PhaseChanges.Count(c => c.Phase == FederatedTaskPhase.Canceling));
+            AssertError(await Cancel(db, Guid.NewGuid()), 404, FederatedTaskErrorCodes.StudyNotFound);
         }
 
         [Fact]
-        public async Task Cancel_EndedVersion_409()
+        public async Task Cancel_with_every_part_final_but_undecided_is_canceled()
         {
             using var db = NewDb();
             var version = NewTwoSiteVersion(db);
-            SeedAtPhase(db, FederatedTaskPhase.Released, version: version);
+            SeedAtPhase(db, FederatedTaskPhase.Released, treId: 1, version: version);
+            SeedTask(db, 2, TesState.EXECUTORERROREnum, version: version);
 
-            AssertError(await Cancel(db, version.VersionId), 409, FederatedTaskErrorCodes.TaskAlreadyFinished);
-            Assert.Null(db.FederatedStudyVersions.Single().CanceledAt);
-            AssertError(await Cancel(db, Guid.NewGuid()), 404, FederatedTaskErrorCodes.StudyNotFound);
+            var view = ViewOf(await Cancel(db, version.VersionId));
+
+            Assert.Equal(("canceled", "ended"), (view.Outcome, view.State));
         }
 
         [Fact]
