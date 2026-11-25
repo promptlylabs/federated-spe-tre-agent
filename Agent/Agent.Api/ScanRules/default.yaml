@@ -81,9 +81,10 @@ rules:
           - pattern-either:
               - pattern: $X.$FN
               - pattern: from $MOD import $FN
+              - pattern: getattr($X, "$FN", ...)
           - metavariable-regex:
               metavariable: $FN
-              regex: ^(system|popen|exec[lv]p?e?|spawn[lv]p?e?|posix_spawnp?|fork|forkpty|kill|killpg|Popen|subprocess)$
+              regex: ^["']?(system|popen|exec[lv]p?e?|spawn[lv]p?e?|posix_spawnp?|fork|forkpty|kill|killpg|Popen|subprocess)["']?$
 
   # Reading or writing files. The code gets its data as df and returns its result as a dict; it never needs files.
   - id: file-access
@@ -96,9 +97,16 @@ rules:
           - pattern-either:
               - pattern: $X.$FN
               - pattern: from $MOD import $FN
+              - pattern: getattr($X, "$FN", ...)
           - metavariable-regex:
               metavariable: $FN
-              regex: ^(read_\w+|to_(excel|parquet|feather|hdf|pickle|orc|stata|sql|clipboard|gbq)|load|save|savez\w*|loadtxt|savetxt|genfromtxt|fromfile|tofile|fromregex|load_pickle|save_pickle)$
+              regex: ^["']?(read_\w+|to_(excel|parquet|feather|hdf|pickle|orc|stata|sql|clipboard|gbq)|load|save|savez\w*|loadtxt|savetxt|genfromtxt|fromfile|tofile|fromregex|load_pickle|save_pickle)["']?$
+      # A written-out name is fine for getattr, but not the name of something that opens or writes files.
+      - patterns:
+          - pattern: getattr($X, "$FN", ...)
+          - metavariable-regex:
+              metavariable: $FN
+              regex: ^["']?(open|to_(csv|json|xml|string|markdown|html|latex))["']?$
       # These return text when called without a path, and write a file when given one.
       - patterns:
           - pattern-either:
@@ -141,10 +149,12 @@ rules:
       # Reached through any object, e.g. np.ctypeslib, pd.HDFStore, pd.io.pytables.HDFStore, or a module that an
       # allowed package imported itself (pd.io.common.os).
       - patterns:
-          - pattern: $X.$ATTR
+          - pattern-either:
+              - pattern: $X.$ATTR
+              - pattern: getattr($X, "$ATTR", ...)
           - metavariable-regex:
               metavariable: $ATTR
-              regex: ^(ctypeslib|f2py|distutils|get_type_hints|ForwardRef|HDFStore|ExcelWriter|memmap|open_memmap|os|sys|subprocess|builtins|importlib|ctypes|socket|shutil|pickle|marshal|pathlib|tempfile|urllib|multiprocessing|pty|runpy)$
+              regex: ^["']?(ctypeslib|f2py|distutils|get_type_hints|ForwardRef|HDFStore|ExcelWriter|memmap|open_memmap|os|sys|subprocess|builtins|importlib|ctypes|socket|shutil|pickle|marshal|pathlib|tempfile|urllib|multiprocessing|pty|runpy)["']?$
       - patterns:
           - pattern: from $MOD import $NAME
           - metavariable-regex:
@@ -157,10 +167,16 @@ rules:
               - pattern: operator.methodcaller(...)
           - pattern-not: operator.attrgetter("...")
           - pattern-not: operator.methodcaller("...", ...)
-      # Queries run their text as code: fine with written-out text, refused with text made at run time.
+      # Queries run their text as code: fine when called directly with written-out text; refused with text made at
+      # run time, and when the query function itself is kept in a name (f = pd.eval; f(expr)).
       - patterns:
           - pattern-either:
-              - pattern: $X.query(...)
-              - pattern: $X.eval(...)
-          - pattern-not: $X.query("...", ...)
-          - pattern-not: $X.eval("...", ...)
+              - pattern: $X.query
+              - pattern: $X.eval
+          - pattern-not-inside: $X.query("...", ...)
+          - pattern-not-inside: $X.eval("...", ...)
+      - patterns:
+          - pattern: getattr($X, "$NAME", ...)
+          - metavariable-regex:
+              metavariable: $NAME
+              regex: ^["']?(query|eval)["']?$

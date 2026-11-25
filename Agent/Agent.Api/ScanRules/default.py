@@ -73,7 +73,7 @@ os.system("id")
 subprocess.run(["id"])
 # ruleid: process-call
 os.execv("/bin/sh", ["sh"])
-# ruleid: dynamic-code
+# ruleid: dynamic-code, process-call
 getattr(os, "sys" + "tem")("id")
 # ruleid: import-not-allowed, process-call
 from os import popen
@@ -93,6 +93,10 @@ pd.DataFrame(rows).to_parquet("/tmp/x")
 np.load("/data/x.npy")
 # ruleid: file-access
 from pandas import read_pickle
+# ruleid: file-access
+getattr(df, "to_csv")("/data/x")
+# ruleid: file-access
+getattr(pd, "read_csv")("/data/other.csv")
 # ok: file-access
 df.to_dict()
 # ok: file-access
@@ -119,8 +123,16 @@ df.query(f"age > {limit}")
 pd.io.common.os.system("id")
 # ruleid: back-door
 typing.get_type_hints(site_analysis)
+# ruleid: back-door, process-call
+getattr(getattr(pd.io.common, "os"), "system")("id")
+# ruleid: back-door
+f = pd.eval
+# ruleid: back-door
+q = getattr(df, "query")
 # ok: back-door
 df.query("age > 40")
+# ok: back-door
+pd.eval("a + b")
 # ok: back-door
 df.eval("bmi = weight / height ** 2")
 # ok: back-door
