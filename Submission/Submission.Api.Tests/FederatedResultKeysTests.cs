@@ -22,5 +22,13 @@ public class FederatedResultKeysTests
     public void For_rejects_non_hex_sha(string sha)
     {
         Assert.Throws<ArgumentException>(() => FederatedResultKeys.For(1, Guid.NewGuid(), sha));
+        Assert.Throws<ArgumentException>(() => FederatedResultKeys.ForPooled(Guid.NewGuid(), sha));
+    }
+
+    [Fact]
+    public void ForPooled_builds_a_key_apart_from_site_results()
+    {
+        var id = Guid.Parse("11111111-2222-3333-4444-555555555555");
+        Assert.Equal($"studies/11111111-2222-3333-4444-555555555555/{Sha}.json", FederatedResultKeys.ForPooled(id, Sha));
     }
 }
