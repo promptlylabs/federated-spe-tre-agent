@@ -130,7 +130,7 @@ docker volume ls --filter label=fed.task-id
 
 `demo.sh` runs four requests through both hospital gates, in plain language, for a recorded or live demo:
 
-1. the hospital checks pass, a reviewer approves the result, and it is released (the answer is shown);
+1. the hospital checks pass, a reviewer approves the result, and the hospital releases it to the orchestrator (the result is shown). The researcher does not get it: only results pooled from at least 2 hospitals go to researchers, and the study waits for a second hospital;
 2. the request asks for a dataset the hospital does not hold, and its checks stop it;
 3. R1: the code (`code/open_socket.py`) imports `socket` to send the data out; the hospital's code scan refuses it before the dataset is touched, and the demo prints the refusal with the rule and line;
 4. the hospital checks pass, but the reviewer rejects the result, and nothing leaves.

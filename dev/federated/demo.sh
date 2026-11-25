@@ -216,8 +216,9 @@ run_case() {
     case "$phase" in
       released)
         ok "Approved by the hospital reviewer"
-        ok "Result released to the researcher" "$state · $phase"
-        say "   ${C}${B}Answer: $(result_words "$id")${X}"
+        ok "Result released by the hospital" "$state · $phase · kept by the orchestrator"
+        say "   ${C}${B}Hospital's result: $(result_words "$id")${X}"
+        say "   ${DIM}The researcher gets only results pooled from at least 2 hospitals, never one hospital's on its own.${X}"
         outcome=released; decision="approved by the reviewer" ;;
       rejected_at_output_approval)
         stop "Rejected by the hospital reviewer: ${message}" "$state · $phase · $code"
