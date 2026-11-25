@@ -1,6 +1,7 @@
 using Agent.Api.Models;
 using FiveSafesTes.Core.Models.FederatedTasks;
 using FiveSafesTes.Core.Models.Tes;
+using Serilog;
 
 namespace Agent.Api.FederatedTasks
 {
@@ -16,9 +17,15 @@ namespace Agent.Api.FederatedTasks
         Held
     }
 
-    /// <summary>What the input checks decided. On a pass, the key of the dataset file to read.</summary>
+    /// <summary>
+    /// What the input checks decided. On a pass, the key of the dataset file to read. Whenever the code scan ran, the
+    /// version and SHA-256 of the rule file it used.
+    /// </summary>
     public sealed record InputCheckOutcome(InputCheckKind Kind, string? FileKey, string? ErrorCode, string? ErrorMessage)
     {
+        public string? ScanRulesVersion { get; init; }
+        public string? ScanRulesSha256 { get; init; }
+
         public static InputCheckOutcome Pass(string fileKey) => new(InputCheckKind.Passed, fileKey, null, null);
 
         public static InputCheckOutcome Reject(string code, string message) => new(InputCheckKind.Rejected, null, code, message);
@@ -36,11 +43,13 @@ namespace Agent.Api.FederatedTasks
     {
         private readonly IDatasetReader _reader;
         private readonly FederatedTaskSettings _settings;
+        private readonly ICodeScanner _scanner;
 
-        public FederatedInputChecks(IDatasetReader reader, FederatedTaskSettings settings)
+        public FederatedInputChecks(IDatasetReader reader, FederatedTaskSettings settings, ICodeScanner scanner)
         {
             _reader = reader;
             _settings = settings;
+            _scanner = scanner;
         }
 
         /// <summary>
@@ -59,6 +68,34 @@ namespace Agent.Api.FederatedTasks
             // The image comes before the dataset, so a TRE that has not approved it never lists its bucket for the task.
             if (CheckImage(task) is { } imageRejected) return imageRejected;
 
+            // The code is scanned before the dataset is resolved, so code the hospital refuses never touches its bucket.
+            var scan = await _scanner.ScanAsync(CodeOf(task), ct);
+            if (scan.Kind == CodeScanKind.RulesUnavailable)
+            {
+                // A broken rule file is the hospital's config, not the researcher's fault: hold, don't reject.
+                Log.Error("Federated tasks: the code-scan rules are unavailable ({Detail}); task {TaskId} is held", scan.Detail, task.Id);
+                return InputCheckOutcome.Hold();
+            }
+
+            return (await CheckAfterScanAsync(scan, spec, task.Id, ct)) with
+            {
+                ScanRulesVersion = scan.RulesVersion,
+                ScanRulesSha256 = scan.RulesSha256
+            };
+        }
+
+        private async Task<InputCheckOutcome> CheckAfterScanAsync(CodeScanResult scan, FederatedTaskSpec spec, string? taskId,
+            CancellationToken ct)
+        {
+            if (scan.Kind == CodeScanKind.ScannerFailed)
+            {
+                Log.Error("Federated tasks: the code scan of task {TaskId} could not run: {Detail}", taskId, scan.Detail);
+                return InputCheckOutcome.Reject(FederatedTaskErrorCodes.InternalError, "the code scan could not run");
+            }
+
+            if (scan.Kind == CodeScanKind.Findings)
+                return InputCheckOutcome.Reject(FederatedTaskErrorCodes.UnsafeCode, CodeScanMessages.Format(scan.Findings));
+
             var dataset = await _reader.ResolveAsync(spec.Dataset, ct);
             if (CheckDataset(dataset) is { } datasetRejected) return datasetRejected;
 
@@ -71,6 +108,10 @@ namespace Agent.Api.FederatedTasks
 
             return InputCheckOutcome.Pass(dataset.FileKey!);
         }
+
+        /// <summary>The researcher's code: the inline content of the input at the profile's code path.</summary>
+        private static string CodeOf(TesTask task) =>
+            task.Inputs?.FirstOrDefault(i => i.Path == FederatedTesProfile.CodePath)?.Content ?? string.Empty;
 
         /// <summary>
         /// The task's executor image, or null when the task has none. Safe on a task that was not parsed against the

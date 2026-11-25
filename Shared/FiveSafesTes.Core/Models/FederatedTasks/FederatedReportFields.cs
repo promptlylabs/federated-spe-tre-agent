@@ -9,6 +9,8 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         public const string ErrorMessage = "ErrorMessage";
         public const string DatasetSha256 = "DatasetSha256";
         public const string RejectedAt = "RejectedAt";
+        public const string ScanRulesVersion = "ScanRulesVersion";
+        public const string ScanRulesSha256 = "ScanRulesSha256";
         public const string ResultFile = "result";
     }
 }

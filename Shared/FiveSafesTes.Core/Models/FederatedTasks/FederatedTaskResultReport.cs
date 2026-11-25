@@ -17,5 +17,11 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
 
         /// <summary>For a CANCELED report: where the task was rejected (input_checks or output_approval).</summary>
         public string? RejectedAt { get; set; }
+
+        /// <summary>Version of the code-scan rule file the task was checked with; null when the scan did not run.</summary>
+        public string? ScanRulesVersion { get; set; }
+
+        /// <summary>Lowercase hex SHA-256 of that rule file; null when the scan did not run.</summary>
+        public string? ScanRulesSha256 { get; set; }
     }
 }

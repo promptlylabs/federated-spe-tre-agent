@@ -98,8 +98,20 @@ public class DoFederatedTaskWorkTests
             Touches++;
             if (FailDelete) throw new IOException("delete failed");
             Files.Remove(taskId);
+            ScanRecords.Remove(taskId);
             return Task.CompletedTask;
         }
+
+        public Dictionary<string, ScanRecord> ScanRecords { get; } = new();
+
+        public Task SaveScanRecordAsync(string taskId, ScanRecord record, CancellationToken ct)
+        {
+            ScanRecords[taskId] = record;
+            return Task.CompletedTask;
+        }
+
+        public Task<ScanRecord?> GetScanRecordAsync(string taskId, CancellationToken ct) =>
+            Task.FromResult(ScanRecords.TryGetValue(taskId, out var r) ? r : null);
     }
 
     /// <summary>Output approval stand-in. By default it approves every registration at once.</summary>
@@ -243,7 +255,7 @@ public class DoFederatedTaskWorkTests
     private static DoFederatedTaskWork Work(FakeClient client, IDatasetReader reader, string? treName = "tre-a",
         FakeResultOutputStore? outputs = null, FederatedTaskSettings? settings = null, DateTimeOffset? startedAt = null,
         IFederatedTaskExecution? execution = null, FakeOutputApproval? approval = null, FakeEgressClient? egress = null,
-        DockerFaultTimes? dockerFaults = null)
+        FakeCodeScanner? scanner = null, DockerFaultTimes? dockerFaults = null)
     {
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?> { ["TreName"] = treName })
@@ -254,7 +266,8 @@ public class DoFederatedTaskWorkTests
         return new DoFederatedTaskWork(client, reader, execution ?? Succeeding(),
             outputs ?? new FakeResultOutputStore(),
             approval ?? new FakeOutputApproval(), egress ?? new FakeEgressClient(), config, clock,
-            settings ?? Approving(RunnerImage), new AgentStartTime(startedAt ?? Now.AddDays(-1)), dockerFaults);
+            settings ?? Approving(RunnerImage), new AgentStartTime(startedAt ?? Now.AddDays(-1)),
+            scanner ?? new FakeCodeScanner(), dockerFaults);
     }
 
     private static DoFederatedTaskWork Work(FakeClient client, FakeExecution execution, IDatasetReader? reader = null,
@@ -841,6 +854,75 @@ public class DoFederatedTaskWorkTests
 
         Assert.Empty(client.ProgressCalls);
         Assert.Equal(TesState.COMPLETEEnum, Assert.Single(client.Reports).State);
+    }
+
+    [Fact]
+    public async Task Checks_ScannerFailed_InternalError()
+    {
+        var client = OneTask();
+        var execution = Succeeding();
+        var scanner = new FakeCodeScanner
+        {
+            Result = new CodeScanResult(CodeScanKind.ScannerFailed, [], "v1", FakeCodeScanner.Sha, "exit 2: boom")
+        };
+
+        await Work(client, Reader(), execution: execution, scanner: scanner).Execute();
+
+        var report = Assert.Single(client.Reports);
+        Assert.Equal(TesState.SYSTEMERROREnum, report.State);
+        Assert.Equal("internal_error", report.ErrorCode);
+        Assert.Null(report.RejectedAt);
+        Assert.Empty(client.ProgressCalls);
+        Assert.Empty(execution.Runs);
+    }
+
+    [Fact]
+    public async Task Poll_UnsafeCode_RejectedWithRules()
+    {
+        var client = OneTask();
+        var outputs = new FakeResultOutputStore();
+        var execution = Succeeding();
+        var scanner = new FakeCodeScanner
+        {
+            Result = new CodeScanResult(CodeScanKind.Findings,
+                [new CodeScanFinding("import-not-allowed", 1, "'socket' is not allowed")], "v1", FakeCodeScanner.Sha, null)
+        };
+
+        await Work(client, Reader(), outputs: outputs, execution: execution, scanner: scanner).Execute();
+
+        var report = Assert.Single(client.Reports);
+        Assert.Equal(TesState.CANCELEDEnum, report.State);
+        Assert.Equal("input_checks", report.RejectedAt);
+        Assert.Equal("unsafe_code", report.ErrorCode);
+        Assert.Equal("v1", report.ScanRulesVersion);
+        Assert.Equal(FakeCodeScanner.Sha, report.ScanRulesSha256);
+        Assert.Equal(new ScanRecord("v1", FakeCodeScanner.Sha), outputs.ScanRecords[T1]);
+        Assert.Empty(client.ProgressCalls);
+        Assert.Empty(execution.Runs);
+    }
+
+    [Fact]
+    public async Task Release_ReportsRulesFromScanTime()
+    {
+        var client = OneTask();
+        var outputs = new FakeResultOutputStore();
+        var approval = new FakeOutputApproval { AutoApprove = false };
+        var scanner = new FakeCodeScanner { Result = new CodeScanResult(CodeScanKind.Clean, [], "v1", FakeCodeScanner.Sha, null) };
+        var work = Work(client, Reader(), outputs: outputs, approval: approval, scanner: scanner);
+
+        await work.Execute();
+        Assert.Empty(client.Calls);
+
+        // The hospital changes its rules while the result waits; the reviewer then approves it.
+        scanner.Result = scanner.Result with { RulesVersion = "v2" };
+        Waiting(client.Pending[0]);
+        approval.Records[T1] = Approved(approval.Records[T1].ResultSha256);
+        await work.Execute();
+
+        var report = Assert.Single(client.Reports);
+        Assert.Equal(TesState.COMPLETEEnum, report.State);
+        Assert.Equal("v1", report.ScanRulesVersion);
+        Assert.Equal(FakeCodeScanner.Sha, report.ScanRulesSha256);
     }
 
     private static IDatasetReader Reader() => new DatasetReader(Store(), new FederatedTaskSettings());

@@ -479,6 +479,12 @@ public class CodeExecutionTests
             throw new NotSupportedException();
 
         public Task DeleteAsync(string taskId, CancellationToken ct) => throw new NotSupportedException();
+
+        public Task SaveScanRecordAsync(string taskId, ScanRecord record, CancellationToken ct) =>
+            throw new NotSupportedException();
+
+        public Task<ScanRecord?> GetScanRecordAsync(string taskId, CancellationToken ct) =>
+            throw new NotSupportedException();
     }
 
     private sealed class MutableClock(DateTimeOffset now) : TimeProvider

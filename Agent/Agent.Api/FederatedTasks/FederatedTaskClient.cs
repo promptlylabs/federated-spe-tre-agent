@@ -67,6 +67,12 @@ namespace Agent.Api.FederatedTasks
             if (report.State != TesState.COMPLETEEnum && report.DatasetSha256 != null)
                 form.Add(new StringContent(report.DatasetSha256), FederatedReportFields.DatasetSha256);
 
+            // The rules the code was scanned with go with every state, COMPLETE included.
+            if (report.ScanRulesVersion != null)
+                form.Add(new StringContent(report.ScanRulesVersion), FederatedReportFields.ScanRulesVersion);
+            if (report.ScanRulesSha256 != null)
+                form.Add(new StringContent(report.ScanRulesSha256), FederatedReportFields.ScanRulesSha256);
+
             if (resultFile != null)
             {
                 var file = new ByteArrayContent(resultFile);
