@@ -25,7 +25,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             if (released + unfinished < minimum)
             {
                 decision = (FederatedStudyOutcome.Incomplete, FederatedStudyOutcomeReasons.MinimumUnreachable,
-                    $"only {released + unfinished} hospital(s) can still release a result; a study needs at least {minimum}");
+                    $"only {released + unfinished} hospital(s) released or can still release a result; a study needs at least {minimum}");
             }
             else if (unfinished == 0)
             {

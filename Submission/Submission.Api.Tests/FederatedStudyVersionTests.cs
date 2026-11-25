@@ -75,6 +75,11 @@ namespace Submission.Api.Tests
             {
                 Assert.Contains("at least 2", version.OutcomeMessage);
             }
+            if (reason == "minimum_unreachable")
+            {
+                // A released hospital has not "still" to release: the count covers both.
+                Assert.Contains("released or can still release", version.OutcomeMessage);
+            }
         }
 
         [Fact]
