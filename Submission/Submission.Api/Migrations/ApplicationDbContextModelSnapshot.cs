@@ -172,6 +172,9 @@ namespace Submission.Api.Migrations
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");
 
+                    b.Property<int>("Round")
+                        .HasColumnType("integer");
+
                     b.Property<string>("ScanRulesSha256")
                         .HasMaxLength(64)
                         .HasColumnType("character varying(64)");

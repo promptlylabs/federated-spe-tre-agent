@@ -77,6 +77,25 @@ public class FederatedTesProfileTests
         Assert.Equal(FederatedTaskErrorCodes.InvalidTask, FederatedTesProfile.Parse(task).ErrorCode);
     }
 
+    // A study version runs one round in the PoC: fed.round is 1, or absent and taken as 1.
+    [Theory]
+    [InlineData(null, true)]
+    [InlineData("1", true)]
+    [InlineData("2", false)]
+    [InlineData("0", false)]
+    [InlineData("one", false)]
+    [InlineData("", false)]
+    public void Parse_Round(string? round, bool accepted)
+    {
+        var task = ValidTask();
+        if (round != null) task.Tags!["fed.round"] = round;
+
+        var parsed = FederatedTesProfile.Parse(task);
+
+        if (accepted) Assert.Equal(1, parsed.Spec!.Round);
+        else Assert.Equal(FederatedTaskErrorCodes.InvalidTask, parsed.ErrorCode);
+    }
+
     [Fact]
     public void Parse_with_only_the_old_tags_is_rejected_naming_the_missing_tag()
     {

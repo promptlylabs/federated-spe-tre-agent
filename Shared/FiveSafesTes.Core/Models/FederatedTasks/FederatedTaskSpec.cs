@@ -18,6 +18,9 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         public string TreName => Sites.Count == 1
             ? Sites[0]
             : throw new InvalidOperationException("TreName is only valid on a task for exactly one hospital");
+
+        /// <summary>The round of the study version this task belongs to (<c>fed.round</c>). Always 1 in the PoC.</summary>
+        public int Round { get; init; } = 1;
     }
 
     /// <summary>

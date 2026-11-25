@@ -63,6 +63,9 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         [MaxLength(64)]
         public string? ScanRulesSha256 { get; set; }
 
+        /// <summary>The round of the study version this task belongs to (<c>fed.round</c>). Always 1 in the PoC.</summary>
+        public int Round { get; set; } = 1;
+
         /// <summary>Reserved for VER-3.</summary>
         public string? ManifestHash { get; set; }
 
@@ -210,6 +213,8 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             {
                 metadata["scan_rules_sha256"] = ScanRulesSha256;
             }
+
+            metadata["round"] = Round.ToString(System.Globalization.CultureInfo.InvariantCulture);
 
             task.Logs =
             [

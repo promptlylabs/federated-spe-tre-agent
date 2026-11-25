@@ -17,6 +17,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         public const string SitesTag = "fed.sites";
         public const string StudyIdTag = "fed.study_id";
         public const string CodeSha256Tag = "fed.code_sha256";
+        public const string RoundTag = "fed.round";
 
         // Code tasks: the researcher's file, run by run-analysis in an approved runner image.
         public const string RunAnalysisCommand = "run-analysis";
@@ -136,7 +137,11 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             if (codeSha != Convert.ToHexStringLower(SHA256.HashData(codeBytes)))
                 return Fail(FederatedTaskErrorCodes.InvalidTask, $"tag '{CodeSha256Tag}' does not match the code");
 
-            var spec = new FederatedTaskSpec(RunAnalysisCommand, dataset, studyId, sites, codeSha);
+            // A study version runs one round of analysis; later rounds (federated learning) come after the PoC.
+            if (tags.TryGetValue(RoundTag, out var round) && round != "1")
+                return Fail(FederatedTaskErrorCodes.InvalidTask, $"tag '{RoundTag}' must be 1: a study version runs one round");
+
+            var spec = new FederatedTaskSpec(RunAnalysisCommand, dataset, studyId, sites, codeSha) { Round = 1 };
             return new FederatedTaskParseResult(spec, null, null);
         }
 
