@@ -21,6 +21,7 @@ LABEL org.opencontainers.image.title="python-runner" \
       org.opencontainers.image.base.digest="sha256:62ceae2f54e06b7231027d1fed7392cfb7cbf5952929fc85b4342e3cb75fab75"
 USER 0
 COPY src/run_analysis /tmp/run_analysis
+# Only run-analysis: check-analysis, convert-notebook and the templates (in the package) are for the researcher's SPE.
 COPY --chmod=0755 bin/run-analysis /opt/app-root/bin/run-analysis
 COPY list-libraries.py /tmp/list-libraries.py
 RUN cp -r /tmp/run_analysis "$(python3 -c 'import sysconfig; print(sysconfig.get_paths()["purelib"])')/run_analysis" \

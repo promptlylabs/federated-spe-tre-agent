@@ -95,8 +95,10 @@ The return value has the same rules as `site_analysis`'s (a dict, JSON, `n`,
 `invalid_dataset`. Results are values, never files: for a graph, return the
 data behind it (bins and counts, points) and draw it in the SPE.
 
-Try `aggregate` in the SPE before you submit. Run `site_analysis` on two or
-more synthetic datasets, put the dicts it returned in a JSON array, and run
+Try `aggregate` in the SPE before you submit. `check-analysis` (see "In the
+researcher's SPE") does this on one synthetic dataset, with its result given
+twice. To try it on several, run `site_analysis` on two or more synthetic
+datasets, put the dicts it returned in a JSON array, and run
 the orchestrator's command on it:
 
 ```sh
@@ -224,6 +226,54 @@ against synthetic data:
 
 ```sh
 run-analysis analysis.py ./synthetic/cohort ./result.json
+```
+
+## In the researcher's SPE
+
+The package also has two commands and two templates for the researcher's SPE.
+The workbench (PoC task 2.7) puts them there; the hospital image doesn't
+install the commands.
+
+- `templates/analysis.py` and `templates/notebook_analysis.ipynb` (in
+  `src/run_analysis/`): what every SPE starts with. Comments explain the flow
+  and what the two functions get and return. Both functions raise
+  `NotImplementedError` until the researcher writes them; the notebook's path
+  to the synthetic data, `SYNTHETIC_DATA_PATH`, is set by the workbench.
+- `convert-notebook [--force] <notebook.ipynb> [<analysis.py>]` writes
+  `analysis.py` (by default next to the notebook) from the notebook, the same
+  bytes every time:
+  - only code cells are kept; cells tagged `spe-only`, markdown cells, outputs
+    and execution counts are left out;
+  - `!` shell commands (also `x = !ls`), `%pip`, `%conda`, `%sx`, `%system`,
+    `%%bash`, `%%sh`, `%%script`, `%%system` and any other cell magic refuse
+    the notebook, naming the cell; `%%time`, `%%timeit` and `%%capture` keep
+    their body; `%time`, `%timeit` and `%prun` keep the statement after them;
+    other line magics are removed. As in Jupyter, a cell magic counts only on
+    the first non-blank line of a cell (elsewhere it refuses the notebook), and
+    `%` and `!` count only at the start of a logical line: inside a string,
+    brackets or after a backslash they are Python and are kept;
+  - line endings and trailing spaces are normalised, cells are separated by two
+    blank lines, and the first line says the file was generated
+    (`# Generated from <notebook> by convert-notebook. Edit the notebook, not this file.`);
+  - it overwrites `analysis.py` only if the file is missing, was generated, or
+    is still the untouched template; a hand-written file needs `--force`;
+  - after writing, it runs the code checks of `check-analysis` and prints any
+    problem (exit 1, the file stays written). It runs no code.
+- `check-analysis [--dataset <dir>] [--timeout <seconds>] <analysis.py>` is
+  what DAAMS runs before it submits (see `docs/federated-tasks.md`, "Before
+  submission"). It checks that the code defines `site_analysis` and
+  `aggregate` at the top level, is at most 262,144 bytes and isn't the
+  unfilled template. With `--dataset`, it runs `site_analysis` on that
+  synthetic dataset with `run-analysis`, then `aggregate` on the result given
+  twice, each within the timeout (default 300 seconds). Exit 0 prints
+  `analysis.py passed (...)` and `code_sha256 <hex>`; exit 1 prints one line
+  saying what failed. A synthetic dataset that can't be read or doesn't match
+  its schema skips the dry run (exit 0, `no dry run: ...`): it's the data's
+  fault, not the code's.
+
+```sh
+convert-notebook notebook_analysis.ipynb
+check-analysis --dataset ./synthetic/cohort analysis.py
 ```
 
 ## Tests
