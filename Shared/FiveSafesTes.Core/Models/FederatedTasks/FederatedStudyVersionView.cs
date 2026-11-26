@@ -44,6 +44,19 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         [JsonProperty("deadline_at")]
         public DateTime DeadlineAt { get; set; }
 
+        [JsonProperty("ready_at")]
+        public DateTime? ReadyAt { get; set; }
+
+        [JsonProperty("aggregation_started_at")]
+        public DateTime? AggregationStartedAt { get; set; }
+
+        /// <summary>Why aggregation failed, for outcome failed.</summary>
+        [JsonProperty("aggregation_error_code")]
+        public string? AggregationErrorCode { get; set; }
+
+        [JsonProperty("pooled_result_sha256")]
+        public string? PooledResultSha256 { get; set; }
+
         /// <summary>The outcome's time when an admin cancelled the version.</summary>
         [JsonProperty("canceled_at")]
         public DateTime? CanceledAt { get; set; }

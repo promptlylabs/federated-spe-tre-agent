@@ -25,6 +25,12 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         public const string OutOfMemory = "out_of_memory";
         public const string RunFailed = "run_failed";
 
+        /// <summary>The researcher's code could not be imported, lacks the function, or raised (a runner code).</summary>
+        public const string CodeError = "code_error";
+
+        /// <summary>A study version waited longer than AggregationTimeoutMinutes for the aggregator.</summary>
+        public const string AggregationTimeout = "aggregation_timeout";
+
         /// <summary>Codes that mean the task was rejected by the input checks; every other code is a failure.</summary>
         public static readonly IReadOnlySet<string> InputCheckCodes = new HashSet<string>
         {

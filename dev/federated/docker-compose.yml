@@ -125,6 +125,8 @@ services:
       # cuts off the demo; the timeout itself is unit-tested only. A 15-second sweep shows an early end (R2) quickly.
       FederatedTaskSettings__StudyTimeoutMinutes: "30"
       FederatedTaskSettings__StudySweepSeconds: "15"
+      # A ready study that the aggregator hasn't pooled in 10 minutes fails with aggregation_timeout (an admin can retry).
+      FederatedTaskSettings__AggregationTimeoutMinutes: "10"
     ports:
       - "5034:8080"
     depends_on:
@@ -202,6 +204,57 @@ services:
         condition: service_healthy
       rustfs:
         condition: service_started
+      submission-api:
+        condition: service_started
+
+  # The orchestrator's aggregator: the same Agent image in the Aggregator role. It polls Submission for study versions
+  # ready for aggregation and runs the researcher's aggregate() in a locked-down container (the same runner rules as at a
+  # hospital). Submission itself never starts containers. Dev only: it shares the host's Docker daemon with agent-api;
+  # the fed.owner label keeps their runs apart.
+  aggregator:
+    build:
+      context: ../..
+      dockerfile: Agent/Agent.Api/Dockerfile
+    user: root
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      <<: *kc-dare-control
+      ASPNETCORE_ENVIRONMENT: Development
+      ASPNETCORE_URLS: http://+:8080
+      # Its own databases: Hangfire must not share agent-api's jobs.
+      ConnectionStrings__DefaultConnection: Server=postgres;Port=5432;Database=DARE-Aggregator;User Id=postgres;Password=postgres;Include Error Detail=true
+      ConnectionStrings__CredentialsConnection: Server=postgres;Port=5432;Database=Aggregator_Credentials;User Id=postgres;Password=postgres;Include Error Detail=true
+      KeycloakDemoMode: "true"
+      Features__SeedDemoData: "false"
+      ApiEndpoints__SubmissionApiUrl: http://submission-api:8080
+      # The aggregator's service account: client federated-aggregator, realm role dare-federated-aggregator.
+      SubmissionKeyCloakSettings__ConfigInputMethod: Upload
+      SubmissionKeyCloakSettings__ClientId: federated-aggregator
+      SubmissionKeyCloakSettings__ClientSecret: dev-federated-aggregator-secret
+      SubmissionKeyCloakSettings__Username: federated-aggregator
+      SubmissionKeyCloakSettings__PasswordEnc: dev-federated-aggregator-secret
+      TreKeyCloakSettings__Authority: http://localhost:8180/realms/tre-test
+      TreKeyCloakSettings__MetadataAddress: http://keycloak:8080/realms/tre-test/.well-known/openid-configuration
+      FederatedTaskSettings__Role: Aggregator
+      FederatedTaskSettings__ApprovedImages: "python-runner:1"
+      FederatedTaskSettings__MaxRunMinutes: "5"
+      JobSettings__federatedTaskSchedule: "1"
+      JobSettings__syncSchedule: "0"
+      JobSettings__scanSchedule: "0"
+      JobSettings__healthCheckSchedule: "0"
+      JobSettings__bucketCleanupSchedule: "0"
+      HasuraSettings__IsEnabled: "false"
+      RabbitMQ__HostAddress: rabbitmq-not-used
+      Hangfire__Username: admin
+      Hangfire__Password: password
+    ports:
+      - "5289:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      keycloak:
+        condition: service_healthy
       submission-api:
         condition: service_started
 
@@ -313,10 +366,12 @@ services:
                  SELECT 'my-tre','tre-agent-my-tre','Local federated dev TRE','{}',now(),'tre-my-tre'
                  WHERE NOT EXISTS (SELECT 1 FROM \"Tres\" WHERE lower(\"Name\")='my-tre');"
         psql -c "UPDATE \"Tres\" SET \"KeycloakClientId\"='tre-my-tre' WHERE lower(\"Name\")='my-tre' AND (\"KeycloakClientId\" IS NULL OR \"KeycloakClientId\" = '');"
-        # A second hospital with no Agent: its part of a study version stays queued until the version is cancelled.
-        psql -c "INSERT INTO \"Tres\" (\"Name\",\"AdminUsername\",\"About\",\"FormData\",\"LastHeartBeatReceived\")
-                 SELECT 'other-tre','tre-agent-other-tre','Second dev TRE, no Agent','{}',now()
+        # A second hospital with no Agent: its part of a study version stays queued until the version ends. Its Keycloak
+        # client tre-other-tre lets the integration tests act as its Agent, to pool two hospitals before ANZE-6145.
+        psql -c "INSERT INTO \"Tres\" (\"Name\",\"AdminUsername\",\"About\",\"FormData\",\"LastHeartBeatReceived\",\"KeycloakClientId\")
+                 SELECT 'other-tre','tre-agent-other-tre','Second dev TRE, no Agent','{}',now(),'tre-other-tre'
                  WHERE NOT EXISTS (SELECT 1 FROM \"Tres\" WHERE lower(\"Name\")='other-tre');"
+        psql -c "UPDATE \"Tres\" SET \"KeycloakClientId\"='tre-other-tre' WHERE lower(\"Name\")='other-tre' AND (\"KeycloakClientId\" IS NULL OR \"KeycloakClientId\" = '');"
     depends_on:
       submission-api:
         condition: service_started

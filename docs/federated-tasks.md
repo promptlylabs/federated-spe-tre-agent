@@ -25,8 +25,14 @@ Outcome. Every version ends with one outcome:
 | `incomplete` | `minimum_unreachable` | Fewer than 2 parts are `released` or can still be. This is decided at once, not at the deadline: for example, in a study for A, B and C where A and B are rejected, C is cancelled. |
 | `incomplete` | `timeout_below_minimum` | The deadline passed with fewer than 2 `released`. The parts still working are cancelled. |
 | `canceled` | `canceled` | An orchestrator admin cancelled the version (see "Cancelling a study version"). |
+| `aggregated` | (the ready reason) | The aggregator ran the researcher's `aggregate()` and the pooled result is stored (see "Pooling the results"). |
+| `failed` | (the ready reason) | Pooling failed; `aggregation_error_code` says why. No pooled result. |
 
-Only `released` counts. `rejected_by_input_checks`, `rejected_at_output_approval`, `failed` and `canceled` do not. An `incomplete` version releases nothing to researchers; researchers will only ever get pooled results (3.3). Admins can still read a hospital's released result with `GetTaskResult`. The outcome also has a sentence for people, `outcome_message`, for example "only 1 hospital(s) released or can still release a result; a study needs at least 2".
+A version is `ready_for_aggregation` first, then `aggregated` or `failed`. The only change back is an admin's `RetryAggregation` (see "Pooling the results").
+
+At least one `aggregate`. Intake also refuses code with no top-level `def aggregate(` line (extra spaces and a byte-order mark are fine; 400 `invalid_task`): the orchestrator pools the hospitals' results with it, so without it every hospital would run and review the study for nothing. Code that defines it some other way still fails `code_error` at the aggregator.
+
+Only `released` counts. `rejected_by_input_checks`, `rejected_at_output_approval`, `failed` and `canceled` do not. An `incomplete` version releases nothing to researchers; researchers will only ever get pooled results. Admins can still read a hospital's released result with `GetTaskResult`. The outcome also has a sentence for people, `outcome_message`, for example "only 1 hospital(s) released or can still release a result; a study needs at least 2".
 
 Deadline. Each version's deadline is its submission time plus `FederatedTaskSettings:StudyTimeoutMinutes` (default 7 days), fixed at intake: changing the setting does not move the deadline of versions already submitted. The deadline does not limit a run (the Agent's `MaxRunMinutes` does that). It limits how long one hospital, a reviewer who does not answer or an Agent that is gone, can hold up the others.
 
@@ -204,6 +210,10 @@ The Agent sends `running` when it picks a `queued` task up, `waiting_for_output_
   "outcome_message": null,
   "outcome_at": null,
   "deadline_at": "2026-12-01T18:00:00Z",
+  "ready_at": null,
+  "aggregation_started_at": null,
+  "aggregation_error_code": null,
+  "pooled_result_sha256": null,
   "canceled_at": null,
   "versions": [1, 2],
   "hospitals": [
@@ -216,8 +226,8 @@ The Agent sends `running` when it picks a `queued` task up, `waiting_for_output_
 }
 ```
 
-- `state` is `open`, `canceling` or `ended`, and `outcome`, `outcome_reason`, `outcome_message` and `outcome_at` are set once the version is decided (see "Studies and versions"). `deadline_at` is fixed at intake. `canceled_at` is `outcome_at` when an admin cancelled the version.
-- None of this is a TES state. Each hospital's `state` is. When the TES API for studies comes (ANZE-6134), a version maps to the standard states without new ones: `open` → `RUNNING`, `canceling` → `CANCELING` (whatever the outcome, until every hospital has confirmed its cleanup; a hospital that never comes back leaves the version there, which blocks nothing), then by the outcome: `ready_for_aggregation` → `RUNNING` until the pooled result is stored, then `COMPLETE`, and `incomplete` or `canceled` → `CANCELED` with the reason in metadata, as a rejected part is `CANCELED` with its `error_code` today.
+- `state` is `open`, `canceling` or `ended`, and `outcome`, `outcome_reason`, `outcome_message` and `outcome_at` are set once the version is decided (see "Studies and versions"). `deadline_at` is fixed at intake. `canceled_at` is `outcome_at` when an admin cancelled the version. `ready_at`, `aggregation_started_at`, `aggregation_error_code` and `pooled_result_sha256` follow the pooling (see "Pooling the results").
+- None of this is a TES state. Each hospital's `state` is. When the TES API for studies comes (ANZE-6134), a version maps to the standard states without new ones: `open` → `RUNNING`, `canceling` → `CANCELING` (whatever the outcome, until every hospital has confirmed its cleanup; a hospital that never comes back leaves the version there, which blocks nothing), then by the outcome: `ready_for_aggregation` → `RUNNING`, `aggregated` → `COMPLETE`, `failed` → `EXECUTOR_ERROR` for a failure of the researcher's code or `SYSTEM_ERROR` (`invalid_task`, `image_not_approved`, `run_failed`, `internal_error`, `aggregation_timeout`), and `incomplete` or `canceled` → `CANCELED`, each with the reason or error code in metadata, as a rejected part is `CANCELED` with its `error_code` today.
 - `versions` lists every version number of the study; only `GetStudy` sends it.
 - `hospitals` is in `fed.sites` order. `phase`, `state` and `times` are each hospital's task phase, TES state and `<phase>_at` times, as in "Task phases and state". `error_code` is there for a rejected or failed part, `result_sha256` for a released one, and `scan_rules_version` and `scan_rules_sha256` for a part whose code was scanned (see "Code scan"). Result content never is; read it with `GetTaskResult` and the part's `task_id`.
 
@@ -240,6 +250,38 @@ On a `canceling` task, the Agent:
 4. reports `ReportProgress` with `canceled`. Before Submission accepts it, it deletes any result file stored for the task (one can exist if a cancel raced a result report). A storage error answers 503 `storage_unavailable`, and the Agent confirms again at the next poll.
 
 Each part is safe to repeat, so if one fails the next poll does them again. The review record and its withdrawn marker stay in the TRE as the audit of what was reviewed; they hold no data. There is no standard TES cancel yet. `POST /tasks/{id}:cancel`, for DAAMS, is planned with the TES API task and will apply the same rules.
+
+### Pooling the results
+
+Each hospital returns a partial result; the researcher's `aggregate(results)`, in the same file as `site_analysis`, combines them. It runs in the **aggregator**: the Agent image with `FederatedTaskSettings:Role = Aggregator` (see "Aggregator"), not Submission. Starting containers needs the Docker socket, which is root on its host, and Submission, which every hospital and admin talks to and which holds every released result, gets none.
+
+1. The sweep marks a version `ready_for_aggregation` (see "Studies and versions") and records `ready_at`.
+2. The aggregator polls `GET /api/FederatedAggregation/GetPendingAggregations` (role `dare-federated-aggregator`), oldest first. Each job has the version's ID, study, number, the task as submitted, `code_sha256`, and `resultsJson`: a JSON array of each released hospital's `result.value`, in `fed.sites` order. Submission reads each stored file back and checks its SHA-256 first. A file that is missing or fails its check fails the version with `internal_error`; if storage is unreachable, the version waits for the next poll. The array holds no hospital names, task IDs or anything else: `aggregate()` sees the values only.
+3. The aggregator recomputes the code's SHA-256 and compares it with `code_sha256` and the task's `fed.code_sha256` (a mismatch fails with `invalid_task`, and nothing runs), checks the task's image against its own `ApprovedImages` (`image_not_approved`), and scans the code with its own rule file (`ScanRulesPath`, default `ScanRules/default.yaml`; see "Code scan"). It doesn't rely on the hospitals' scans: each hospital sets its own rules, and one hospital's looser rules must not decide what runs at the orchestrator. Code the scan refuses fails with `unsafe_code` and nothing runs (the findings are in the aggregator's log only); a scan that can't run fails with `internal_error`; an unusable rule file leaves the version waiting until it is fixed. It reports `running`, stages only the code and `results.json`, and runs `run-analysis --aggregate /code/analysis.py /data/results.json /outputs/result.json` (see `runner/README.md`) under the same container rules and limits as at a hospital (see "Running a code task"): no network, read-only root, no logs kept, `MaxRunMinutes`.
+4. On exit it reads `result.json` and reports with `POST /api/FederatedAggregation/ReportAggregation` (`multipart/form-data`: `VersionId`, `Phase`, `ErrorCode`, and the pooled document as file part `result`):
+   - `aggregated`: Submission checks the pooled document (below) against the version, stores it under `studies/<versionId>/<sha256>.json` in `federated-results`, apart from the site results, and the outcome becomes `aggregated` with `pooled_result_sha256`.
+   - `failed`: one of `invalid_task`, `image_not_approved`, `unsafe_code`, `code_error`, `invalid_result`, `result_too_large`, `timeout`, `out_of_memory`, `run_failed`, `internal_error`. Submission stores the code and a fixed message; it takes no text from the aggregator. For `code_error` only, the aggregator may send `ErrorLine`, the line of the researcher's file that failed, which is added to the message ("… (analysis.py line 7)") so the researcher can find the fault. It is a number: the exception's type, which the code can name, is not passed on. To see the full traceback, run `aggregate` in the SPE with `run-analysis --debug --aggregate` (see `runner/README.md`). A `results.json` the runner can't read is reported as `internal_error`, since the aggregator wrote it.
+   - A report for a version that is no longer `ready_for_aggregation` gets 409 `task_already_finished`, except the same final report sent again (200).
+5. The aggregator removes a run once its report is accepted. Its sweep also removes runs whose version is no longer pending, but only once they are older than twice `MaxRunMinutes`, as a hospital Agent does: Submission leaves a version out of a poll while its storage is briefly unreachable, and that run must survive. A report sent again is the same bytes (`completedAt` is when the run finished), so it is stored under the same key.
+6. Nothing `aggregate()` writes (output, traceback, exception text) reaches Submission or its logs. The runner's own message goes to the aggregator's log only, as at a hospital.
+
+Pooled document:
+
+```json
+{
+  "schemaVersion": 1, "studyId": "study-001", "version": 2, "versionId": "5f0c9a52-…", "codeSha256": "<hex>",
+  "sites": 2, "completedAt": "2026-11-25T15:00:00+00:00",
+  "result": { "kind": "aggregate", "n": 240, "value": { "n": 240, "mean_age": 41.0 } }
+}
+```
+
+`sites` is how many hospital results went in, never which. `result.n` must equal `result.value.n`. The same limits as a site result document apply (65,536 bytes, nesting at most 16 levels).
+
+Results are values, never files: for a graph, `aggregate()` returns the data behind it (bins and counts, points), and the researcher draws it in the SPE. Learning over several rounds is not supported (`fed.round` is 1).
+
+Stuck or broken pooling. A version that waits longer than `AggregationTimeoutMinutes` (default 24 hours) from `ready_at` fails with `aggregation_timeout`, so an aggregator that is down or misconfigured can't leave it waiting for ever. `POST /api/FederatedAggregation/RetryAggregation?id=<versionId>` (`dare-control-admin`; on the dev stack, `./task.sh retry <version-id>`) puts a version that `failed` with `aggregation_timeout`, `run_failed` or `internal_error` back to `ready_for_aggregation`, with a new `ready_at`: the stored code and released results are the same, so a retry can only produce what the first run would have. Any other failure is the researcher's code, which would fail again, and gets 409.
+
+**Known limitation:** `aggregate()` is researcher code, so it could pass one hospital's result through unchanged. In the PoC, only DAAMS export approval checks the pooled result.
 
 ### Reporting a result
 
@@ -385,7 +427,7 @@ The Agent runs a code task in a Docker container, through the Docker socket (`Fe
 
 A `running` code task that has no run and no saved result (the run was lost, or the start failed part-way) is started again, so its code runs again. The Agent logs this as a warning.
 
-The Agent also removes old runs at every poll (the sweep). A run is removed when its task has a saved result, or when the task is not pending and the run is older than twice `MaxRunMinutes`. The sweep also removes staged data that has no run container (volumes, which can hold a copy of the dataset, or a staging container), as a removal or a failed start that was cut short leaves it. If one removal fails, the sweep goes on with the others and the next poll tries again. Use one Agent per Docker daemon. The sweep treats staged data without a run container as left over, which is safe only because the same Agent's poll stages and starts runs, one poll at a time. A second Agent on the same daemon could remove the other Agent's staged data while it starts a run.
+The Agent also removes old runs at every poll (the sweep). A run is removed when its task has a saved result, or when the task is not pending and the run is older than twice `MaxRunMinutes`. The sweep also removes staged data that has no run container (volumes, which can hold a copy of the dataset, or a staging container), as a removal or a failed start that was cut short leaves it. If one removal fails, the sweep goes on with the others and the next poll tries again. Use at most one Agent of each role (hospital, aggregator) per Docker daemon. The sweep treats its own staged data without a run container as left over, which is safe only because the same Agent's poll stages and starts runs, one poll at a time. Runs are labelled with their owner (`fed.owner`), so a hospital Agent and the aggregator on one daemon leave each other's alone; a second Agent of the same role could remove the other's staged data while it starts a run.
 
 The container:
 
@@ -715,10 +757,24 @@ What a code task may ask for is set in the section `FederatedTaskSettings`:
 | `MaxDiskGb` | `20` | The largest `resources.disk_gb`. |
 | `StudyTimeoutMinutes` | `10080` (7 days) | A study version's deadline, from intake (see "Studies and versions"). |
 | `StudySweepSeconds` | `300` | How often the sweep decides study versions' outcomes. |
+| `AggregationTimeoutMinutes` | `1440` (24 hours) | How long a version ready for aggregation may wait before it fails with `aggregation_timeout` (see "Pooling the results"). |
 
 These are Submission's settings. The Agent has its own `MaxCpuCores`, `MaxRamGb` and `MaxDiskGb` (see "Buckets and policies"), with their own defaults (the disk maximum is 4 there, 20 here), and reduces a request to them. Keep Submission's maxima at or below the Agent's. The poll response carries the code of every queued code task, up to 256 KiB each.
 
-The resource defaults are placeholders until the hospitals confirm their capacity. The 256 KiB limit on the code is fixed. Submission refuses to start if a maximum, `StudyTimeoutMinutes` or `StudySweepSeconds` is 0 or less.
+The resource defaults are placeholders until the hospitals confirm their capacity. The 256 KiB limit on the code is fixed. Submission refuses to start if a maximum, `StudyTimeoutMinutes`, `StudySweepSeconds` or `AggregationTimeoutMinutes` is 0 or less.
+
+### Aggregator
+
+The aggregator is an Agent.Api deployment with `FederatedTaskSettings:Role = Aggregator` (the default is `Hospital`; any other value stops the Agent at startup). It runs on the research side, not at a hospital, and needs:
+
+- a Keycloak client in the Dare-Control realm whose service account has the realm role `dare-federated-aggregator`, set as `SubmissionKeyCloakSettings` (`ConfigInputMethod` `Upload`, `ClientId`, `ClientSecret`);
+- `ApiEndpoints:SubmissionApiUrl`;
+- `FederatedTaskSettings:ApprovedImages` (required in this role), `DockerEndpoint`, `MaxRunMinutes`, `MaxConcurrentRuns` and the run limits, as a hospital Agent;
+- its own databases (Hangfire must not share a hospital Agent's).
+
+It skips the hospital-only setup: no dataset or output buckets, no Egress, no `TreName`. It does scan the code, with its own rule file (see step 3 above). It has the same security note as a hospital Agent: the Docker socket is root on its host; production moves to the research environment's SPE operator, as hospitals move to theirs.
+
+Every container and volume carries the label `fed.owner` (`hospital` or `aggregator`), so a hospital Agent and the aggregator on one Docker daemon never sweep or count each other's runs. Runs from before the label belong to the hospital. Still run at most one Agent of each role per daemon.
 
 ## Security
 

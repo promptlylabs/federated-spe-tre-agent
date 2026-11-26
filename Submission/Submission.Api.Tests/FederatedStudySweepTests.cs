@@ -79,7 +79,7 @@ namespace Submission.Api.Tests
             var canceled = Seed(false, FederatedStudyOutcome.Canceled, FederatedTaskPhase.Released, FederatedTaskPhase.Canceling);
             using var db = Open();
 
-            var decided = await FederatedStudySweep.SweepOnceAsync(db, Now, CancellationToken.None);
+            var decided = await FederatedStudySweep.SweepOnceAsync(db, Now, 1440, CancellationToken.None);
 
             Assert.Equal(1, decided);
             var stored = Load(rejected);
@@ -94,7 +94,7 @@ namespace Submission.Api.Tests
             var versionId = Seed(true, null, FederatedTaskPhase.Released, FederatedTaskPhase.Queued);
             using var db = Open();
 
-            await FederatedStudySweep.SweepOnceAsync(db, Now, CancellationToken.None);
+            await FederatedStudySweep.SweepOnceAsync(db, Now, 1440, CancellationToken.None);
 
             var stored = Load(versionId);
             Assert.Equal((FederatedStudyOutcome.Incomplete, "timeout_below_minimum"), (stored.Outcome, stored.OutcomeReason));
@@ -115,7 +115,7 @@ namespace Submission.Api.Tests
             });
             using var db = Open(report);
 
-            var decided = await FederatedStudySweep.SweepOnceAsync(db, Now, CancellationToken.None);
+            var decided = await FederatedStudySweep.SweepOnceAsync(db, Now, 1440, CancellationToken.None);
 
             // The hospital's report stands: the sweep's cancel lost on the part's Phase token. (On Postgres the whole save
             // rolls back, so the version has no outcome either and the next sweep decides it; the in-memory provider is not
@@ -126,13 +126,30 @@ namespace Submission.Api.Tests
         }
 
         [Fact]
+        public async Task Sweep_times_out_a_stuck_aggregation()
+        {
+            var versionId = Seed(false, FederatedStudyOutcome.ReadyForAggregation, FederatedTaskPhase.Released, FederatedTaskPhase.Released);
+            using (var setup = Open())
+            {
+                setup.FederatedStudyVersions.Single(v => v.VersionId == versionId).ReadyAt = Now.AddDays(-2);
+                setup.SaveChanges();
+            }
+            using var db = Open();
+
+            Assert.Equal(1, await FederatedStudySweep.SweepOnceAsync(db, Now, 1440, CancellationToken.None));
+
+            var stored = Load(versionId);
+            Assert.Equal((FederatedStudyOutcome.Failed, "aggregation_timeout"), (stored.Outcome, stored.AggregationErrorCode));
+        }
+
+        [Fact]
         public async Task Sweep_goes_on_after_one_version_fails()
         {
             var first = Seed(false, null, FederatedTaskPhase.Released, FederatedTaskPhase.Failed);
             var second = Seed(false, null, FederatedTaskPhase.Released, FederatedTaskPhase.Released);
             using var db = Open(new BeforeFirstSave(() => throw new InvalidOperationException("database went away")));
 
-            var decided = await FederatedStudySweep.SweepOnceAsync(db, Now, CancellationToken.None);
+            var decided = await FederatedStudySweep.SweepOnceAsync(db, Now, 1440, CancellationToken.None);
 
             Assert.Equal(1, decided);
             Assert.Null(Load(first).Outcome);

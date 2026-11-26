@@ -50,12 +50,55 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             version.OutcomeReason = decision.Reason;
             version.OutcomeMessage = decision.Message;
             version.OutcomeAt = nowUtc;
+            if (decision.Outcome == FederatedStudyOutcome.ReadyForAggregation)
+            {
+                version.ReadyAt = nowUtc;
+            }
+
             foreach (var part in version.Parts.Where(p => !FederatedTaskPhases.IsFinal(p.Phase)))
             {
                 part.RequestCancel(nowUtc);
             }
 
             return true;
+        }
+
+        /// <summary>
+        /// Fails a version that has waited <paramref name="timeoutMinutes"/> since it became ready for aggregation, so an
+        /// aggregator that is down or misconfigured can't leave it waiting for ever. An admin can retry it.
+        /// </summary>
+        /// <returns>True when the version was failed.</returns>
+        public static bool TimeOutAggregation(FederatedStudyVersion version, DateTime nowUtc, int timeoutMinutes)
+        {
+            if (version.Outcome != FederatedStudyOutcome.ReadyForAggregation || version.ReadyAt is not { } readyAt
+                || nowUtc.Ticks < readyAt.AddMinutes(timeoutMinutes).Ticks)
+            {
+                return false;
+            }
+
+            Fail(version, nowUtc, FederatedTaskErrorCodes.AggregationTimeout,
+                $"the orchestrator did not pool the results within {timeoutMinutes} minutes; an admin can retry");
+            return true;
+        }
+
+        /// <summary>Ends aggregation as failed with <paramref name="code"/>. No pooled result. Nothing is saved here.</summary>
+        public static void Fail(FederatedStudyVersion version, DateTime nowUtc, string code, string message)
+        {
+            version.Outcome = FederatedStudyOutcome.Failed;
+            version.AggregationErrorCode = code;
+            version.OutcomeMessage = message;
+            version.OutcomeAt = nowUtc;
+        }
+
+        /// <summary>Records the stored pooled result. Nothing is saved here.</summary>
+        public static void Aggregate(FederatedStudyVersion version, DateTime nowUtc, string bucket, string key, string sha256)
+        {
+            version.Outcome = FederatedStudyOutcome.Aggregated;
+            version.PooledResultBucket = bucket;
+            version.PooledResultKey = key;
+            version.PooledResultSha256 = sha256;
+            version.OutcomeMessage = "the hospitals' results were pooled";
+            version.OutcomeAt = nowUtc;
         }
     }
 }

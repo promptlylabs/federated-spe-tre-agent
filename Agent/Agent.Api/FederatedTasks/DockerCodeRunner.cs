@@ -31,6 +31,12 @@ namespace Agent.Api.FederatedTasks
         private const string TaskIdLabel = "fed.task-id";
         private const string RoleLabel = "fed.role";
         private const string DatasetShaLabel = "fed.dataset-sha256";
+
+        /// <summary>
+        /// Which Agent made a container or volume: "hospital" or "aggregator". Two Agents on one Docker daemon (the dev stack)
+        /// must never sweep or count each other's runs. Runs from before the label have none and belong to the hospital.
+        /// </summary>
+        private const string OwnerLabel = "fed.owner";
         private const string RunRole = "run";
         private const string ResultPath = "/outputs/result.json";
 
@@ -45,11 +51,17 @@ namespace Agent.Api.FederatedTasks
                                                    UnixFileMode.OtherExecute;
 
         private readonly IDockerClient _docker;
+        private readonly string _owner;
 
         public DockerCodeRunner(IDockerClient docker, FederatedTaskSettings settings)
         {
             _docker = docker;
+            _owner = settings.IsAggregator ? "aggregator" : "hospital";
         }
+
+        /// <summary>Whether this Agent made something with these labels (a missing owner is the hospital's).</summary>
+        private bool Owns(IDictionary<string, string>? labels) =>
+            (labels != null && labels.TryGetValue(OwnerLabel, out var owner) ? owner : "hospital") == _owner;
 
         private static string RunName(string taskId) => $"fed-run-{taskId}";
         private static string StageName(string taskId) => $"fed-stage-{taskId}";
@@ -57,8 +69,8 @@ namespace Agent.Api.FederatedTasks
         private static string CodeVolume(string taskId) => $"fed-code-{taskId}";
         private static string OutputsVolume(string taskId) => $"fed-out-{taskId}";
 
-        private static Dictionary<string, string> Labels(string taskId, string role) =>
-            new() { [TaskIdLabel] = taskId, [RoleLabel] = role };
+        private Dictionary<string, string> Labels(string taskId, string role) =>
+            new() { [TaskIdLabel] = taskId, [RoleLabel] = role, [OwnerLabel] = _owner };
 
         public async Task<CodeRunState> GetAsync(string taskId, CancellationToken ct)
         {
@@ -104,7 +116,7 @@ namespace Agent.Api.FederatedTasks
                 Filters = LabelFilter($"{RoleLabel}={RunRole}")
             }, ct);
             return containers
-                .Where(c => c.Labels.ContainsKey(TaskIdLabel))
+                .Where(c => c.Labels.ContainsKey(TaskIdLabel) && Owns(c.Labels))
                 .Select(c => new CodeRunInfo(c.Labels[TaskIdLabel],
                     new DateTimeOffset(DateTime.SpecifyKind(c.Created, DateTimeKind.Utc))))
                 .ToList();
@@ -120,13 +132,14 @@ namespace Agent.Api.FederatedTasks
             }, ct);
             var volumes = await _docker.Volumes.ListAsync(new VolumesListParameters { Filters = filter }, ct);
 
+            // Another Agent's run hides its staged data too: a task id with any run is never an orphan here.
             var runs = containers
                 .Where(c => c.Labels.TryGetValue(RoleLabel, out var role) && role == RunRole)
                 .Select(c => c.Labels[TaskIdLabel])
                 .ToHashSet(StringComparer.Ordinal);
             // Only ids in the canonical form the Agent writes: the names to remove are built from them.
-            return containers.Select(c => c.Labels[TaskIdLabel])
-                .Concat((volumes.Volumes ?? []).Select(v => v.Labels[TaskIdLabel]))
+            return containers.Where(c => Owns(c.Labels)).Select(c => c.Labels[TaskIdLabel])
+                .Concat((volumes.Volumes ?? []).Where(v => Owns(v.Labels)).Select(v => v.Labels[TaskIdLabel]))
                 .Where(id => Guid.TryParse(id, out var guid) && guid.ToString("D") == id && !runs.Contains(id))
                 .Distinct(StringComparer.Ordinal)
                 .ToList();
@@ -228,13 +241,17 @@ namespace Agent.Api.FederatedTasks
         {
             var taskId = request.TaskId;
             var labels = Labels(taskId, RunRole);
-            labels[DatasetShaLabel] = request.DatasetSha256;
+            if (request.DatasetSha256 != null)
+            {
+                labels[DatasetShaLabel] = request.DatasetSha256;
+            }
             await _docker.Containers.CreateContainerAsync(new CreateContainerParameters
             {
                 Name = RunName(taskId),
                 Image = request.Image,
-                // Built here from the dataset name; never the task's command, env or other executor fields.
-                Cmd = ["run-analysis", "/code/analysis.py", $"/data/{request.DatasetName}", ResultPath],
+                // Built by the Agent (here from the dataset name, or the aggregator's); never the task's command, env or other
+                // executor fields.
+                Cmd = request.Command?.ToList() ?? ["run-analysis", "/code/analysis.py", $"/data/{request.DatasetName}", ResultPath],
                 User = RunUser,
                 Labels = labels,
                 NetworkDisabled = true,

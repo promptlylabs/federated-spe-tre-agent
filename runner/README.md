@@ -70,6 +70,46 @@ of people the result is based on. Its compact UTF-8 JSON must be 61,440 bytes
 (60 KiB) or less. numpy numbers and arrays are converted to plain numbers and
 lists.
 
+## Pooling: `aggregate(results)`
+
+```sh
+run-analysis [--debug] --aggregate <code.py> <results.json> <result.json>
+```
+
+The orchestrator runs this once the hospitals have released their results (see
+"Pooling the results" in `docs/federated-tasks.md`). `results.json` is a JSON
+array with one item per hospital that released a result: the dict its
+`site_analysis` returned. It holds no hospital names. The same file defines
+both functions:
+
+```python
+def aggregate(results):  # a list of the dicts site_analysis returned
+    n = sum(r["n"] for r in results)
+    return {"n": n, "mean_age": sum(r["n"] * r["mean_age"] for r in results) / n}
+```
+
+The return value has the same rules as `site_analysis`'s (a dict, JSON, `n`,
+61,440 bytes at most), and failures are reported the same way, with
+`aggregate` in the message. The output has no `datasetSha256`. A
+`results.json` that cannot be read or is not a list of dicts gives
+`invalid_dataset`. Results are values, never files: for a graph, return the
+data behind it (bins and counts, points) and draw it in the SPE.
+
+Try `aggregate` in the SPE before you submit. Run `site_analysis` on two or
+more synthetic datasets, put the dicts it returned in a JSON array, and run
+the orchestrator's command on it:
+
+```sh
+run-analysis analysis.py synth_a/ /tmp/a.json   # repeat for each synthetic dataset
+python3 -c 'import json,sys; print(json.dumps([json.load(open(f))["result"] for f in sys.argv[1:]]))' /tmp/a.json /tmp/b.json > /tmp/results.json
+run-analysis --debug --aggregate analysis.py /tmp/results.json /tmp/pooled.json
+```
+
+`--debug` prints the full traceback, which the orchestrator never shows. At the
+orchestrator, a failure is reported only as its code, plus the line of your file
+for `code_error` (for example "aggregate() could not be imported, is missing, or
+raised an exception (analysis.py line 7)").
+
 ## `schema.json`
 
 ```json
@@ -102,7 +142,7 @@ An error result has `datasetSha256` only when the CSV was read.
 | `schema_not_found` | No `schema.json`. |
 | `invalid_schema` | `schema.json` cannot be read, is not valid, has an unknown type or names a column twice. |
 | `schema_mismatch` | The CSV columns are not the schema's, or a value is not of its column's type. |
-| `code_error` | The researcher's file could not be imported, has no `site_analysis`, or `site_analysis` raised an exception (also `sys.exit`). |
+| `code_error` | The researcher's file could not be imported, has no `site_analysis` (or `aggregate` with `--aggregate`), or the function raised an exception (also `sys.exit`). |
 | `invalid_result` | The return value is not a dict, cannot be written as JSON, or has no valid `n`. |
 | `result_too_large` | The return value is larger than 61,440 bytes. |
 

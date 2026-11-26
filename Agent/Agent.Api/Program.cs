@@ -135,6 +135,9 @@ var federatedTaskSettings = FederatedTaskSettings.FromConfiguration(configuratio
 builder.Services.AddSingleton(federatedTaskSettings);
 builder.Services.AddSingleton(new AgentStartTime(TimeProvider.System.GetUtcNow()));
 builder.Services.AddSingleton<DockerFaultTimes>();
+// A wrong role would silently run the wrong job: refuse to start.
+if (federatedTaskSettings.RoleProblem() is { } roleProblem && !Microsoft.EntityFrameworkCore.EF.IsDesignTime)
+    throw new InvalidOperationException("Federated tasks: " + roleProblem);
 if (federatedTaskSettings.ApprovedImagesProblem() is { } approvedImagesProblem)
     Log.Error("Federated tasks: {Problem}", approvedImagesProblem);
 if (federatedTaskSettings.RunSettingsProblem() is { } runSettingsProblem)
@@ -190,7 +193,11 @@ builder.Services.AddScoped<IEncDecHelper, EncDecHelper>();
 builder.Services.AddScoped<IDareSyncHelper, DareSyncHelper>();
 builder.Services.AddScoped<ISubmissionHelper, SubmissionHelper>();
 builder.Services.AddScoped<IDoSyncWork, DoSyncWork>();
-builder.Services.AddScoped<IDoFederatedTaskWork, DoFederatedTaskWork>();
+// The aggregator role runs aggregate() for the orchestrator instead of this TRE's federated tasks.
+if (federatedTaskSettings.IsAggregator)
+    builder.Services.AddScoped<IDoFederatedTaskWork, DoFederatedAggregationWork>();
+else
+    builder.Services.AddScoped<IDoFederatedTaskWork, DoFederatedTaskWork>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddScoped<IDoAgentWork, DoAgentWork>();
 builder.Services.AddScoped<IDoHealthCheckWork, DoHealthCheckWork>();
@@ -327,32 +334,36 @@ using (var scope = app.Services.CreateScope())
     }
     credDb.Database.Migrate();
 
-    // Federated tasks read their datasets from a dedicated TRE bucket. Don't fail startup if
-    // storage is unreachable: tasks report internal_error until it is back.
-    var minioTreHelper = scope.ServiceProvider.GetRequiredService<IMinioTreHelper>();
-    if (!await minioTreHelper.CreateBucket(federatedTaskSettings.DatasetBucket))
+    // The aggregator role has no datasets or outputs of its own: the hospital-only setup is skipped.
+    if (!federatedTaskSettings.IsAggregator)
     {
-        Log.Error("Could not create federated task dataset bucket {DatasetBucket}", federatedTaskSettings.DatasetBucket);
-    }
+        // Federated tasks read their datasets from a dedicated TRE bucket. Don't fail startup if
+        // storage is unreachable: tasks report internal_error until it is back.
+        var minioTreHelper = scope.ServiceProvider.GetRequiredService<IMinioTreHelper>();
+        if (!await minioTreHelper.CreateBucket(federatedTaskSettings.DatasetBucket))
+        {
+            Log.Error("Could not create federated task dataset bucket {DatasetBucket}", federatedTaskSettings.DatasetBucket);
+        }
 
-    // Lets a TRE admin upload datasets (csv only, under the dataset prefix) from the console.
-    var uploadPolicy = DatasetUploadPolicy.Build(
-        federatedTaskSettings.DatasetBucket, federatedTaskSettings.DatasetPrefix, federatedTaskSettings.AllowedExtensions);
-    if (!await minioTreHelper.PutCannedPolicyAsync(federatedTaskSettings.UploadPolicyName, uploadPolicy))
-    {
-        Log.Error("Could not create dataset upload policy {PolicyName}", federatedTaskSettings.UploadPolicyName);
-    }
+        // Lets a TRE admin upload datasets (csv only, under the dataset prefix) from the console.
+        var uploadPolicy = DatasetUploadPolicy.Build(
+            federatedTaskSettings.DatasetBucket, federatedTaskSettings.DatasetPrefix, federatedTaskSettings.AllowedExtensions);
+        if (!await minioTreHelper.PutCannedPolicyAsync(federatedTaskSettings.UploadPolicyName, uploadPolicy))
+        {
+            Log.Error("Could not create dataset upload policy {PolicyName}", federatedTaskSettings.UploadPolicyName);
+        }
 
-    // Result files of federated tasks live in their own bucket, readable (not writable) by the TRE custodian.
-    if (!await minioTreHelper.CreateBucket(federatedTaskSettings.OutputBucket))
-    {
-        Log.Error("Could not create federated task output bucket {OutputBucket}", federatedTaskSettings.OutputBucket);
-    }
+        // Result files of federated tasks live in their own bucket, readable (not writable) by the TRE custodian.
+        if (!await minioTreHelper.CreateBucket(federatedTaskSettings.OutputBucket))
+        {
+            Log.Error("Could not create federated task output bucket {OutputBucket}", federatedTaskSettings.OutputBucket);
+        }
 
-    var outputReadPolicy = OutputReadPolicy.Build(federatedTaskSettings.OutputBucket);
-    if (!await minioTreHelper.PutCannedPolicyAsync(federatedTaskSettings.OutputReadPolicyName, outputReadPolicy))
-    {
-        Log.Error("Could not create output read policy {PolicyName}", federatedTaskSettings.OutputReadPolicyName);
+        var outputReadPolicy = OutputReadPolicy.Build(federatedTaskSettings.OutputBucket);
+        if (!await minioTreHelper.PutCannedPolicyAsync(federatedTaskSettings.OutputReadPolicyName, outputReadPolicy))
+        {
+            Log.Error("Could not create output read policy {PolicyName}", federatedTaskSettings.OutputReadPolicyName);
+        }
     }
 
     // Code tasks run through Docker. Don't fail startup if it is unreachable: code tasks are not run until it is

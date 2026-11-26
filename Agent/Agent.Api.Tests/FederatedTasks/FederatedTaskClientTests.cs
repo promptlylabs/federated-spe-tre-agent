@@ -295,4 +295,35 @@ public class FederatedTaskClientTests
         Assert.Equal("input_checks", Field(handler, "RejectedAt"));
         Assert.Equal("dataset_not_found", Field(handler, "ErrorCode"));
     }
+
+    [Fact]
+    public async Task GetPendingAggregations_reads_the_jobs()
+    {
+        var id = Guid.NewGuid();
+        var handler = new StubHandler(HttpStatusCode.OK, $"[{{\"versionId\":\"{id}\",\"studyId\":\"s\",\"version\":2,\"tesTaskJson\":\"{{}}\",\"codeSha256\":\"c\",\"resultsJson\":\"[]\"}}]");
+
+        var job = Assert.Single(await Client(handler).GetPendingAggregationsAsync());
+
+        Assert.Equal("http://submission/api/FederatedAggregation/GetPendingAggregations", handler.Request!.RequestUri!.ToString());
+        Assert.Equal((id, 2, "[]"), (job.VersionId, job.Version, job.ResultsJson));
+    }
+
+    [Theory]
+    [InlineData("aggregated", null, true, null)]
+    [InlineData("failed", "code_error", false, 7)]
+    [InlineData("running", null, false, null)]
+    public async Task ReportAggregation_sends_the_fields_and_the_file_only_when_aggregated(string phase, string? code, bool withFile, int? line)
+    {
+        var handler = new StubHandler(HttpStatusCode.OK, "{}");
+
+        var outcome = await Client(handler).ReportAggregationAsync(new FederatedAggregationReport("v-1", phase, code, line),
+            withFile ? Encoding.UTF8.GetBytes("{\"pooled\":1}") : null);
+
+        Assert.Equal(200, outcome.StatusCode);
+        Assert.Equal("http://submission/api/FederatedAggregation/ReportAggregation", handler.Request!.RequestUri!.ToString());
+        Assert.Equal(("v-1", phase), (Field(handler, "VersionId"), Field(handler, "Phase")));
+        Assert.Equal(code != null, handler.Parts.Any(p => p.Name == "ErrorCode"));
+        Assert.Equal(line?.ToString(), handler.Parts.SingleOrDefault(p => p.Name == "ErrorLine") is { } part ? Encoding.UTF8.GetString(part.Bytes) : null);
+        Assert.Equal(withFile, handler.Parts.Any(p => p.Name == FederatedReportFields.ResultFile && p.FileName != null));
+    }
 }

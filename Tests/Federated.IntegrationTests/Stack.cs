@@ -25,7 +25,7 @@ public record HospitalPart(string Tre, string TaskId, string Phase);
 /// phase.
 /// </summary>
 public record StudyView(int Version, string State, IReadOnlyList<HospitalPart> Hospitals, string? Outcome = null,
-    string? OutcomeReason = null, string? OutcomeMessage = null)
+    string? OutcomeReason = null, string? OutcomeMessage = null, string? AggregationErrorCode = null, string? PooledResultSha256 = null)
 {
     public string PhaseOf(string tre) => Hospitals.Single(h => h.Tre == tre).Phase;
 }
@@ -73,6 +73,80 @@ internal sealed class TokenSource(HttpClient http, Uri keycloak, string realm, s
     }
 }
 
+/// <summary>Fetches a client-credentials token (a TRE Agent's service account), and reuses it until shortly before it expires.</summary>
+internal sealed class ClientTokenSource(HttpClient http, Uri keycloak, string realm, string client, string secret)
+{
+    private string? cached;
+    private DateTime renewAt;
+
+    public async Task<string> GetAsync()
+    {
+        if (cached != null && DateTime.UtcNow < renewAt) return cached;
+        using var response = await http.PostAsync(new Uri(keycloak, $"/realms/{realm}/protocol/openid-connect/token"),
+            new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["grant_type"] = "client_credentials", ["client_id"] = client, ["client_secret"] = secret
+            }));
+        response.EnsureSuccessStatusCode();
+        var json = JsonNode.Parse(await response.Content.ReadAsStringAsync())!;
+        var lifetime = json["expires_in"]?.GetValue<int>() ?? 60;
+        renewAt = DateTime.UtcNow.AddSeconds(Math.Max(0, lifetime - 30));
+        return cached = json["access_token"]!.GetValue<string>();
+    }
+}
+
+/// <summary>
+/// Stands in for other-tre's Agent, which this stack doesn't run (until ANZE-6145): picks its part up and releases a
+/// result chosen by the test, as an Agent does after the hospital's reviewer approved it. Lets a study pool two hospitals.
+/// </summary>
+public sealed class OtherTreAgent
+{
+    private readonly HttpClient http;
+    private readonly StackSettings settings;
+    private readonly ClientTokenSource token;
+
+    internal OtherTreAgent(HttpClient http, StackSettings s)
+    {
+        this.http = http;
+        settings = s;
+        token = new ClientTokenSource(http, s.Keycloak, "Dare-Control", "tre-other-tre", "dev-tre-other-tre-secret");
+    }
+
+    /// <summary>Moves other-tre's part through running and waiting for review, then reports it COMPLETE with <paramref name="value"/>.</summary>
+    public async Task ReleaseAsync(string taskId, string studyId, JsonObject value)
+    {
+        foreach (var phase in new[] { "running", "waiting_for_output_approval" })
+        {
+            using var progress = await SendAsync(HttpMethod.Post, "/api/FederatedTask/ReportProgress",
+                new StringContent(new JsonObject { ["task_id"] = taskId, ["phase"] = phase }.ToJsonString(), Encoding.UTF8, "application/json"));
+            progress.EnsureSuccessStatusCode();
+        }
+
+        var document = new JsonObject
+        {
+            ["schemaVersion"] = 1, ["taskId"] = taskId, ["tre"] = StackSettings.OtherTre, ["studyId"] = studyId,
+            ["operation"] = "run-analysis", ["dataset"] = "cohort_2024", ["datasetSha256"] = new string('a', 64),
+            ["completedAt"] = DateTimeOffset.UtcNow.ToString("O"),
+            ["result"] = new JsonObject { ["kind"] = "analysis", ["n"] = value["n"]!.GetValue<int>(), ["value"] = value.DeepClone() }
+        };
+        using var form = new MultipartFormDataContent
+        {
+            { new StringContent(taskId), "TaskId" },
+            { new StringContent("COMPLETE"), "State" },
+            { new ByteArrayContent(Encoding.UTF8.GetBytes(document.ToJsonString())), "result", "result.json" }
+        };
+        using var report = await SendAsync(HttpMethod.Post, "/api/FederatedTask/ReportResult", form);
+        report.EnsureSuccessStatusCode();
+    }
+
+    private async Task<HttpResponseMessage> SendAsync(HttpMethod method, string path, HttpContent content)
+    {
+        using var request = new HttpRequestMessage(method, new Uri(settings.Submission, path)) { Content = content };
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await token.GetAsync());
+        return await http.SendAsync(request);
+    }
+}
+
 /// <summary>The orchestrator side: queues tasks and reads their state and stored result.</summary>
 public sealed class SubmissionClient
 {
@@ -100,6 +174,8 @@ public sealed class SubmissionClient
 
     /// <summary>The lowercase hex SHA-256 of the code's UTF-8 bytes, as the tag fed.code_sha256 must hold.</summary>
     public static string CodeSha256(string code) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(code)));
+
+    public static string CodeSha256Bytes(byte[] bytes) => Convert.ToHexStringLower(SHA256.HashData(bytes));
 
     /// <summary>
     /// A code task in the shape FederatedTesProfile.BuildCodeTask builds (see docs/federated-tasks.md, "Code tasks"):
@@ -147,7 +223,8 @@ public sealed class SubmissionClient
             view["hospitals"]!.AsArray()
                 .Select(h => new HospitalPart(h!["tre"]!.GetValue<string>(), h["task_id"]!.GetValue<string>(), h["phase"]!.GetValue<string>()))
                 .ToList(),
-            view["outcome"]?.GetValue<string>(), view["outcome_reason"]?.GetValue<string>(), view["outcome_message"]?.GetValue<string>());
+            view["outcome"]?.GetValue<string>(), view["outcome_reason"]?.GetValue<string>(), view["outcome_message"]?.GetValue<string>(),
+            view["aggregation_error_code"]?.GetValue<string>(), view["pooled_result_sha256"]?.GetValue<string>());
     }
 
     /// <summary>Null for an empty or non-JSON body (a 401, or a server error page), so the status code is still reported.</summary>
@@ -368,6 +445,18 @@ public sealed class ResultStore : IDisposable
             if (listed.IsTruncated != true) return false;
             request.ContinuationToken = listed.NextContinuationToken;
         }
+    }
+
+    /// <summary>The pooled result stored for a study version (studies/{versionId}/{sha256}.json), or null.</summary>
+    public async Task<byte[]?> GetPooledAsync(string versionId)
+    {
+        var listed = await s3.ListObjectsV2Async(new ListObjectsV2Request { BucketName = Bucket, Prefix = $"studies/{versionId}/" });
+        var key = (listed.S3Objects ?? []).Select(o => o.Key).SingleOrDefault();
+        if (key == null) return null;
+        using var response = await s3.GetObjectAsync(Bucket, key);
+        using var buffer = new MemoryStream();
+        await response.ResponseStream.CopyToAsync(buffer);
+        return buffer.ToArray();
     }
 
     public void Dispose() => s3.Dispose();

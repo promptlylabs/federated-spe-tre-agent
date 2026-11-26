@@ -164,6 +164,88 @@ public class DockerCodeRunnerTests
         }
     }
 
+    private DockerCodeRunner Aggregator() =>
+        new(_docker, new FederatedTaskSettings { Role = FederatedTaskSettings.AggregatorRole, ApprovedImages = [DockerFactAttribute.RunnerImage] });
+
+    /// <summary>The ticket's no-network scenario for aggregate(), which the hospitals' code scan keeps off the dev stack.</summary>
+    [DockerFact]
+    public async Task Aggregate_has_no_network_and_its_run_is_the_aggregator_s_only()
+    {
+        const string code = """
+            import socket
+
+            def aggregate(results):
+                try:
+                    socket.create_connection(("1.1.1.1", 53), timeout=5).close()
+                    connected = True
+                except OSError:
+                    connected = False
+                return {"n": sum(r["n"] for r in results), "connected": connected}
+            """;
+        var aggregator = Aggregator();
+        var taskId = NewTaskId();
+        var request = new CodeRunRequest(taskId, DockerFactAttribute.RunnerImage, "", null,
+            [
+                new StagedFile("code/analysis.py", new MemoryStream(Encoding.UTF8.GetBytes(code))),
+                new StagedFile("data/results.json", new MemoryStream("[{\"n\":3},{\"n\":1}]"u8.ToArray()))
+            ],
+            1, 2048 * MiB, 256 * MiB,
+            ["run-analysis", "--aggregate", "/code/analysis.py", "/data/results.json", "/outputs/result.json"]);
+        try
+        {
+            var (_, result) = await RunToEndAsync(aggregator, request);
+
+            Assert.Equal("ok", result.GetProperty("status").GetString());
+            Assert.Equal(4, result.GetProperty("n").GetInt32());
+            Assert.False(result.GetProperty("result").GetProperty("connected").GetBoolean());
+            Assert.Contains(await aggregator.ListAsync(CancellationToken.None), r => r.TaskId == taskId);
+            Assert.DoesNotContain(await Runner().ListAsync(CancellationToken.None), r => r.TaskId == taskId);
+        }
+        finally
+        {
+            await RemoveAndAssertNothingLeftAsync(aggregator, taskId);
+        }
+    }
+
+    /// <summary>
+    /// Two Agents on one Docker daemon (the dev stack): each sees only its own runs and staged data. A run from before the
+    /// owner label belongs to the hospital Agent, which was the only one then.
+    /// </summary>
+    [DockerFact]
+    public async Task Runs_and_staged_data_are_seen_only_by_their_owner()
+    {
+        var aggregatorOrphan = NewTaskId();
+        var unlabelledRun = NewTaskId();
+        await _docker.Volumes.CreateAsync(new VolumesCreateParameters
+        {
+            Name = $"fed-data-{aggregatorOrphan}",
+            Labels = new Dictionary<string, string> { ["fed.task-id"] = aggregatorOrphan, ["fed.role"] = "data", ["fed.owner"] = "aggregator" }
+        });
+        await _docker.Containers.CreateContainerAsync(new CreateContainerParameters
+        {
+            Name = $"fed-run-{unlabelledRun}",
+            Image = DockerFactAttribute.RunnerImage,
+            Labels = new Dictionary<string, string> { ["fed.task-id"] = unlabelledRun, ["fed.role"] = "run" }
+        });
+        try
+        {
+            var hospital = Runner();
+            var aggregator = Aggregator();
+
+            Assert.Contains(aggregatorOrphan, await aggregator.ListOrphanedTaskIdsAsync(CancellationToken.None));
+            Assert.DoesNotContain(aggregatorOrphan, await hospital.ListOrphanedTaskIdsAsync(CancellationToken.None));
+            Assert.Contains(await hospital.ListAsync(CancellationToken.None), r => r.TaskId == unlabelledRun);
+            Assert.DoesNotContain(await aggregator.ListAsync(CancellationToken.None), r => r.TaskId == unlabelledRun);
+        }
+        finally
+        {
+            await Aggregator().RemoveAsync(aggregatorOrphan, CancellationToken.None);
+            await Runner().RemoveAsync(unlabelledRun, CancellationToken.None);
+            await AssertNothingLabelledAsync(aggregatorOrphan);
+            await AssertNothingLabelledAsync(unlabelledRun);
+        }
+    }
+
     [DockerFact]
     public async Task WriteToDataset_Fails_DataUnchanged()
     {

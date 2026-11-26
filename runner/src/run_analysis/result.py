@@ -42,9 +42,9 @@ def _plain(value: object) -> object:
     raise _NotSerialisable
 
 
-def check_result(value: object) -> tuple[dict, int]:
+def check_result(value: object, function: str = "site_analysis") -> tuple[dict, int]:
     if not isinstance(value, dict):
-        raise AnalysisError("invalid_result", f"site_analysis must return a dict, not {type(value).__name__}")
+        raise AnalysisError("invalid_result", f"{function} must return a dict, not {type(value).__name__}")
     try:
         result = _plain(value)
     except _NotFinite:
@@ -66,8 +66,13 @@ def check_result(value: object) -> tuple[dict, int]:
     return result, n
 
 
-def write_ok(path: Path, dataset_sha256: str, n: int, result: dict) -> None:
-    path.write_bytes(encode({"status": "ok", "datasetSha256": dataset_sha256, "n": n, "result": result}))
+def write_ok(path: Path, dataset_sha256: str | None, n: int, result: dict) -> None:
+    """dataset_sha256 is None for aggregate(), which reads the hospitals' results, not a dataset."""
+    doc = {"status": "ok"}
+    if dataset_sha256 is not None:
+        doc["datasetSha256"] = dataset_sha256
+    doc.update({"n": n, "result": result})
+    path.write_bytes(encode(doc))
 
 
 def write_error(path: Path, code: str, message: str, dataset_sha256: str | None) -> None:

@@ -37,6 +37,7 @@ Keycloak keeps no data: recreating its container (for example after a realm file
 |---|---|---|
 | Submission.Api (orchestrator) | http://localhost:5034 | Keycloak token, see below |
 | Agent.Api (TRE Agent) | http://localhost:5269/hangfire (jobs dashboard) | `admin` / `password` |
+| Agent.Api (aggregator: pools the hospitals' results with `aggregate()`) | http://localhost:5289/hangfire | `admin` / `password` |
 | Data Egress UI (output review) | http://localhost:5280 | `reviewer` / `Reviewer1!` |
 | Data Egress API | http://localhost:5279/swagger | Keycloak token (realm `Data-Egress`) |
 | RustFS console (TRE storage) | http://localhost:9001/rustfs/console/ | access key `rustfsadmin` / `rustfsadmin123` |
@@ -51,6 +52,8 @@ Keycloak users:
 | `Dare-Control` | `control-admin` | `ControlAdmin1!` | `dare-control-admin`: can queue tasks |
 | `Dare-Control` | `tre-agent-my-tre` | `TreAgent1!` | `dare-tre-admin`: a TRE human admin. Only for the negative test that it cannot call the Agent endpoints. The Agent uses the client `tre-my-tre`. |
 | `Dare-Control` | client `tre-my-tre` | secret `dev-tre-my-tre-secret` | service account with `dare-tre-admin`: what the Agent uses to call Submission |
+| `Dare-Control` | client `tre-other-tre` | secret `dev-tre-other-tre-secret` | service account with `dare-tre-admin` for `other-tre`, which has no Agent: the integration tests use it to release `other-tre`'s result, so a study pools two hospitals before a second Agent exists (ANZE-6145) |
+| `Dare-Control` | client `federated-aggregator` | secret `dev-federated-aggregator-secret` | service account with `dare-federated-aggregator`: what the aggregator uses to call Submission |
 | `tre-test` | `uploader` | `uploader123` | group `dataset-upload`: RustFS console upload |
 | `tre-test` | `egress-app` | `EgressApp1!` | `data-egress-admin`: the Egress app's login to the Agent, to send decisions (client `Dare-TRE-API`, secret `dev-dare-tre-api-secret`) |
 | `Data-Egress` | `reviewer` | `Reviewer1!` | `data-egress-admin`: reviews results in the Egress app |
@@ -59,6 +62,10 @@ Keycloak users:
 The Egress app's clients in `Data-Egress` are `Data-Egress-API` (secret `dev-data-egress-api-secret`, password grant, used by `task.sh`) and `Data-Egress-UI` (secret `dev-data-egress-ui-secret`). Emails to reviewers are switched off.
 
 The `uploader` login through the RustFS console's "TRE Keycloak" button loops. That is a known RustFS console bug (rustfs/console#271), fixed upstream but not yet released. Use the access-key login for now.
+
+## Pooling
+
+When a study is `ready_for_aggregation`, the `aggregator` service (the Agent image in the Aggregator role) runs the researcher's `aggregate(results)` on the released results, within about a minute, and Submission stores the pooled result in the orchestrator's RustFS under `studies/<versionId>/`. Every file in `code/` defines both `site_analysis` and `aggregate`; Submission refuses code without `aggregate`. With only my-tre's Agent here, a study reaches `ready_for_aggregation` only when the integration tests release `other-tre`'s result themselves. A ready study that isn't pooled in 10 minutes fails with `aggregation_timeout`; `RetryAggregation` reopens it. `./task.sh pooled <version-id>` shows the version's outcome and pooled hash. See "Pooling the results" in `docs/federated-tasks.md`.
 
 ## Try it
 
@@ -238,6 +245,9 @@ The Agent image installs Python and a pinned Semgrep (`ScanRules/requirements.tx
 | Study versions | cancel while `my-tre` waits for review and `other-tre` is queued | version `canceling`, a new version accepted at once; `ended` once `my-tre` confirms |
 | Study versions | a study naming only `my-tre` | Enqueue refused with 400 `invalid_task` |
 | Study outcome (R2) | `my-tre`'s reviewer rejects, `other-tre` is queued | at the next sweep: outcome `incomplete`, `minimum_unreachable`; `other-tre` `canceled`; version `ended` and a new version accepted |
+| Pooling | `my-tre` releases (its reviewer approves), the test releases `other-tre`'s result | outcome `aggregated`; the pooled result in `studies/<versionId>/` has the summed `n` and the `n`-weighted mean, and its hash is `pooled_result_sha256` |
+| Pooling | as above, but `aggregate()` raises | outcome `failed`, `aggregation_error_code` `code_error`; no pooled result |
+| Pooling | code with no `aggregate` | Enqueue refused with 400 `invalid_task` |
 
 "Image not approved" cannot happen on this stack (Submission accepts only `python-runner:1`, and the Agent approves it); unit tests cover it.
 

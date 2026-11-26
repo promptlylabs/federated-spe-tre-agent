@@ -81,6 +81,12 @@ namespace Submission.Api.Migrations
 
                     NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
 
+                    b.Property<string>("AggregationErrorCode")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("AggregationStartedAt")
+                        .HasColumnType("timestamp with time zone");
+
                     b.Property<string>("CodeSha256")
                         .IsRequired()
                         .HasColumnType("text");
@@ -100,6 +106,18 @@ namespace Submission.Api.Migrations
 
                     b.Property<string>("OutcomeReason")
                         .HasColumnType("text");
+
+                    b.Property<string>("PooledResultBucket")
+                        .HasColumnType("text");
+
+                    b.Property<string>("PooledResultKey")
+                        .HasColumnType("text");
+
+                    b.Property<string>("PooledResultSha256")
+                        .HasColumnType("text");
+
+                    b.Property<DateTime?>("ReadyAt")
+                        .HasColumnType("timestamp with time zone");
 
                     b.Property<string>("Sites")
                         .IsRequired()

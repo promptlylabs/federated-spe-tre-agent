@@ -50,6 +50,11 @@ public class DoFederatedTaskWorkTests
             return Task.FromResult(ProgressOutcomes.Count > 0 ? ProgressOutcomes.Dequeue() : new FederatedReportOutcome(200, null, null, null, null));
         }
 
+        public Task<List<FederatedAggregationJob>> GetPendingAggregationsAsync() => throw new NotSupportedException();
+
+        public Task<FederatedReportOutcome> ReportAggregationAsync(FederatedAggregationReport report, byte[]? pooledFile) =>
+            throw new NotSupportedException();
+
         public Task<FederatedReportOutcome> ReportAsync(FederatedTaskResultReport report, byte[]? resultFile)
         {
             Order.Add("report:" + report.State);

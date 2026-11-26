@@ -5,7 +5,8 @@
   "roles": {
     "realm": [
       { "name": "dare-control-admin" },
-      { "name": "dare-tre-admin" }
+      { "name": "dare-tre-admin" },
+      { "name": "dare-federated-aggregator" }
     ]
   },
   "clients": [
@@ -51,6 +52,49 @@
         }
       ]
     }
+,
+    {
+      "clientId": "tre-other-tre",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "dev-tre-other-tre-secret",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "protocolMappers": [
+        {
+          "name": "aud-dare-control-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "Dare-Control-API",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    },
+    {
+      "clientId": "federated-aggregator",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "dev-federated-aggregator-secret",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "protocolMappers": [
+        {
+          "name": "aud-dare-control-api",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.client.audience": "Dare-Control-API",
+            "access.token.claim": "true",
+            "id.token.claim": "false"
+          }
+        }
+      ]
+    }
   ],
   "users": [
     {
@@ -78,6 +122,18 @@
       "enabled": true,
       "serviceAccountClientId": "tre-my-tre",
       "realmRoles": ["dare-tre-admin"]
+    },
+    {
+      "username": "service-account-tre-other-tre",
+      "enabled": true,
+      "serviceAccountClientId": "tre-other-tre",
+      "realmRoles": ["dare-tre-admin"]
+    },
+    {
+      "username": "service-account-federated-aggregator",
+      "enabled": true,
+      "serviceAccountClientId": "federated-aggregator",
+      "realmRoles": ["dare-federated-aggregator"]
     }
   ]
 }

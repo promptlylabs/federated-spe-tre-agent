@@ -184,6 +184,30 @@ namespace Submission.Api.Tests
         }
 
         [Fact]
+        public async Task Enqueue_code_without_aggregate_is_refused()
+        {
+            using var db = NewDb();
+            var code = "def site_analysis(df):\n    return {'n': len(df)}\n";
+
+            var error = AssertError(await ControllerFor(db, "dare-admin").Enqueue(CodeTask(code: code)), 400, FederatedTaskErrorCodes.InvalidTask);
+
+            Assert.Contains("aggregate(results)", error.ErrorMessage);
+            Assert.Empty(db.FederatedStudyVersions);
+        }
+
+        [Theory]
+        [InlineData("def aggregate (results):\n    return results[0]\n")]
+        [InlineData("def  aggregate(results):\n    return results[0]\n")]
+        [InlineData("\uFEFFdef aggregate(results):\n    return results[0]\n")]
+        public async Task Enqueue_accepts_aggregate_written_with_harmless_variations(string aggregate)
+        {
+            using var db = NewDb();
+            var code = aggregate + "\n\ndef site_analysis(df):\n    return {'n': len(df)}\n";
+
+            Assert.IsType<OkObjectResult>(await ControllerFor(db, "dare-admin").Enqueue(CodeTask(code: code)));
+        }
+
+        [Fact]
         public async Task Enqueue_sets_the_deadline_from_settings()
         {
             using var db = NewDb();
@@ -342,7 +366,7 @@ namespace Submission.Api.Tests
             AssertError(await Progress(AgentControllerFor(db, "tre-a-client"), partB.TaskId, "running"), 404, FederatedTaskErrorCodes.TaskNotFound);
         }
 
-        private const string Code = "def site_analysis(df):\n    return {'n': len(df)}\n";
+        private const string Code = "def site_analysis(df):\n    return {'n': len(df)}\n\n\ndef aggregate(results):\n    return {'n': sum(r['n'] for r in results)}\n";
 
         private static TesTask CodeTask(double? ramGb = 8, long? cpuCores = 2, double? diskGb = 10, string code = Code) => new()
         {
@@ -386,7 +410,8 @@ namespace Submission.Api.Tests
 
         // Non-ASCII, a tab and Windows line endings: the JSON serialisation round trip must not change a byte. (The
         // in-memory database keeps the string as is; the Postgres round trip was checked on the dev stack.)
-        private const string AwkwardCode = "# é\tcafé\r\ndef site_analysis(df):\r\n    return {'n': len(df)}\r\n";
+        // CRLF line endings: the intake check for aggregate() must still find it.
+        private const string AwkwardCode = "# é\tcafé\r\ndef site_analysis(df):\r\n    return {'n': len(df)}\r\n\r\ndef aggregate(results):\r\n    return results[0]\r\n";
 
         [Fact]
         public async Task Agent_of_the_addressed_tre_receives_the_code_unchanged()
@@ -523,11 +548,14 @@ namespace Submission.Api.Tests
         [InlineData(4L, 16.0, double.NaN, "FederatedTaskSettings:MaxDiskGb must be more than 0")]
         [InlineData(4L, 16.0, 20.0, "FederatedTaskSettings:StudyTimeoutMinutes must be more than 0", 0)]
         [InlineData(4L, 16.0, 20.0, "FederatedTaskSettings:StudySweepSeconds must be more than 0", 10080, 0)]
-        public void Non_positive_maximums_are_problems(long cpu, double ram, double disk, string problem, int timeoutMinutes = 10080, int sweepSeconds = 300)
+        [InlineData(4L, 16.0, 20.0, "FederatedTaskSettings:AggregationTimeoutMinutes must be more than 0", 10080, 300, 0)]
+        public void Non_positive_maximums_are_problems(long cpu, double ram, double disk, string problem, int timeoutMinutes = 10080,
+            int sweepSeconds = 300, int aggregationMinutes = 1440)
         {
             var settings = new FederatedTaskSettings
             {
-                MaxCpuCores = cpu, MaxRamGb = ram, MaxDiskGb = disk, StudyTimeoutMinutes = timeoutMinutes, StudySweepSeconds = sweepSeconds
+                MaxCpuCores = cpu, MaxRamGb = ram, MaxDiskGb = disk, StudyTimeoutMinutes = timeoutMinutes, StudySweepSeconds = sweepSeconds,
+                AggregationTimeoutMinutes = aggregationMinutes
             };
 
             Assert.Equal([problem], settings.Problems());

@@ -130,6 +130,27 @@ namespace Agent.Api.Models
         /// <summary>How many researcher-code containers may run at the same time on this Agent.</summary>
         public int MaxConcurrentRuns { get; set; } = 2;
 
+        public const string HospitalRole = "Hospital";
+        public const string AggregatorRole = "Aggregator";
+
+        /// <summary>
+        /// Hospital (default): poll this TRE's federated tasks. Aggregator: run the researcher's aggregate() on ready study
+        /// versions for the orchestrator; the hospital-only setup (datasets, outputs, Egress, TreName) is skipped. The code scan
+        /// runs in both roles, each with its own rule file (ScanRulesPath).
+        /// </summary>
+        public string Role { get; set; } = HospitalRole;
+
+        public bool IsAggregator => Role == AggregatorRole;
+
+        /// <summary>The realm role this Agent's service account must have to call Submission's routes for its role.</summary>
+        public string SubmissionRole => IsAggregator ? "dare-federated-aggregator" : "dare-tre-admin";
+
+        /// <summary>A setting that stops the Agent from working in its role; the Agent refuses to start with one.</summary>
+        public string? RoleProblem() =>
+            Role is not (HospitalRole or AggregatorRole) ? "FederatedTaskSettings:Role must be Hospital or Aggregator"
+            : IsAggregator && ApprovedImages.Length == 0 ? "FederatedTaskSettings:ApprovedImages must list the image aggregate() runs in when Role is Aggregator"
+            : null;
+
         /// <summary>
         /// A message for the site admin when a code-task setting stops code tasks from working: MaxConcurrentRuns of 0 or
         /// less (no code task ever starts), MaxRunMinutes of 0 or less (every run times out at once) or ScanTimeoutSeconds

@@ -140,7 +140,7 @@ namespace Agent.Api.FederatedTasks
             using var codeStream = new MemoryStream(Encoding.UTF8.GetBytes(code));
 
             var dataFolder = $"data/{spec.Dataset}/";
-            var resources = task.Resources;
+            var (cpu, memory, tmp) = LimitsFor(taskId, task.Resources, _settings);
             var request = new CodeRunRequest(
                 taskId,
                 task.Executors![0].Image,
@@ -151,19 +151,25 @@ namespace Agent.Api.FederatedTasks
                     new StagedFile(dataFolder + SchemaFileName, schema),
                     new StagedFile("code/analysis.py", codeStream)
                 ],
-                AtLeast(taskId, "cpu_cores",
-                    Limit(taskId, "cpu_cores", resources?.CpuCores, _settings.DefaultCpuCores, _settings.MaxCpuCores),
-                    MinCpuCores),
-                (long)AtLeast(taskId, "ram_gb bytes",
-                    Limit(taskId, "ram_gb", resources?.RamGb, _settings.DefaultRamGb, _settings.MaxRamGb) * BytesPerGiB,
-                    MinMemoryBytes),
-                (long)AtLeast(taskId, "disk_gb bytes",
-                    Limit(taskId, "disk_gb", resources?.DiskGb, _settings.DefaultDiskGb, _settings.MaxDiskGb) * BytesPerGiB,
-                    MinTmpBytes));
+                cpu, memory, tmp);
 
             await _runner.StartAsync(request, ct);
             return ExecutionResult.InProgress();
         }
+
+        /// <summary>
+        /// A run's CPU, memory and /tmp: the task's request, or the default; never above the maximum, never below a floor
+        /// (Docker reads 0 as no limit). Shared with the aggregator, so both run under the same rules.
+        /// </summary>
+        public static (double Cpu, long Memory, long Tmp) LimitsFor(string taskId, TesResources? resources, FederatedTaskSettings settings) =>
+        (
+            AtLeast(taskId, "cpu_cores",
+                Limit(taskId, "cpu_cores", resources?.CpuCores, settings.DefaultCpuCores, settings.MaxCpuCores), MinCpuCores),
+            (long)AtLeast(taskId, "ram_gb bytes",
+                Limit(taskId, "ram_gb", resources?.RamGb, settings.DefaultRamGb, settings.MaxRamGb) * BytesPerGiB, MinMemoryBytes),
+            (long)AtLeast(taskId, "disk_gb bytes",
+                Limit(taskId, "disk_gb", resources?.DiskGb, settings.DefaultDiskGb, settings.MaxDiskGb) * BytesPerGiB, MinTmpBytes)
+        );
 
         private async Task<Stream> OpenAsync(string key, CancellationToken ct)
         {
