@@ -119,9 +119,26 @@ namespace Submission.Api.Tests
 
         private static IFormFile File(byte[] bytes) => new FormFile(new MemoryStream(bytes), 0, bytes.Length, FederatedReportFields.ResultFile, "pooled.json");
 
-        private Task<IActionResult> Report(FederatedStudyVersion v, string phase, string? errorCode = null, byte[]? file = null) =>
-            Controller().ReportAggregation(new FederatedAggregationReportForm { VersionId = v.VersionId.ToString(), Phase = phase, ErrorCode = errorCode },
+        private Task<IActionResult> Report(FederatedStudyVersion v, string phase, string? errorCode = null, byte[]? file = null, int? errorLine = null) =>
+            Controller().ReportAggregation(new FederatedAggregationReportForm { VersionId = v.VersionId.ToString(), Phase = phase, ErrorCode = errorCode, ErrorLine = errorLine },
                 file is null ? null : File(file));
+
+        /// <summary>
+        /// The line of the researcher's file that failed helps them fix aggregate(); it's a number, so no text from the code
+        /// reaches Submission. Only code_error takes one.
+        /// </summary>
+        [Fact]
+        public async Task Code_error_keeps_the_line_number_and_nothing_else()
+        {
+            var version = Seed(FederatedStudyOutcome.ReadyForAggregation, "{\"n\":3}", "{\"n\":1}");
+            var other = Seed(FederatedStudyOutcome.ReadyForAggregation, "{\"n\":3}", "{\"n\":1}");
+
+            Assert.IsType<OkObjectResult>(await Report(version, "failed", "code_error", errorLine: 7));
+            AssertError(await Report(other, "failed", "run_failed", errorLine: 7), 400, "invalid_task");
+            AssertError(await Report(other, "failed", "code_error", errorLine: 0), 400, "invalid_task");
+
+            Assert.EndsWith("(analysis.py line 7)", Reload(version).OutcomeMessage);
+        }
 
         [Fact]
         public async Task GetPending_hands_out_ready_versions_with_values_only()

@@ -10,5 +10,8 @@ namespace Submission.Api.Models
 
         /// <summary>For failed: one of <see cref="FiveSafesTes.Core.Models.FederatedTasks.FederatedAggregationPhases.FailureCodes"/>.</summary>
         public string? ErrorCode { get; set; }
+
+        /// <summary>For failed with code_error: the line of the researcher's file that failed (1 or more).</summary>
+        public int? ErrorLine { get; set; }
     }
 }

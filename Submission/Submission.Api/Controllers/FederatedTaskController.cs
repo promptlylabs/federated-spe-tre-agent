@@ -31,7 +31,8 @@ namespace Submission.Api.Controllers
 
         /// <summary>Attempts at one submission when concurrent submissions of the same study keep taking the version number.</summary>
         private const int MaxEnqueueAttempts = 3;
-        private static readonly Regex AggregateDefinition = new(@"^def aggregate\(", RegexOptions.Multiline | RegexOptions.Compiled);
+        // A top-level def aggregate(…), allowing extra spaces; a byte-order mark before the first line is ignored below.
+        private static readonly Regex AggregateDefinition = new(@"^def\s+aggregate\s*\(", RegexOptions.Multiline | RegexOptions.Compiled);
 
         /// <summary>Upper bound on tasks returned to a TRE Agent in a single poll.</summary>
         private const int MaxPendingTasks = 50;
@@ -82,10 +83,11 @@ namespace Submission.Api.Controllers
             // The orchestrator pools the hospitals' results with the same file's aggregate(); without it every hospital
             // would run and review the study for nothing. A function defined some other way still fails at the aggregator.
             var code = task.Inputs?.FirstOrDefault(i => i.Path == FederatedTesProfile.CodePath)?.Content ?? "";
-            if (!AggregateDefinition.IsMatch(code))
+            if (!AggregateDefinition.IsMatch(code.TrimStart('\uFEFF')))
             {
                 return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask,
-                    "the code has no aggregate(results) function; the orchestrator needs it to pool the hospitals' results");
+                    "the code has no aggregate(results) function; the orchestrator needs it to pool the hospitals' results. " +
+                    "Define it at the top level of the file, as 'def aggregate(results):' (not inside a class or another function)");
             }
 
             var tres = await _DbContext.Tres

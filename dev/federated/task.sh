@@ -4,6 +4,7 @@
 #   ./task.sh enqueue <dataset> <file.py>       queue a study version that runs the Python file on the dataset, prints its id
 #   ./task.sh part <version-id> [tre]           print a hospital's task id in the version (default my-tre)
 #   ./task.sh pooled <version-id>               show the version's outcome, aggregation error code and pooled result hash
+#   ./task.sh retry <version-id>                retry pooling after aggregation_timeout, run_failed or internal_error
 #   ./task.sh study <version-id>                show the version: open, canceling or ended, its outcome, and each hospital's phase
 #   ./task.sh get <task-id>                     show a hospital's state, phase, phase times and result location
 #   ./task.sh result <task-id>                  download and print the result file
@@ -58,5 +59,6 @@ case "${1:-}" in
   approve) shift; decide_and_wait "$1" 1 ;;
   reject) shift; [ -n "${2:-}" ] || { echo "a reason is required: ./task.sh reject <task-id> \"<reason>\"" >&2; exit 1; }; decide_and_wait "$1" 2 "$2" ;;
   cancel) shift; cancel "$1"; echo "cancel sent; waiting for my-tre to confirm..."; id=$(part "$1"); wait_while "$id" 150 canceling ;;
-  *) sed -n '2,23p' "$0"; exit 1 ;;
+  retry) shift; curl -s -X POST "$SUBMISSION/api/FederatedAggregation/RetryAggregation?id=$1" -H "Authorization: Bearer $(token)" | python3 -m json.tool ;;
+  *) sed -n '2,24p' "$0"; exit 1 ;;
 esac

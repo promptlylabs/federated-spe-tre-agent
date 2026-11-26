@@ -184,6 +184,21 @@ public class DoFederatedAggregationWorkTests
         Assert.Equal([Id(job)], _runner.Removed);
     }
 
+    [Theory]
+    [InlineData("aggregate raised ValueError at analysis.py line 2", 2)]
+    [InlineData("importing analysis.py raised SyntaxError at line 5", 5)]
+    [InlineData("analysis.py has no aggregate function", null)]
+    public async Task Code_error_reports_only_the_line_number(string runnerMessage, int? line)
+    {
+        var job = Job();
+        Exited(job, System.Text.Json.JsonSerializer.Serialize(new { status = "error", code = "code_error", message = runnerMessage }));
+
+        await Work().Execute();
+
+        Assert.Equal((FederatedAggregationPhases.Failed, "code_error", line),
+            (_client.Reports[^1].Report.Phase, _client.Reports[^1].Report.ErrorCode, _client.Reports[^1].Report.ErrorLine));
+    }
+
     [Fact]
     public async Task Stops_a_run_past_the_time_limit()
     {

@@ -195,6 +195,18 @@ namespace Submission.Api.Tests
             Assert.Empty(db.FederatedStudyVersions);
         }
 
+        [Theory]
+        [InlineData("def aggregate (results):\n    return results[0]\n")]
+        [InlineData("def  aggregate(results):\n    return results[0]\n")]
+        [InlineData("\uFEFFdef aggregate(results):\n    return results[0]\n")]
+        public async Task Enqueue_accepts_aggregate_written_with_harmless_variations(string aggregate)
+        {
+            using var db = NewDb();
+            var code = aggregate + "\n\ndef site_analysis(df):\n    return {'n': len(df)}\n";
+
+            Assert.IsType<OkObjectResult>(await ControllerFor(db, "dare-admin").Enqueue(CodeTask(code: code)));
+        }
+
         [Fact]
         public async Task Enqueue_sets_the_deadline_from_settings()
         {

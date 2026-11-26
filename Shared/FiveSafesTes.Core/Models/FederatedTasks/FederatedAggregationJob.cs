@@ -18,8 +18,12 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         public string ResultsJson { get; set; } = "[]";
     }
 
-    /// <summary>What the aggregator reports for a version: phase running, aggregated (with the pooled file) or failed (with a code).</summary>
-    public sealed record FederatedAggregationReport(string VersionId, string Phase, string? ErrorCode);
+    /// <summary>
+    /// What the aggregator reports for a version: phase running, aggregated (with the pooled file) or failed (with a code).
+    /// <paramref name="ErrorLine"/>, for code_error only, is the line of the researcher's file that failed: a number, so no
+    /// text from the code reaches Submission.
+    /// </summary>
+    public sealed record FederatedAggregationReport(string VersionId, string Phase, string? ErrorCode, int? ErrorLine = null);
 
     /// <summary>The phases and form fields of an aggregation report (multipart/form-data, file part <c>result</c>).</summary>
     public static class FederatedAggregationPhases
@@ -31,6 +35,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         public const string VersionIdField = "VersionId";
         public const string PhaseField = "Phase";
         public const string ErrorCodeField = "ErrorCode";
+        public const string ErrorLineField = "ErrorLine";
 
         /// <summary>The codes an aggregation may fail with; a report with any other is refused.</summary>
         public static readonly IReadOnlySet<string> FailureCodes = new HashSet<string>

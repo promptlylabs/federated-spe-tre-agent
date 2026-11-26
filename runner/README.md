@@ -95,6 +95,21 @@ The return value has the same rules as `site_analysis`'s (a dict, JSON, `n`,
 `invalid_dataset`. Results are values, never files: for a graph, return the
 data behind it (bins and counts, points) and draw it in the SPE.
 
+Try `aggregate` in the SPE before you submit. Run `site_analysis` on two or
+more synthetic datasets, put the dicts it returned in a JSON array, and run
+the orchestrator's command on it:
+
+```sh
+run-analysis analysis.py synth_a/ /tmp/a.json   # repeat for each synthetic dataset
+python3 -c 'import json,sys; print(json.dumps([json.load(open(f))["result"] for f in sys.argv[1:]]))' /tmp/a.json /tmp/b.json > /tmp/results.json
+run-analysis --debug --aggregate analysis.py /tmp/results.json /tmp/pooled.json
+```
+
+`--debug` prints the full traceback, which the orchestrator never shows. At the
+orchestrator, a failure is reported only as its code, plus the line of your file
+for `code_error` (for example "aggregate() could not be imported, is missing, or
+raised an exception (analysis.py line 7)").
+
 ## `schema.json`
 
 ```json

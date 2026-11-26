@@ -133,6 +133,8 @@ namespace Agent.Api.FederatedTasks
             form.Add(new StringContent(report.Phase), FederatedAggregationPhases.PhaseField);
             if (report.ErrorCode != null)
                 form.Add(new StringContent(report.ErrorCode), FederatedAggregationPhases.ErrorCodeField);
+            if (report.ErrorLine is { } line)
+                form.Add(new StringContent(line.ToString(System.Globalization.CultureInfo.InvariantCulture)), FederatedAggregationPhases.ErrorLineField);
             if (pooledFile != null)
             {
                 var file = new ByteArrayContent(pooledFile);

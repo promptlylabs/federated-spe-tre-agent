@@ -119,7 +119,7 @@ namespace Agent.Api
                     }
 
                     var (code, pooled) = await CollectAsync(job, id, state);
-                    await ReportAndRemoveAsync(job, id, code, pooled);
+                    await ReportAndRemoveAsync(job, id, code, pooled, _failedLine);
                     return;
 
                 default:
@@ -171,8 +171,14 @@ namespace Agent.Api
         }
 
         /// <summary>The failure code, or null with the pooled document.</summary>
+        /// <summary>The researcher's line that failed, read from the runner's code_error message by the last CollectAsync.</summary>
+        private int? _failedLine;
+
+        private static readonly System.Text.RegularExpressions.Regex LineAtEnd = new(@"\bline (\d{1,9})$");
+
         private async Task<(string? Code, byte[]? Pooled)> CollectAsync(FederatedAggregationJob job, string id, CodeRunState state)
         {
+            _failedLine = null;
             var file = await _runner.ReadResultAsync(id, CodeExecution.MaxResultFileBytes, CancellationToken.None);
             if (file.TooLarge)
             {
@@ -205,6 +211,14 @@ namespace Agent.Api
                 var code = root.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.String ? c.GetString() : null;
                 var runnerMessage = root.TryGetProperty("message", out var m) && m.ValueKind == JsonValueKind.String ? m.GetString() : null;
                 Log.Warning("Federated aggregation: the run of study version {VersionId} failed with {Code}: {RunnerMessage}", id, code, runnerMessage);
+                // Only the line number of a code_error is passed on: the runner's message also names the exception type,
+                // which the researcher's code can choose, so its text stays in this log.
+                if (code == FederatedTaskErrorCodes.CodeError && runnerMessage != null && LineAtEnd.Match(runnerMessage) is { Success: true } match
+                    && int.TryParse(match.Groups[1].Value, out var line) && line > 0)
+                {
+                    _failedLine = line;
+                }
+
                 // The aggregator wrote results.json itself, so a runner that can't read it is the orchestrator's fault.
                 return code == "invalid_dataset" ? (FederatedTaskErrorCodes.InternalError, null)
                     : code != null && FederatedAggregationPhases.FailureCodes.Contains(code) && RunErrorMessages.ForRunnerCode(code) != null ? (code, null)
@@ -259,11 +273,12 @@ namespace Agent.Api
         }
 
         /// <summary>Reports, then removes the run once Submission took the report or no longer wants one.</summary>
-        private async Task ReportAndRemoveAsync(FederatedAggregationJob job, string id, string? failureCode, byte[]? pooled)
+        private async Task ReportAndRemoveAsync(FederatedAggregationJob job, string id, string? failureCode, byte[]? pooled, int? failedLine = null)
         {
             var report = failureCode == null
                 ? new FederatedAggregationReport(id, FederatedAggregationPhases.Aggregated, null)
-                : new FederatedAggregationReport(id, FederatedAggregationPhases.Failed, failureCode);
+                : new FederatedAggregationReport(id, FederatedAggregationPhases.Failed, failureCode,
+                    failureCode == FederatedTaskErrorCodes.CodeError ? failedLine : null);
             var outcome = await _client.ReportAggregationAsync(report, pooled);
             if (outcome.StatusCode is 200 or 409)
             {

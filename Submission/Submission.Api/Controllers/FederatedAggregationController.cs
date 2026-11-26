@@ -177,6 +177,11 @@ namespace Submission.Api.Controllers
                     "ErrorCode must be one of " + string.Join(", ", FederatedAggregationPhases.FailureCodes.Order()));
             }
 
+            if (form.ErrorLine is { } line && (form.ErrorCode != FederatedTaskErrorCodes.CodeError || line < 1))
+            {
+                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "ErrorLine is only taken with code_error, and is 1 or more");
+            }
+
             if ((phase == FederatedAggregationPhases.Aggregated) != (result != null))
             {
                 return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask,
@@ -229,7 +234,9 @@ namespace Submission.Api.Controllers
                     case FederatedAggregationPhases.Running:
                         break;
                     case FederatedAggregationPhases.Failed:
-                        FederatedStudyOutcomes.Fail(version, now, form.ErrorCode!, FailureMessages[form.ErrorCode!]);
+                        // The line helps the researcher find the fault; it's the only detail taken, and it's a number.
+                        FederatedStudyOutcomes.Fail(version, now, form.ErrorCode!,
+                            FailureMessages[form.ErrorCode!] + (form.ErrorLine is { } failedLine ? $" (analysis.py line {failedLine})" : ""));
                         break;
                     default:
                         var released = version.Parts.Count(p => p.Phase == FederatedTaskPhase.Released);
