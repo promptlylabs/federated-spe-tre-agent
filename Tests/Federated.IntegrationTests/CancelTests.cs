@@ -46,7 +46,7 @@ public class CancelTests
     }
 
     [SkippableFact]
-    public async Task Cancel_while_running_ends_canceled_and_removes_results()
+    public async Task Cancel_while_running_ends_canceled()
     {
         // Stopping and removing the run container is covered by the Agent's DoFederatedTaskWork and DockerCodeRunner tests.
         stack.EnsureReady();

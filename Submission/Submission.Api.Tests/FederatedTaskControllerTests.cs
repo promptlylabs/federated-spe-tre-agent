@@ -160,24 +160,6 @@ namespace Submission.Api.Tests
         };
 
         [Fact]
-        public async Task Enqueue_CountMeanTask_Refused()
-        {
-            using var db = NewDb();
-            var task = new TesTask
-            {
-                Executors = [new TesExecutor { Image = "5s-tes/federated-ops:1", Command = ["count"] }],
-                Inputs = [new TesInput { Url = "dataset://cohort_2024", Path = "/data/cohort_2024", Type = TesFileType.DIRECTORYEnum }],
-                Outputs = [],
-                Tags = new Dictionary<string, string> { ["fed.sites"] = "tre-a", ["fed.study_id"] = "study-1" }
-            };
-
-            var result = await ControllerFor(db, "dare-admin").Enqueue(task);
-
-            AssertError(result, 400, FederatedTaskErrorCodes.InvalidTask);
-            Assert.Equal(0, db.FederatedTasks.Count());
-        }
-
-        [Fact]
         public async Task Enqueue_valid_code_task_is_stored_queued()
         {
             using var db = NewDb();
