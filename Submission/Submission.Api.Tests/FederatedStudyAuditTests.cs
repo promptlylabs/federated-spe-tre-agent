@@ -111,7 +111,7 @@ namespace Submission.Api.Tests
         }
 
         [Fact]
-        public async Task Cancel_and_pooling_and_retry_write_audit_entries()
+        public async Task Cancel_and_retry_write_audit_entries_but_a_failed_report_does_not()
         {
             var open = new FederatedStudyVersion
             {

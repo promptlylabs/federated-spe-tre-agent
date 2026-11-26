@@ -65,6 +65,11 @@ public class AggregationTests
         Assert.Equal("control-admin", audit["submitted_by"]!.GetValue<string>());
         Assert.Equal(ended.PooledResultSha256, audit["pooled_result_sha256"]!.GetValue<string>());
         Assert.NotNull(audit["aggregation_started_at"]?.GetValue<string>());
+        // Written by the real stack: the submitter and the aggregator's service account, from their tokens.
+        var log = audit["audit_log"]!.AsArray();
+        Assert.Equal(new[] { ("study_submitted", "control-admin"), ("pooled_result_stored", "service-account-federated-aggregator") },
+            log.Select(e => (e!["type"]!.GetValue<string>(), e["user"]!.GetValue<string>())));
+        Assert.Contains(ended.PooledResultSha256!, log[1]!["details"]!.GetValue<string>());
         var hospitals = audit["hospitals"]!.AsArray();
         Assert.Equal(new[] { StackSettings.Tre, StackSettings.OtherTre }, hospitals.Select(h => h!["tre"]!.GetValue<string>()));
         Assert.All(hospitals, h =>
