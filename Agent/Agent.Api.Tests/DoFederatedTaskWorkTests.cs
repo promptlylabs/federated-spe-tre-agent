@@ -248,7 +248,8 @@ public class DoFederatedTaskWorkTests
 
     private static DoFederatedTaskWork Work(FakeClient client, IDatasetReader reader, string? treName = "tre-a",
         FakeResultOutputStore? outputs = null, FederatedTaskSettings? settings = null, DateTimeOffset? startedAt = null,
-        IFederatedTaskExecution? execution = null, FakeOutputApproval? approval = null, FakeEgressClient? egress = null)
+        IFederatedTaskExecution? execution = null, FakeOutputApproval? approval = null, FakeEgressClient? egress = null,
+        DockerFaultTimes? dockerFaults = null)
     {
         var config = new ConfigurationBuilder()
             .AddInMemoryCollection(new Dictionary<string, string?> { ["TreName"] = treName })
@@ -258,7 +259,7 @@ public class DoFederatedTaskWorkTests
         return new DoFederatedTaskWork(client, reader, execution ?? new OperationExecution(reader, clock),
             outputs ?? new FakeResultOutputStore(),
             approval ?? new FakeOutputApproval(), egress ?? new FakeEgressClient(), config, clock,
-            settings ?? Approving(FederatedTesProfile.ExecutorImage), new AgentStartTime(startedAt ?? Now.AddDays(-1)));
+            settings ?? Approving(FederatedTesProfile.ExecutorImage), new AgentStartTime(startedAt ?? Now.AddDays(-1)), dockerFaults);
     }
 
     private static FederatedTaskSettings Approving(params string[] images) => new() { ApprovedImages = images };
@@ -1949,6 +1950,24 @@ public class DoFederatedTaskWorkTests
         Assert.Single(client.ProgressCalls);
         Assert.Empty(client.Calls);
         Assert.Empty(execution.Removed);
+    }
+
+    [Theory]
+    [InlineData(0, false)]
+    [InlineData(61, true)]
+    public async Task Execute_docker_fault_window_counts_from_the_first_fault_not_the_queue(int faultMinutesAgo, bool givenUp)
+    {
+        // Queued long ago (a dataset outage this old would be given up at once), but Docker only now went away.
+        var client = OneMean();
+        client.Pending[0].CreationTime = Now.AddMinutes(-600);
+        var faults = new DockerFaultTimes();
+        if (faultMinutesAgo > 0) faults.FirstSeen(T1, Now.AddMinutes(-faultMinutesAgo));
+        var execution = new FakeExecution(() => throw RunFault("docker-500"));
+
+        await Work(client, new ThrowingReader(), execution: execution, dockerFaults: faults).Execute();
+
+        Assert.Equal(givenUp ? new[] { "internal_error" } : [], client.Reports.Select(r => r.ErrorCode));
+        Assert.Equal(givenUp ? 1 : 0, execution.Removed.Count);
     }
 
     [Theory]

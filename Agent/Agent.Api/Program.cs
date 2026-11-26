@@ -134,6 +134,7 @@ builder.Services.AddSingleton(minioTRESettings);
 var federatedTaskSettings = FederatedTaskSettings.FromConfiguration(configuration);
 builder.Services.AddSingleton(federatedTaskSettings);
 builder.Services.AddSingleton(new AgentStartTime(TimeProvider.System.GetUtcNow()));
+builder.Services.AddSingleton<DockerFaultTimes>();
 if (federatedTaskSettings.ApprovedImagesProblem() is { } approvedImagesProblem)
     Log.Error("Federated tasks: {Problem}", approvedImagesProblem);
 if (federatedTaskSettings.RunSettingsProblem() is { } runSettingsProblem)

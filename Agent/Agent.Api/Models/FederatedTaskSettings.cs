@@ -43,13 +43,13 @@ namespace Agent.Api.Models
         public string OutputReadPolicyName { get; set; } = "federated-outputs-read";
 
         /// <summary>
-        /// How long, in minutes, the Agent keeps retrying a task whose dataset bucket cannot be listed or read, or whose run
-        /// hits a Docker fault that may pass by itself (the daemon restarting, a server error). The time
+        /// How long, in minutes, the Agent keeps retrying a task whose dataset bucket cannot be listed or read. The time
         /// counts from when the task was queued, or from when the Agent started if that is later, so a task held while
         /// ApprovedImages was missing, or queued while the Agent was down, gets the whole window. Each Agent restart gives
         /// pending tasks the whole window again. Until then a failure is treated as an outage and the task is tried again
         /// at the next poll; after it, the task fails with internal_error so a bucket that is wrongly configured does not
-        /// leave it unfinished for good.
+        /// leave it unfinished for good. A run that hits a Docker fault that may pass by itself (the daemon restarting, a
+        /// server error) gets the same number of minutes, counted from its first fault (<see cref="DockerFaultTimes"/>).
         /// 0 or less gives up at the first failure.
         /// </summary>
         public int DatasetUnreachableGiveUpMinutes { get; set; } = 60;
