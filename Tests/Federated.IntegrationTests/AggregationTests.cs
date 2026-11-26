@@ -66,6 +66,8 @@ public class AggregationTests
         var (version, ended) = await PoolAsync(Code.AggregateRaises, new JsonObject { ["n"] = 2 });
 
         Assert.Equal(("failed", "code_error"), (ended.Outcome, ended.AggregationErrorCode));
+        // The line of aggregate() that raised (line 6 of Code.AggregateRaises), and nothing of the exception itself.
+        Assert.Equal("aggregate() could not be imported, is missing, or raised an exception (analysis.py line 6)", ended.OutcomeMessage);
         Assert.Null(ended.PooledResultSha256);
         Assert.Null(await stack.Results.GetPooledAsync(version.VersionId!));
     }
