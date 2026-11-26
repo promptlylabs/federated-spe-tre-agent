@@ -1,0 +1,2 @@
+#!/bin/sh
+exec python3 -I -m run_analysis.notebook "$@"
