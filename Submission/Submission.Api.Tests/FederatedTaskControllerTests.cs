@@ -294,6 +294,7 @@ namespace Submission.Api.Tests
             var root = new Microsoft.EntityFrameworkCore.Storage.InMemoryDatabaseRoot();
             using var setup = OpenDb(name, root);
             setup.Tres.Add(NewTre(1, "tre-a", "tre-a-admin", "tre-a-client"));
+            setup.Tres.Add(NewTre(2, "tre-b", "tre-b-admin", "tre-b-client"));
             setup.SaveChanges();
             var interceptor = new BeforeFirstSave(() => throw new DbUpdateException("insert or update violates foreign key constraint",
                 new Npgsql.PostgresException("fk", "ERROR", "ERROR", Npgsql.PostgresErrorCodes.ForeignKeyViolation)));
@@ -1617,6 +1618,13 @@ namespace Submission.Api.Tests
             // Nothing moved: a decided version's parts are not cancelled again.
             Assert.Equal(outcome == FederatedStudyOutcome.Canceled ? 1 : 0,
                 Reload(db, running.TaskId).PhaseChanges.Count(c => c.Phase == FederatedTaskPhase.Canceling));
+        }
+
+        [Fact]
+        public async Task Cancel_unknown_version_is_404()
+        {
+            using var db = NewDb();
+
             AssertError(await Cancel(db, Guid.NewGuid()), 404, FederatedTaskErrorCodes.StudyNotFound);
         }
 
