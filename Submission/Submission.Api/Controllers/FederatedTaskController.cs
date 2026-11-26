@@ -125,9 +125,10 @@ namespace Submission.Api.Controllers
                 {
                     await _DbContext.SaveChangesAsync(cancellationToken);
                 }
-                catch (DbUpdateException ex)
+                catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException { SqlState: Npgsql.PostgresErrorCodes.UniqueViolation })
                 {
                     // A concurrent submission took this version number (unique StudyId, Version): read the study again.
+                    // Any other save error (a TRE deleted meanwhile, the database down) is not a collision and fails.
                     Log.Warning(ex, "Enqueueing version {Version} of study {StudyId} collided with another submission", version.Version, spec.StudyId);
                     _DbContext.ChangeTracker.Clear();
                     continue;

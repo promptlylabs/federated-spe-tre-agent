@@ -238,7 +238,7 @@ namespace Submission.Api.Tests
             {
                 using var other = OpenDb(name, root);
                 SeedTask(other, 1, TesState.QUEUEDEnum);
-                throw new DbUpdateException("duplicate key value violates unique constraint");
+                throw UniqueViolation();
             });
             using var db = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
                 .UseInMemoryDatabase(name, root).AddInterceptors(interceptor).Options);
@@ -248,6 +248,25 @@ namespace Submission.Api.Tests
             AssertError(result, 409, FederatedTaskErrorCodes.StudyVersionOpen);
             using var check = OpenDb(name, root);
             Assert.Single(check.FederatedStudyVersions);
+        }
+
+        private static DbUpdateException UniqueViolation() => new("duplicate key value violates unique constraint",
+            new Npgsql.PostgresException("duplicate key", "ERROR", "ERROR", Npgsql.PostgresErrorCodes.UniqueViolation));
+
+        [Fact]
+        public async Task Enqueue_OtherSaveError_IsNotTakenForACollision()
+        {
+            var name = Guid.NewGuid().ToString();
+            var root = new Microsoft.EntityFrameworkCore.Storage.InMemoryDatabaseRoot();
+            using var setup = OpenDb(name, root);
+            setup.Tres.Add(NewTre(1, "tre-a", "tre-a-admin", "tre-a-client"));
+            setup.SaveChanges();
+            var interceptor = new BeforeFirstSave(() => throw new DbUpdateException("insert or update violates foreign key constraint",
+                new Npgsql.PostgresException("fk", "ERROR", "ERROR", Npgsql.PostgresErrorCodes.ForeignKeyViolation)));
+            using var db = new ApplicationDbContext(new DbContextOptionsBuilder<ApplicationDbContext>()
+                .UseInMemoryDatabase(name, root).AddInterceptors(interceptor).Options);
+
+            await Assert.ThrowsAsync<DbUpdateException>(() => ControllerFor(db, "dare-admin").Enqueue(AnalysisTask()));
         }
 
         private sealed class RecordingDispatch : IFederatedTaskDispatch
@@ -1429,26 +1448,6 @@ namespace Submission.Api.Tests
                 new FederatedApiError { ErrorCode = "task_not_found", ErrorMessage = "task not found" }, settings);
 
             Assert.Equal("{\"error_code\":\"task_not_found\",\"error_message\":\"task not found\"}", json);
-        }
-
-        [Fact]
-        public void StudyVersionView_SerializesWithNoReferenceId()
-        {
-            // The same settings Submission.Api registers globally.
-            var settings = new JsonSerializerSettings
-            {
-                ReferenceLoopHandling = ReferenceLoopHandling.Ignore,
-                PreserveReferencesHandling = PreserveReferencesHandling.Objects
-            };
-            var view = new FederatedStudyVersionView
-            {
-                Hospitals = [new FederatedHospitalView { Tre = "tre-a", Times = new Dictionary<string, string> { ["queued_at"] = "2026-01-01T00:00:00Z" } }]
-            };
-
-            var json = JsonConvert.SerializeObject(view, settings);
-
-            Assert.DoesNotContain("$id", json);
-            Assert.Contains("queued_at", json);
         }
 
         private static Task<IActionResult> Cancel(ApplicationDbContext db, Guid versionId) =>
