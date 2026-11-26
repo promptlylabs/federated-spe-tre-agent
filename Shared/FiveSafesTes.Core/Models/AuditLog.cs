@@ -31,7 +31,11 @@ namespace FiveSafesTes.Core.Models
         RemoveTreFromProject = 7,
         AddUserToProject = 8,
         RemoveUserFromProject = 9,
-        CreateSubmission = 10
+        CreateSubmission = 10,
+        FederatedStudySubmitted = 11,
+        FederatedStudyCanceled = 12,
+        FederatedPooledResultStored = 13,
+        FederatedAggregationRetried = 14
         
 
     }

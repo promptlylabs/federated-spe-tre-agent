@@ -3,7 +3,8 @@
 #
 #   ./task.sh enqueue <dataset> <file.py>       queue a study version that runs the Python file on the dataset, prints its id
 #   ./task.sh part <version-id> [tre]           print a hospital's task id in the version (default my-tre)
-#   ./task.sh pooled <version-id>               show the version's outcome, aggregation error code and pooled result hash
+#   ./task.sh pooled <version-id>               show the version's outcome and download the pooled result (hash checked)
+#   ./task.sh audit <version-id>                show how the version's result was produced
 #   ./task.sh retry <version-id>                retry pooling after aggregation_timeout, run_failed or internal_error
 #   ./task.sh study <version-id>                show the version: open, canceling or ended, its outcome, and each hospital's phase
 #   ./task.sh get <task-id>                     show a hospital's state, phase, phase times and result location
@@ -52,7 +53,10 @@ case "${1:-}" in
   enqueue) shift; enqueue "$@" ;;
   part) shift; part "$@" ;;
   study) shift; study "$1" ;;
-  pooled) shift; study "$1" | python3 -c 'import json,sys; v=json.load(sys.stdin); print(json.dumps({k: v.get(k) for k in ("state","outcome","aggregation_error_code","pooled_result_sha256","outcome_message")}, indent=2))' ;;
+  pooled) shift
+    study "$1" | python3 -c 'import json,sys; v=json.load(sys.stdin); print(json.dumps({k: v.get(k) for k in ("state","outcome","aggregation_error_code","pooled_result_sha256","outcome_message")}, indent=2))'
+    curl -s "$SUBMISSION/api/FederatedTask/GetStudyResult?id=$1" -H "Authorization: Bearer $(token)" | python3 -m json.tool ;;
+  audit) shift; curl -sf "$SUBMISSION/api/FederatedTask/GetStudyAudit?id=$1" -H "Authorization: Bearer $(token)" | python3 -m json.tool ;;
   get) shift; get "$1" ;;
   result) shift; result "$1" ;;
   run) shift; run "$@" ;;
@@ -60,5 +64,5 @@ case "${1:-}" in
   reject) shift; [ -n "${2:-}" ] || { echo "a reason is required: ./task.sh reject <task-id> \"<reason>\"" >&2; exit 1; }; decide_and_wait "$1" 2 "$2" ;;
   cancel) shift; cancel "$1"; echo "cancel sent; waiting for my-tre to confirm..."; id=$(part "$1"); wait_while "$id" 150 canceling ;;
   retry) shift; curl -s -X POST "$SUBMISSION/api/FederatedAggregation/RetryAggregation?id=$1" -H "Authorization: Bearer $(token)" | python3 -m json.tool ;;
-  *) sed -n '2,24p' "$0"; exit 1 ;;
+  *) sed -n '2,25p' "$0"; exit 1 ;;
 esac

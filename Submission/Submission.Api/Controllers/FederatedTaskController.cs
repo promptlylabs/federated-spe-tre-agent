@@ -132,6 +132,7 @@ namespace Submission.Api.Controllers
                     CodeSha256 = spec.CodeSha256,
                     TesTaskJson = tesTaskJson,
                     SubmittedAt = submittedAt,
+                    SubmittedBy = User.FindFirst("preferred_username")?.Value,
                     DeadlineAt = submittedAt.AddMinutes(_settings.StudyTimeoutMinutes)
                 };
                 foreach (var site in spec.Sites)
@@ -144,6 +145,8 @@ namespace Submission.Api.Controllers
                 }
 
                 _DbContext.FederatedStudyVersions.Add(version);
+                FederatedAudit.Add(_DbContext, FiveSafesTes.Core.Models.LogType.FederatedStudySubmitted, User, HttpContext,
+                    new { versionId = version.VersionId, studyId = version.StudyId, version = version.Version, codeSha256 = version.CodeSha256, sites = version.Sites });
                 try
                 {
                     await _DbContext.SaveChangesAsync(cancellationToken);
@@ -606,6 +609,8 @@ namespace Submission.Api.Controllers
                 }
 
                 FederatedStudyVersions.RequestCancel(version, DateTime.UtcNow);
+                FederatedAudit.Add(_DbContext, FiveSafesTes.Core.Models.LogType.FederatedStudyCanceled, User, HttpContext,
+                    new { versionId = version.VersionId, studyId = version.StudyId, version = version.Version });
                 try
                 {
                     await _DbContext.SaveChangesAsync(cancellationToken);
@@ -675,6 +680,106 @@ namespace Submission.Api.Controllers
                 .Include(x => x.Parts).ThenInclude(x => x.PhaseChanges)
                 .FirstOrDefaultAsync(x => x.VersionId == versionId, cancellationToken);
             return found == null ? StudyNotFound() : Ok(FederatedStudyVersions.ToView(found));
+        }
+
+        /// <summary>
+        /// The pooled result of a study version, after its SHA-256 is checked against the one recorded when it was stored.
+        /// Only ever the pooled file (studies/…): a hospital's own result is never served from here.
+        /// </summary>
+        [Authorize(Roles = "dare-control-admin")]
+        [HttpGet]
+        [Route("GetStudyResult")]
+        [SwaggerResponse(statusCode: 200, description: "The pooled result (application/json attachment)")]
+        [SwaggerResponse(statusCode: 404, type: typeof(FederatedApiError), description: "")]
+        [SwaggerResponse(statusCode: 500, type: typeof(FederatedApiError), description: "")]
+        [SwaggerResponse(statusCode: 503, type: typeof(FederatedApiError), description: "")]
+        public virtual async Task<IActionResult> GetStudyResult([FromQuery] string id, CancellationToken cancellationToken = default)
+        {
+            if (!Guid.TryParse(id, out var versionId))
+            {
+                return StudyNotFound();
+            }
+
+            var version = await _DbContext.FederatedStudyVersions.AsNoTracking().FirstOrDefaultAsync(x => x.VersionId == versionId, cancellationToken);
+            if (version == null)
+            {
+                return StudyNotFound();
+            }
+
+            // Only a key under studies/<versionId>/ is ever served: a hospital's own result can't come out of this route,
+            // whatever the row says.
+            if (version.Outcome != FederatedStudyOutcome.Aggregated || version.PooledResultBucket == null || version.PooledResultKey == null
+                || !version.PooledResultKey.StartsWith($"studies/{version.VersionId:D}/", StringComparison.Ordinal))
+            {
+                return Error(StatusCodes.Status404NotFound, FederatedTaskErrorCodes.ResultNotFound,
+                    $"version {version.Version} of study '{version.StudyId}' has no pooled result ({version.Outcome?.ToWire() ?? "open"})");
+            }
+
+            byte[]? bytes;
+            try
+            {
+                bytes = await _resultStore.GetAsync(version.PooledResultBucket, version.PooledResultKey, cancellationToken);
+            }
+            catch (Exception ex)
+            {
+                Log.Error(ex, "Reading the pooled result of study version {VersionId} failed", versionId);
+                return Error(StatusCodes.Status503ServiceUnavailable, FederatedTaskErrorCodes.StorageUnavailable, "the pooled result could not be read, try again later");
+            }
+
+            if (bytes == null)
+            {
+                Log.Error("The pooled result of study version {VersionId} is missing from storage", versionId);
+                return Error(StatusCodes.Status404NotFound, FederatedTaskErrorCodes.ResultNotFound, "the pooled result is missing from storage");
+            }
+
+            if (FederatedResultDocumentJson.Sha256Hex(bytes) != version.PooledResultSha256)
+            {
+                Log.Error("The pooled result of study version {VersionId} does not match its recorded SHA-256", versionId);
+                return Error(StatusCodes.Status500InternalServerError, FederatedTaskErrorCodes.InternalError, "the stored pooled result does not match its hash");
+            }
+
+            Response.Headers["X-Content-Type-Options"] = "nosniff";
+            return File(bytes, "application/json", $"{versionId}.json");
+        }
+
+        /// <summary>How a study version's result was produced: submitter, code hash, each hospital's phases, hashes and the pooling.</summary>
+        [Authorize(Roles = "dare-control-admin")]
+        [HttpGet]
+        [Route("GetStudyAudit")]
+        [SwaggerResponse(statusCode: 200, type: typeof(FederatedStudyAuditView), description: "")]
+        [SwaggerResponse(statusCode: 404, type: typeof(FederatedApiError), description: "")]
+        public virtual async Task<IActionResult> GetStudyAudit([FromQuery] string id, CancellationToken cancellationToken = default)
+        {
+            if (!Guid.TryParse(id, out var versionId))
+            {
+                return StudyNotFound();
+            }
+
+            var version = await _DbContext.FederatedStudyVersions
+                .AsNoTracking()
+                .Include(x => x.Parts).ThenInclude(x => x.PhaseChanges)
+                .FirstOrDefaultAsync(x => x.VersionId == versionId, cancellationToken);
+            if (version == null)
+            {
+                return StudyNotFound();
+            }
+
+            var audit = FederatedStudyVersions.ToAudit(version);
+            var types = FederatedAudit.Types.Keys.ToList();
+            var idText = version.VersionId.ToString("D");
+            var entries = await _DbContext.AuditLogs
+                .AsNoTracking()
+                .Where(x => types.Contains(x.LogType) && x.HistoricFormData != null && x.HistoricFormData.Contains(idText))
+                .OrderBy(x => x.Date).ThenBy(x => x.Id)
+                .ToListAsync(cancellationToken);
+            audit.Log = entries.Select(x => new FederatedAuditLogEntry
+            {
+                Type = FederatedAudit.Types[x.LogType],
+                User = x.LoggedInUserName,
+                At = DateTime.SpecifyKind(x.Date, DateTimeKind.Utc),
+                Details = x.HistoricFormData
+            }).ToList();
+            return Ok(audit);
         }
 
         [Authorize(Roles = "dare-control-admin")]

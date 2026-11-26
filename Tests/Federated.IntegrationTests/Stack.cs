@@ -245,6 +245,21 @@ public sealed class SubmissionClient
             Meta("scan_rules_version"));
     }
 
+    /// <summary>The pooled result through GetStudyResult (hash checked by Submission), with the status code.</summary>
+    public async Task<(int Status, byte[]? Bytes)> GetStudyResultAsync(string versionId)
+    {
+        using var response = await SendAsync(HttpMethod.Get, $"/api/FederatedTask/GetStudyResult?id={versionId}");
+        return ((int)response.StatusCode, response.IsSuccessStatusCode ? await response.Content.ReadAsByteArrayAsync() : null);
+    }
+
+    /// <summary>The study version's audit trail, as GetStudyAudit returns it.</summary>
+    public async Task<JsonNode> GetStudyAuditAsync(string versionId)
+    {
+        using var response = await SendAsync(HttpMethod.Get, $"/api/FederatedTask/GetStudyAudit?id={versionId}");
+        response.EnsureSuccessStatusCode();
+        return JsonNode.Parse(await response.Content.ReadAsStringAsync())!;
+    }
+
     /// <summary>Cancels a study version as an orchestrator admin. Returns the HTTP status and the version's state after it.</summary>
     public async Task<(int Status, string? State)> CancelAsync(string versionId)
     {

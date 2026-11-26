@@ -64,6 +64,47 @@ namespace Submission.Api.Services
             }
         }
 
+        /// <summary>The audit trail of a version. The parts and their phase changes must be loaded.</summary>
+        public static FederatedStudyAuditView ToAudit(FederatedStudyVersion version)
+        {
+            var sites = version.Sites.Split('|').ToList();
+            return new FederatedStudyAuditView
+            {
+                StudyId = version.StudyId,
+                Version = version.Version,
+                VersionId = version.VersionId,
+                SubmittedBy = version.SubmittedBy,
+                SubmittedAt = DateTime.SpecifyKind(version.SubmittedAt, DateTimeKind.Utc),
+                CodeSha256 = version.CodeSha256,
+                DeadlineAt = DateTime.SpecifyKind(version.DeadlineAt, DateTimeKind.Utc),
+                Outcome = version.Outcome?.ToWire(),
+                OutcomeReason = version.OutcomeReason,
+                OutcomeMessage = version.OutcomeMessage,
+                OutcomeAt = Utc(version.OutcomeAt),
+                ReadyAt = Utc(version.ReadyAt),
+                AggregationStartedAt = Utc(version.AggregationStartedAt),
+                AggregationErrorCode = version.AggregationErrorCode,
+                PooledResultSha256 = version.PooledResultSha256,
+                Hospitals = version.Parts
+                    .OrderBy(p => sites.IndexOf(p.TreName))
+                    .Select(p => new FederatedHospitalAudit
+                    {
+                        Tre = p.TreName,
+                        TaskId = p.TaskId,
+                        Phases = p.PhaseChanges.OrderBy(c => c.At).ThenBy(c => c.Id)
+                            .Select(c => new FederatedPhaseAudit
+                            {
+                                Phase = FederatedTaskPhases.ToWire(c.Phase),
+                                At = DateTime.SpecifyKind(c.At, DateTimeKind.Utc),
+                                ErrorCode = c.ErrorCode
+                            })
+                            .ToList(),
+                        ResultSha256 = p.Phase == FederatedTaskPhase.Released ? p.ResultSha256 : null
+                    })
+                    .ToList()
+            };
+        }
+
         private static DateTime? Utc(DateTime? at) => at is { } value ? DateTime.SpecifyKind(value, DateTimeKind.Utc) : null;
     }
 }

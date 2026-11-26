@@ -260,6 +260,8 @@ namespace Submission.Api.Controllers
                         }
 
                         FederatedStudyOutcomes.Aggregate(version, now, _store.Bucket, key, sha);
+                        FederatedAudit.Add(_db, FiveSafesTes.Core.Models.LogType.FederatedPooledResultStored, User, HttpContext,
+                            new { versionId = version.VersionId, studyId = version.StudyId, version = version.Version, pooledResultSha256 = sha });
                         break;
                 }
 
@@ -332,6 +334,8 @@ namespace Submission.Api.Controllers
                 version.AggregationErrorCode = null;
                 version.OutcomeMessage = $"retried by an orchestrator admin after {code}";
                 version.OutcomeAt = now;
+                FederatedAudit.Add(_db, FiveSafesTes.Core.Models.LogType.FederatedAggregationRetried, User, HttpContext,
+                    new { versionId = version.VersionId, studyId = version.StudyId, version = version.Version, after = code });
                 try
                 {
                     await _db.SaveChangesAsync(cancellationToken);

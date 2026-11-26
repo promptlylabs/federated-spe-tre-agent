@@ -108,5 +108,11 @@ public class StudyTests
         Assert.Equal("rejected_at_output_approval", ended.PhaseOf(StackSettings.Tre));
         Assert.Equal("canceled", ended.PhaseOf(StackSettings.OtherTre));
         Assert.Equal(200, v2.Status);
+
+        // 3.4: the audit trail says why there is no pooled result, and GetStudyResult has nothing to give.
+        var audit = await stack.Submission.GetStudyAuditAsync(v1.VersionId!);
+        Assert.Equal(("incomplete", "minimum_unreachable"), (audit["outcome"]!.GetValue<string>(), audit["outcome_reason"]!.GetValue<string>()));
+        Assert.Null(audit["pooled_result_sha256"]);
+        Assert.Equal(404, (await stack.Submission.GetStudyResultAsync(v1.VersionId!)).Status);
     }
 }
