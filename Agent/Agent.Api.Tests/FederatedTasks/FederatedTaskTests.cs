@@ -41,14 +41,14 @@ public class FederatedTaskTests
     }
 
     [Fact]
-    public void ToTesTask_Queued_HasOnlyPhaseMetadata()
+    public void ToTesTask_Queued_HasOnlyPhaseAndRoundMetadata()
     {
         var task = Make(TesState.QUEUEDEnum).ToTesTask();
 
         Assert.Equal(TaskId.ToString(), task.Id);
         Assert.Equal(TesState.QUEUEDEnum, task.State);
         var log = Assert.Single(task.Logs!);
-        Assert.Equal(["phase"], log.Metadata!.Keys.ToArray());
+        Assert.Equal(["phase", "round"], log.Metadata!.Keys.ToArray());
         Assert.Equal("queued", log.Metadata["phase"]);
         Assert.Null(log.EndTime);
         Assert.Equal(new DateTimeOffset(Submitted, TimeSpan.Zero), task.CreationTime);

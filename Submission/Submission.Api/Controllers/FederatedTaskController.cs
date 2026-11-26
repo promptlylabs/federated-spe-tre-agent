@@ -118,6 +118,7 @@ namespace Submission.Api.Controllers
                     var part = FederatedStudyFanOut.BuildPart(task, version, tresBySite[site], site);
                     part.Operation = spec.Operation;
                     part.Dataset = spec.Dataset;
+                    part.Round = spec.Round;
                     version.Parts.Add(part);
                 }
 

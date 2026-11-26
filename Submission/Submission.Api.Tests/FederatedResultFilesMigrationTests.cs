@@ -43,7 +43,7 @@ namespace Submission.Api.Tests
             var metadata = task.ToTesTask().Logs![0].Metadata;
 
             Assert.Equal(
-                new[] { "dataset_sha256", "phase", "released_at", "result_bucket", "result_key", "result_sha256" },
+                new[] { "dataset_sha256", "phase", "released_at", "result_bucket", "result_key", "result_sha256", "round" },
                 metadata.Keys.OrderBy(k => k, StringComparer.Ordinal).ToArray());
         }
     }
