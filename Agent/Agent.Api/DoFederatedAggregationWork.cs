@@ -12,7 +12,8 @@ namespace Agent.Api
 {
     /// <summary>
     /// The Agent in the aggregator role (FederatedTaskSettings:Role = Aggregator). Each poll takes the study versions ready
-    /// for aggregation from Submission and moves each one step: check the code's hash and the image, stage the code and
+    /// for aggregation from Submission and moves each one step: check the code's hash and the image, scan the code with
+    /// the orchestrator's own rules (the hospitals' rules may differ, and may be looser), stage the code and
     /// the hospitals' values, start <c>run-analysis --aggregate</c> in the same locked-down container as at a hospital,
     /// then collect its result.json and report the pooled document or a failure code. The container's output is never
     /// read (log driver none); the runner's own message goes to this Agent's log only, as at a hospital.
@@ -27,13 +28,16 @@ namespace Agent.Api
 
         private readonly IFederatedTaskClient _client;
         private readonly ICodeRunner _runner;
+        private readonly ICodeScanner _scanner;
         private readonly FederatedTaskSettings _settings;
         private readonly TimeProvider _clock;
 
-        public DoFederatedAggregationWork(IFederatedTaskClient client, ICodeRunner runner, FederatedTaskSettings settings, TimeProvider clock)
+        public DoFederatedAggregationWork(
+            IFederatedTaskClient client, ICodeRunner runner, ICodeScanner scanner, FederatedTaskSettings settings, TimeProvider clock)
         {
             _client = client;
             _runner = runner;
+            _scanner = scanner;
             _settings = settings;
             _clock = clock;
         }
@@ -147,6 +151,24 @@ namespace Agent.Api
                 Log.Error("Federated aggregation: study version {VersionId} asks for image {Image}, which is not in ApprovedImages; it is not run", id, image);
                 await _client.ReportAggregationAsync(new FederatedAggregationReport(id, FederatedAggregationPhases.Failed, FederatedTaskErrorCodes.ImageNotApproved), null);
                 return;
+            }
+
+            var scan = await _scanner.ScanAsync(code!, CancellationToken.None);
+            switch (scan.Kind)
+            {
+                case CodeScanKind.RulesUnavailable:
+                    // The orchestrator's config, not the researcher's code: wait until the rule file is fixed.
+                    Log.Error("Federated aggregation: the code-scan rules are unavailable ({Detail}); study version {VersionId} waits", scan.Detail, id);
+                    return;
+                case CodeScanKind.ScannerFailed:
+                    Log.Error("Federated aggregation: the code scan of study version {VersionId} could not run: {Detail}", id, scan.Detail);
+                    await _client.ReportAggregationAsync(new FederatedAggregationReport(id, FederatedAggregationPhases.Failed, FederatedTaskErrorCodes.InternalError), null);
+                    return;
+                case CodeScanKind.Findings:
+                    Log.Warning("Federated aggregation: the code scan (rules {RulesVersion}) refused study version {VersionId}: {Findings}",
+                        scan.RulesVersion, id, CodeScanMessages.Format(scan.Findings));
+                    await _client.ReportAggregationAsync(new FederatedAggregationReport(id, FederatedAggregationPhases.Failed, FederatedTaskErrorCodes.UnsafeCode), null);
+                    return;
             }
 
             if ((await _runner.ListAsync(CancellationToken.None)).Count >= _settings.MaxConcurrentRuns)

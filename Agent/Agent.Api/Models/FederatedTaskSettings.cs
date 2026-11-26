@@ -135,7 +135,8 @@ namespace Agent.Api.Models
 
         /// <summary>
         /// Hospital (default): poll this TRE's federated tasks. Aggregator: run the researcher's aggregate() on ready study
-        /// versions for the orchestrator; the hospital-only setup (datasets, outputs, Egress, code scan, TreName) is skipped.
+        /// versions for the orchestrator; the hospital-only setup (datasets, outputs, Egress, TreName) is skipped. The code scan
+        /// runs in both roles, each with its own rule file (ScanRulesPath).
         /// </summary>
         public string Role { get; set; } = HospitalRole;
 

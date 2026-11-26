@@ -40,7 +40,8 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         /// <summary>The codes an aggregation may fail with; a report with any other is refused.</summary>
         public static readonly IReadOnlySet<string> FailureCodes = new HashSet<string>
         {
-            FederatedTaskErrorCodes.InvalidTask, FederatedTaskErrorCodes.ImageNotApproved, FederatedTaskErrorCodes.CodeError,
+            FederatedTaskErrorCodes.InvalidTask, FederatedTaskErrorCodes.ImageNotApproved, FederatedTaskErrorCodes.UnsafeCode,
+            FederatedTaskErrorCodes.CodeError,
             FederatedTaskErrorCodes.InvalidResult, FederatedTaskErrorCodes.ResultTooLarge, FederatedTaskErrorCodes.Timeout,
             FederatedTaskErrorCodes.OutOfMemory, FederatedTaskErrorCodes.RunFailed, FederatedTaskErrorCodes.InternalError
         };

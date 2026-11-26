@@ -20,6 +20,7 @@ public class DoFederatedAggregationWorkTests
 
     private readonly FakeClient _client = new();
     private readonly FakeCodeRunner _runner = new();
+    private readonly FakeCodeScanner _scanner = new();
     private readonly FederatedTaskSettings _settings = new() { Role = FederatedTaskSettings.AggregatorRole, ApprovedImages = [Image], MaxRunMinutes = 5 };
     private readonly FixedClock _clock = new();
 
@@ -29,7 +30,7 @@ public class DoFederatedAggregationWorkTests
         public override DateTimeOffset GetUtcNow() => At;
     }
 
-    private DoFederatedAggregationWork Work() => new(_client, _runner, _settings, _clock);
+    private DoFederatedAggregationWork Work() => new(_client, _runner, _scanner, _settings, _clock);
 
     private sealed class FakeClient : IFederatedTaskClient
     {
@@ -81,13 +82,22 @@ public class DoFederatedAggregationWorkTests
     [InlineData("code", "invalid_task")]
     [InlineData("tag", "invalid_task")]
     [InlineData("image", "image_not_approved")]
+    [InlineData("scan", "unsafe_code")]
+    [InlineData("scanner", "internal_error")]
     public async Task Refuses_before_staging_anything(string what, string code)
     {
+        _scanner.Result = what switch
+        {
+            "scan" => new CodeScanResult(CodeScanKind.Findings, [new CodeScanFinding("import-not-allowed", 1, "m")], "test", FakeCodeScanner.Sha, null),
+            "scanner" => new CodeScanResult(CodeScanKind.ScannerFailed, [], "test", FakeCodeScanner.Sha, "boom"),
+            _ => _scanner.Result
+        };
         var job = what switch
         {
             "code" => Job(codeSha: new string('0', 64)),
             "tag" => Job(tagSha: new string('0', 64)),
-            _ => Job(image: "python:3.12")
+            "image" => Job(image: "python:3.12"),
+            _ => Job()
         };
 
         await Work().Execute();
@@ -112,6 +122,18 @@ public class DoFederatedAggregationWorkTests
         Assert.Equal(new[] { "code/analysis.py", "data/results.json" }, _runner.StagedBytes.Keys.Order());
         Assert.Equal(Code, Encoding.UTF8.GetString(_runner.StagedBytes["code/analysis.py"]));
         Assert.Equal(job.ResultsJson, Encoding.UTF8.GetString(_runner.StagedBytes["data/results.json"]));
+    }
+
+    [Fact]
+    public async Task Waits_while_the_scan_rules_are_unavailable()
+    {
+        _scanner.Result = new CodeScanResult(CodeScanKind.RulesUnavailable, [], null, null, "no rule file");
+        Job();
+
+        await Work().Execute();
+
+        Assert.Empty(_runner.Started);
+        Assert.Empty(_client.Reports);
     }
 
     [Fact]

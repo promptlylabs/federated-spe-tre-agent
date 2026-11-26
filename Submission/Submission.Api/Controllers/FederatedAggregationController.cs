@@ -29,6 +29,7 @@ namespace Submission.Api.Controllers
         {
             [FederatedTaskErrorCodes.InvalidTask] = "the stored code does not match its hash, so it was not run",
             [FederatedTaskErrorCodes.ImageNotApproved] = "the task's image is not approved for pooling at the orchestrator",
+            [FederatedTaskErrorCodes.UnsafeCode] = "the orchestrator's code scan refused the code, so aggregate() was not run",
             [FederatedTaskErrorCodes.CodeError] = "aggregate() could not be imported, is missing, or raised an exception",
             [FederatedTaskErrorCodes.InvalidResult] = "aggregate() returned a value the orchestrator cannot accept",
             [FederatedTaskErrorCodes.ResultTooLarge] = "aggregate() returned a result larger than the limit",

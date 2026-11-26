@@ -248,6 +248,7 @@ namespace Submission.Api.Tests
         [Theory]
         [InlineData("invalid_task")]
         [InlineData("image_not_approved")]
+        [InlineData("unsafe_code")]
         [InlineData("code_error")]
         [InlineData("invalid_result")]
         [InlineData("result_too_large")]
