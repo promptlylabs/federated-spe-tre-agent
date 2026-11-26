@@ -84,6 +84,7 @@ cd dev/federated
 ./task.sh reject <task-id> "small cells"        # CANCELED {"phase": "rejected_at_output_approval", "error_code": "rejected_by_reviewer", "error_message": "small cells"}
 ./task.sh cancel <version-id>                   # CANCELED {"phase": "canceled", ...}: review closed, result removed from the TRE
 ./task.sh run nope code/analysis.py             # CANCELED, phase rejected_by_input_checks {"error_code": "dataset_not_found", ...}
+./task.sh run cohort_2024 code/open_socket.py   # CANCELED, rejected_by_input_checks {"error_code": "unsafe_code", "error_message": "import-not-allowed line 1: ...", "scan_rules_version": "2026-11-2", ...}
 ```
 
 `run` queues the task and waits until the Agent has saved the result and registered it for review (or rejected or failed the task). The Agent polls once a minute. A run spans several polls: one starts the container, later ones check it and collect `result.json`, so a task takes about two minutes to reach review. On the Hangfire dashboard, **Recurring jobs → Run Federated Tasks → Trigger now** runs it at once.
@@ -127,21 +128,22 @@ docker volume ls --filter label=fed.task-id
 
 ## Demo
 
-`demo.sh` runs three requests through both hospital gates, in plain language, for a recorded or live demo:
+`demo.sh` runs four requests through both hospital gates, in plain language, for a recorded or live demo:
 
 1. the hospital checks pass, a reviewer approves the result, and it is released (the answer is shown);
 2. the request asks for a dataset the hospital does not hold, and its checks stop it;
-3. the hospital checks pass, but the reviewer rejects the result, and nothing leaves.
+3. R1: the code (`code/open_socket.py`) imports `socket` to send the data out; the hospital's code scan refuses it before the dataset is touched, and the demo prints the refusal with the rule and line;
+4. the hospital checks pass, but the reviewer rejects the result, and nothing leaves.
 
 It opens with the three promises the cases prove, and ends with a summary of what left the hospital.
 
 ```bash
 cd dev/federated
 ./demo.sh                # live: pauses before each case, opens the review page, waits for the reviewer
-./demo.sh --unattended   # no pauses: approves case 1 and rejects case 3 through the Egress API; exit 1 if a case ends unexpectedly
+./demo.sh --unattended   # no pauses: approves case 1 and rejects case 4 through the Egress API; exit 1 if a case ends unexpectedly
 ```
 
-In the live run, approve case 1 and reject case 3 (with a reason) in the Egress app; the script notices the decision on its own and carries on. If the reviewer decides differently, the demo shows what really happened. If no decision reaches the hospital within 15 minutes (`DEMO_REVIEW_MINUTES` changes this), the case ends with a message naming the task. The demo shows real timing: the Agent picks up new requests once a minute, so a case can wait up to a minute, with a ticking timer, before the hospital checks it. Each case also spends about two minutes running the code (under emulation on Apple silicon).
+In the live run, approve case 1 and reject case 4 (with a reason) in the Egress app; the script notices the decision on its own and carries on. If the reviewer decides differently, the demo shows what really happened. If no decision reaches the hospital within 15 minutes (`DEMO_REVIEW_MINUTES` changes this), the case ends with a message naming the task. The demo shows real timing: the Agent picks up new requests once a minute, so a case can wait up to a minute, with a ticking timer, before the hospital checks it. Each case that runs code also spends about two minutes running it (under emulation on Apple silicon); cases 2 and 3 end at the checks.
 
 ### Before the demo
 
@@ -151,6 +153,73 @@ In the live run, approve case 1 and reject case 3 (with a reason) in the Egress 
 4. Arrange the screen: terminal on one side, that browser on the other; large terminal font.
 5. Start recording, then run `./demo.sh`.
 
+## Code-scan rules
+
+Before the dataset is touched, the Agent scans the researcher's code with Semgrep and the hospital's rule file, and refuses code a rule finds (`rejected_by_input_checks`, `unsafe_code`, with the rule and line in the message). See "Code scan" in [docs/federated-tasks.md](../../docs/federated-tasks.md) for the outcomes and settings. The Agent image ships the default rules, `Agent/Agent.Api/ScanRules/default.yaml`, version `2026-11-2`. Each task records the version and SHA-256 of the rules it was checked with (`scan_rules_version`, `scan_rules_sha256` in `GetTask`). Suppression comments in the researcher's code (`# nosemgrep`, `# nosem`) are ignored, so code can't switch a rule off.
+
+### What the default rules refuse
+
+- **Imports not on the allowed list** (`import-not-allowed`). Allowed: `pandas`, `numpy`, `scipy`, `math`, `statistics`, `collections`, `itertools`, `functools`, `operator`, `datetime`, `decimal`, `fractions`, `re`, `json`, `typing`, `dataclasses`, `enum`, `warnings`, and their submodules. Anything else is refused, including what nobody thought of (`socket`, `os`, `subprocess`, `requests`, ...). `statsmodels` is not on the list because the runner image does not have it yet; add it once it does.
+- **Code made from text, or names put together while it runs** (`dynamic-code`): `eval`, `exec`, `compile`, `__import__`, `importlib`, `globals`, `locals`, `vars`, `breakpoint`; `getattr`/`setattr`/`delattr` unless called directly with a written-out name (so `map(getattr, ...)`, `functools.reduce(getattr, ...)` and `g = getattr` are refused); attributes such as `__class__`, `__subclasses__`, `__globals__`; frame and code-object attributes such as `gi_frame`, `f_builtins`, `f_globals`, `tb_frame`; text (for example a formula or query) that mentions Python's internals, `os.`, `sys.`, `subprocess.` and similar, or calls `eval(`, `open(` and similar.
+- **Starting programs or using the operating system** (`process-call`): `subprocess`, `os.system`, `os.popen`, `os.exec*`, `os.spawn*`, `fork`, `kill` and the like, also through `getattr` with the name written out.
+- **Reading or writing files** (`file-access`): `open`, pandas `read_*` and the writers (`to_excel`, `to_parquet`, `to_pickle`, ...; `to_csv`, `to_json` and the like only when given a path), numpy `load`/`save`/`loadtxt`/`savetxt`/`genfromtxt`/`fromfile`/`tofile`/`dump`/`DataSource`, scipy `save_npz`/`load_npz`. The code gets its data as `df` and returns a dict; it never needs files.
+- **Back doors in allowed packages** (`back-door`): `numpy.ctypeslib`, `numpy.f2py`, `numpy.distutils`, `numpy.testing`, `scipy.io`, `scipy._lib`, `pandas.testing`, `pandas.compat`, `pandas.io` (`get_handle`, `TextFileReader`), `pd.HDFStore`, `pd.ExcelWriter`, `np.memmap`, `typing.get_type_hints`, `runstring`, `pickle_compat`, `Unpickler`, `urlopen`; modules reached through an allowed package (`pd.io.common.os`, `.sys`, `.socket`, `.gzip`, `.codecs`, `dataclasses.inspect`, `warnings.linecache`, ...); `CodeType`/`FunctionType`; `operator.attrgetter`/`methodcaller` unless called directly with a written-out name, also under another name (`from operator import attrgetter as ag`); `df.query`, `df.eval` and `pd.eval` unless called directly with written-out text (`df.query("age > 40")` passes, `df.query(expr)` and `f = pd.eval` are refused).
+
+- **An encoding other than UTF-8** (`encoding-not-utf8`): a `coding:` declaration on line 1 or 2 that is not UTF-8, for example `# -*- coding: utf-7 -*-`. Python would decode the file with it while Semgrep reads UTF-8, so code could hide in what the scan sees as a comment. The Agent checks this itself, before Semgrep, so it holds with any rule file.
+
+### What they don't cover
+
+Static analysis of Python can't catch every way out, so the scan is an early, explainable refusal, not the only barrier. Code that gets past it still runs in the locked-down container: no network, read-only root and `/data`, no capabilities. Known gaps of the default rules:
+
+- Formula and query text built only from allowed-looking pieces. patsy formulas and `df.query`/`df.eval` with written-out text run as Python against the code's names; the text check catches the obvious routes, not every one.
+- A dangerous module or object reached under a name the rules don't list, for example a module that an allowed package imports itself under another name. The rules refuse known names, not everything outside a known-safe set: an allowed package can hold other ways to files or Python's internals that nobody has listed yet.
+- pandas methods called by name with a string through `agg`, `apply` or `transform`, for example `df.agg("to_" + "pickle", path)`.
+- Pickle-style tricks through allowed libraries that nobody has listed yet.
+
+And some safe code they refuse (false positives) a researcher may hit:
+
+- a column read as an attribute with a listed name, such as `df.os` or `df.sys` (use `df["os"]`);
+- text that happens to contain `open(` or `x.os.`;
+- `json.load` (the rule refuses any `load`; `json.loads` passes);
+- `super().__init__()` and other names in double underscores (only `__name__` itself is allowed).
+
+### A hospital's own rule file
+
+A hospital may replace the default with its own Semgrep YAML file. Mount it into the Agent container and point `FederatedTaskSettings:ScanRulesPath` at it, for example in Compose:
+
+```yaml
+  agent-api:
+    volumes:
+      - ./hospital-rules.yaml:/rules/hospital-rules.yaml:ro
+    environment:
+      FederatedTaskSettings__ScanRulesPath: /rules/hospital-rules.yaml
+```
+
+- Keep `# version: <text>` as the first line (at most 64 characters), and change it whenever you change the file. The Agent records it with each task, next to the file's SHA-256. Without the line, or if the file is missing or unreadable, the Agent holds every task and logs an error; it does not reject them.
+- Give every rule an `id` and a `message` a data custodian can read: the refusal shows `<id> line <n>: <message>`. An `id` must not contain `.`: the Agent strips the path prefix Semgrep adds to it at the last dot.
+- To allow another import, add it to the list in `import-not-allowed`. It must exist in the runner image (`runner/list-libraries.py` lists what is there).
+- A file Semgrep can't load (a YAML or rule error) also holds every task, and the Agent logs Semgrep's error; test it first (below).
+- The same code may then pass at one hospital and be refused at another.
+
+### Testing the rules
+
+`Agent/Agent.Api/ScanRules/test.sh` runs Semgrep's rule tests: every `# ruleid: <id>` line in `default.py` must be found by that rule, and every `# ok: <id>` line must not. It runs the Semgrep version pinned in `requirements.txt` (the one the Agent image installs), in the `semgrep/semgrep` container with no network:
+
+```bash
+Agent/Agent.Api/ScanRules/test.sh   # ends with "✓ All tests passed"
+```
+
+Run it after every change to `default.yaml`, and add a `# ruleid:` or `# ok:` line to `default.py` for each new case. For a hospital's own file, run the same command over that file and its own fixture:
+
+```bash
+docker run --rm --network none -v "$PWD:/rules:ro" -w /rules semgrep/semgrep:1.185.0 \
+  semgrep --test --metrics=off --disable-version-check --config hospital-rules.yaml hospital-rules.py
+```
+
+### Open point: how hospitals get the Agent image
+
+The Agent image installs Python and a pinned Semgrep (`ScanRules/requirements.txt`, with hashes) from PyPI at build time; nothing is downloaded at run time. That makes the image about 980 MB instead of about 420 MB. How hospitals obtain or build the Agent image is not known yet. If their build can't reach PyPI, or must use a UBI base, the install method changes (for example copying Semgrep from a pinned image, or vendoring the wheel).
+
 ## Integration tests
 
 `Tests/Federated.IntegrationTests` drives the real loop on this stack (Submission → Agent → Egress app) and checks how each task ends in `GetTask`, and that only a released task has a result file in the orchestrator's result store (RustFS on port 9100). Every task it queues is a code task in `python-runner:1`, with the small `site_analysis` files in `Code.cs`. It covers the three demo cases, cancelling, study versions across `my-tre` and `other-tre`, and a set of deliberately invalid tasks:
@@ -159,6 +228,7 @@ In the live run, approve case 1 and reject case 3 (with a reason) in the Egress 
 |---|---|---|
 | Hospital input checks | dataset the hospital does not hold | `CANCELED`, `rejected_by_input_checks`, `dataset_not_found` |
 | Hospital input checks | a dataset folder with two `.csv` files | `CANCELED`, `rejected_by_input_checks`, `ambiguous_dataset` |
+| Hospital input checks (code scan, R1) | code that imports `socket`, on a dataset the hospital holds | `CANCELED`, `rejected_by_input_checks`, `unsafe_code` naming `import-not-allowed line 1`; `scan_rules_version` `2026-11-2`; no result |
 | Submission's task profile | a count task in the shape used before every task ran code, an image Submission does not accept, the old tag names, code that does not match `fed.code_sha256` | Enqueue refused with 400 `invalid_task`; no task |
 | Output approval | reviewer approves | `COMPLETE`, `released`, result stored with the reviewed SHA-256 |
 | Output approval | reviewer rejects | `CANCELED`, `rejected_at_output_approval`, `rejected_by_reviewer`, the reason; no result |

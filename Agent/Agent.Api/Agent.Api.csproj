@@ -10,6 +10,17 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="Agent.Api.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- The default code-scan rules; the other files in ScanRules are for testing the rules. -->
+    <None Update="ScanRules/default.yaml">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
+  <ItemGroup>
     <None Remove="bundle.tar.gz" />
   </ItemGroup>
 

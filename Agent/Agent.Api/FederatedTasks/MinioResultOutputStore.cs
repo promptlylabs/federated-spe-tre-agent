@@ -1,3 +1,4 @@
+using System.Text.Json;
 using Agent.Api.Models;
 using FiveSafesTes.Core.Services;
 
@@ -18,6 +19,7 @@ namespace Agent.Api.FederatedTasks
         }
 
         private static string KeyFor(string taskId) => $"{taskId}.json";
+        private static string ScanKeyFor(string taskId) => $"{taskId}.scan.json";
 
         // A missing bucket (storage down at startup) is created on first use.
         public Task<byte[]?> TryGetAsync(string taskId, CancellationToken ct) =>
@@ -32,8 +34,27 @@ namespace Agent.Api.FederatedTasks
                 () => _helper.CreateBucket(_settings.OutputBucket),
                 _settings.OutputBucket);
 
-        public Task DeleteAsync(string taskId, CancellationToken ct) =>
-            MissingBucketRecovery.DeleteAsync(() => _helper.DeleteObject(_settings.OutputBucket, KeyFor(taskId)));
+        public async Task DeleteAsync(string taskId, CancellationToken ct)
+        {
+            await MissingBucketRecovery.DeleteAsync(() => _helper.DeleteObject(_settings.OutputBucket, KeyFor(taskId)));
+            await MissingBucketRecovery.DeleteAsync(() => _helper.DeleteObject(_settings.OutputBucket, ScanKeyFor(taskId)));
+        }
+
+        public Task SaveScanRecordAsync(string taskId, ScanRecord record, CancellationToken ct) =>
+            MissingBucketRecovery.RunAsync(
+                () => _helper.PutObjectAsync(_settings.OutputBucket, ScanKeyFor(taskId), JsonSerializer.SerializeToUtf8Bytes(record),
+                    "application/json", null, ct),
+                () => _helper.CreateBucket(_settings.OutputBucket),
+                _settings.OutputBucket);
+
+        public async Task<ScanRecord?> GetScanRecordAsync(string taskId, CancellationToken ct)
+        {
+            var bytes = await MissingBucketRecovery.ReadAsync(
+                () => _helper.GetObjectBytesAsync(_settings.OutputBucket, ScanKeyFor(taskId), ct),
+                () => _helper.CreateBucket(_settings.OutputBucket),
+                _settings.OutputBucket);
+            return bytes == null ? null : JsonSerializer.Deserialize<ScanRecord>(bytes);
+        }
 
         public Task MarkReleasedAsync(string taskId, string resultKey, string resultSha256, CancellationToken ct) =>
             _helper.SetObjectMetadataAsync(

@@ -24,10 +24,13 @@ public class FederatedInputChecksTests
     private static FederatedTaskSpec Spec(TesTask task) => FederatedTesProfile.Parse(task).Spec!;
 
     private static FederatedInputChecks Checks(IDatasetReader reader, params string[] approved) =>
-        new(reader, new FederatedTaskSettings { ApprovedImages = approved });
+        new(reader, new FederatedTaskSettings { ApprovedImages = approved }, new FakeCodeScanner());
 
     private static FederatedInputChecks Checks(FakeDatasetStore store, params string[] approved) =>
         Checks(new DatasetReader(store, new FederatedTaskSettings()), approved);
+
+    private static FederatedInputChecks Checks(FakeDatasetStore store, ICodeScanner scanner, params string[] approved) =>
+        new(new DatasetReader(store, new FederatedTaskSettings()), new FederatedTaskSettings { ApprovedImages = approved }, scanner);
 
     private static Task<InputCheckOutcome> Run(FederatedInputChecks checks, TesTask task) =>
         checks.RunAsync(task, Spec(task), CancellationToken.None);
@@ -95,7 +98,8 @@ public class FederatedInputChecksTests
     {
         var checks = Checks(new ThrowingResolveReader(), RunnerImage);
 
-        await Assert.ThrowsAsync<DatasetStoreException>(() => Run(checks, Task()));
+        var ex = await Assert.ThrowsAsync<InputCheckStoreException>(() => Run(checks, Task()));
+        Assert.IsType<DatasetStoreException>(ex.InnerException);
     }
 
     [Fact]
@@ -106,5 +110,52 @@ public class FederatedInputChecksTests
         Assert.Equal(InputCheckKind.Rejected, outcome.Kind);
         Assert.Equal("schema_not_found", outcome.ErrorCode);
         Assert.Equal("no schema.json found for 'cohort_2024'", outcome.ErrorMessage);
+    }
+
+    [Theory]
+    [InlineData("image not approved")]
+    [InlineData("findings")]
+    public async Task Checks_Order_ScanBetweenImageAndDataset(string failure)
+    {
+        var store = Store();
+        var findings = new List<CodeScanFinding> { new("import-not-allowed", 1, "'socket' is not allowed") };
+        var scanner = new FakeCodeScanner
+        {
+            Result = new CodeScanResult(CodeScanKind.Findings, findings, "v1", FakeCodeScanner.Sha, null)
+        };
+        var approved = failure == "image not approved" ? "other:1" : RunnerImage;
+
+        var outcome = await Run(Checks(store, scanner, approved), Task());
+
+        Assert.Equal(InputCheckKind.Rejected, outcome.Kind);
+        Assert.Equal(0, store.ListCalls);
+        if (failure == "image not approved")
+        {
+            Assert.Equal("image_not_approved", outcome.ErrorCode);
+            Assert.Equal(0, scanner.Calls);
+            Assert.Null(outcome.ScanRulesVersion);
+        }
+        else
+        {
+            Assert.Equal("unsafe_code", outcome.ErrorCode);
+            Assert.Equal(CodeScanMessages.Format(findings), outcome.ErrorMessage);
+            Assert.Equal("v1", outcome.ScanRulesVersion);
+            Assert.Equal(FakeCodeScanner.Sha, outcome.ScanRulesSha256);
+        }
+    }
+
+    [Fact]
+    public async Task Checks_RulesUnavailable_Hold()
+    {
+        var store = Store();
+        var scanner = new FakeCodeScanner
+        {
+            Result = new CodeScanResult(CodeScanKind.RulesUnavailable, [], null, null, "no version line")
+        };
+
+        var outcome = await Run(Checks(store, scanner, RunnerImage), Task());
+
+        Assert.Equal(InputCheckKind.Held, outcome.Kind);
+        Assert.Equal(0, store.ListCalls);
     }
 }

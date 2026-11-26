@@ -31,7 +31,9 @@ namespace Submission.Api.Services
                         State = p.State,
                         Times = p.PhaseTimes(),
                         ErrorCode = p.Phase == FederatedTaskPhase.Failed || FederatedTaskPhases.IsRejection(p.Phase) ? p.ErrorCode : null,
-                        ResultSha256 = p.Phase == FederatedTaskPhase.Released ? p.ResultSha256 : null
+                        ResultSha256 = p.Phase == FederatedTaskPhase.Released ? p.ResultSha256 : null,
+                        ScanRulesVersion = p.ScanRulesVersion,
+                        ScanRulesSha256 = p.ScanRulesSha256
                     })
                     .ToList()
             };

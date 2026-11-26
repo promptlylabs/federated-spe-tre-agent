@@ -1,0 +1,217 @@
+# version: 2026-11-2
+#
+# The hospital's code-scan rules: the Agent runs Semgrep with this file over the researcher's Python file before any
+# data is touched, and refuses the task if any rule finds something. Keep the version line above first: the Agent
+# reads the version from it, and records it with each task. Change the version whenever you change this file.
+#
+# A hospital may replace this file with its own. To allow another import, add its name to the list in
+# import-not-allowed (submodules are then allowed too).
+rules:
+  # Only these modules (and their submodules) may be imported. Anything else is refused.
+  # Every module listed must exist in the runner image. statsmodels is not in it yet: add it here once it is.
+  - id: import-not-allowed
+    languages: [python]
+    severity: ERROR
+    message: "'$MOD' is not on this hospital's list of allowed imports"
+    patterns:
+      - pattern-either:
+          - pattern: import $MOD
+          - pattern: import $MOD as $ALIAS
+          - pattern: from $MOD import $NAME
+          - pattern: from $MOD import $NAME as $ALIAS
+          - pattern: from $MOD import *
+      # [\w.]+ because Semgrep also matches "import $MOD" against "from a import b", with $MOD = "a import b".
+      - metavariable-regex:
+          metavariable: $MOD
+          regex: ^(?!(pandas|numpy|scipy|math|statistics|collections|itertools|functools|operator|datetime|decimal|fractions|re|json|typing|dataclasses|enum|warnings)(\.|$))[\w.]+$
+
+  # Code that builds or runs other code while it runs: what it does can't be checked in advance.
+  - id: dynamic-code
+    languages: [python]
+    severity: ERROR
+    # Off so that a name glued together from pieces ("sys" + "tem") does not count as written out.
+    options:
+      constant_propagation: false
+    message: "runs code made from text, or looks up a name put together while it runs, so what it does can't be checked in advance"
+    pattern-either:
+      - pattern: eval
+      - pattern: exec
+      - pattern: compile
+      - pattern: __import__
+      - pattern: globals
+      - pattern: locals
+      - pattern: vars
+      - pattern: breakpoint
+      - pattern: importlib
+      # getattr is fine only when called directly with a written-out name. A computed name is refused, and so is
+      # getattr passed around as a value (map(getattr, ...), functools.reduce(getattr, ...), g = getattr): the names
+      # it then looks up are made while the code runs.
+      - patterns:
+          - pattern-either:
+              - pattern: getattr
+              - pattern: setattr
+              - pattern: delattr
+          - pattern-not-inside:
+              patterns:
+                - pattern-either:
+                    - pattern: $FN($X, "...")
+                    - pattern: $FN($X, "...", $ARG)
+                - focus-metavariable: $FN
+      # Attributes such as __class__, __subclasses__ or __globals__ lead to everything Python can do.
+      - patterns:
+          - pattern: $X.$ATTR
+          - metavariable-regex:
+              metavariable: $ATTR
+              regex: ^__\w+__$
+      - patterns:
+          - pattern: $NAME
+          - metavariable-regex:
+              metavariable: $NAME
+              regex: ^__(?!name__$)\w+__$
+      # Frames and code objects hold every name a function can see, builtins included, without a double underscore:
+      # (x for x in [1]).gi_frame.f_builtins["eval"].
+      - patterns:
+          - pattern-either:
+              - pattern: $X.$ATTR
+              - pattern: getattr($X, "$ATTR", ...)
+          - metavariable-regex:
+              metavariable: $ATTR
+              regex: ^["']?((gi|cr|ag)_(frame|code|await|yieldfrom)|f_(back|builtins|code|globals|locals|generator)|tb_(frame|next))["']?$
+      # Text that other libraries run as code (formulas, queries) must not reach Python's internals or the system.
+      - patterns:
+          - pattern: '"$TEXT"'
+          # if __name__ == "__main__": is plain Python, not internals.
+          - pattern-not: '"__main__"'
+          - metavariable-regex:
+              metavariable: $TEXT
+              regex: .*(__\w+__|\b(os|sys|subprocess|builtins|importlib|ctypes|socket|shutil|pickle|marshal|pathlib|tempfile|urllib|multiprocessing|pty|runpy|inspect|linecache)\s*\.|\b(eval|exec|compile|getattr|setattr|vars|globals|locals|open|breakpoint)\s*\(|\.\s*((gi|cr|ag)_(frame|code)|f_(back|builtins|globals|locals)|tb_frame)\b)
+
+  # Starting another program or reaching the operating system.
+  - id: process-call
+    languages: [python]
+    severity: ERROR
+    message: "starts another program or uses the operating system"
+    pattern-either:
+      - pattern: subprocess
+      - patterns:
+          - pattern-either:
+              - pattern: $X.$FN
+              - pattern: from $MOD import $FN
+              - pattern: getattr($X, "$FN", ...)
+          - metavariable-regex:
+              metavariable: $FN
+              regex: ^["']?(system|popen|exec[lv]p?e?|spawn[lv]p?e?|posix_spawnp?|fork|forkpty|kill|killpg|Popen|subprocess)["']?$
+
+  # Reading or writing files. The code gets its data as df and returns its result as a dict; it never needs files.
+  - id: file-access
+    languages: [python]
+    severity: ERROR
+    message: "reads or writes files; the code gets its data only as df and returns its result as a dict"
+    pattern-either:
+      - pattern: open
+      - patterns:
+          - pattern-either:
+              - pattern: $X.$FN
+              - pattern: from $MOD import $FN
+              - pattern: getattr($X, "$FN", ...)
+          - metavariable-regex:
+              metavariable: $FN
+              regex: ^["']?(read_\w+|to_(excel|parquet|feather|hdf|pickle|orc|stata|sql|clipboard|gbq)|load|save|savez\w*|loadtxt|savetxt|genfromtxt|fromfile|tofile|fromregex|load_pickle|save_pickle|dump|save_npz|load_npz|DataSource)["']?$
+      # A written-out name is fine for getattr, but not the name of something that opens or writes files.
+      - patterns:
+          - pattern: getattr($X, "$FN", ...)
+          - metavariable-regex:
+              metavariable: $FN
+              regex: ^["']?(open|to_(csv|json|xml|string|markdown|html|latex))["']?$
+      # These return text when called without a path, and write a file when given one.
+      - patterns:
+          - pattern-either:
+              - pattern: $X.$FN($PATH, ...)
+              - pattern: $X.$FN(..., path_or_buf=$PATH, ...)
+              - pattern: $X.$FN(..., buf=$PATH, ...)
+          - metavariable-regex:
+              metavariable: $FN
+              regex: ^to_(csv|json|xml|string|markdown|html|latex)$
+
+  # Parts of allowed packages that reach compiled code, files or the system, or run text as code
+  # (typing.get_type_hints runs text annotations as code).
+  - id: back-door
+    languages: [python]
+    severity: ERROR
+    options:
+      constant_propagation: false
+    message: "uses a part of an allowed package that can reach files, the operating system or compiled code, or run text as code"
+    pattern-either:
+      - patterns:
+          - pattern-either:
+              - pattern: import $MOD
+              - pattern: import $MOD as $ALIAS
+              - pattern: from $MOD import $NAME
+              - pattern: from $MOD import $NAME as $ALIAS
+              - pattern: from $MOD import *
+          - metavariable-regex:
+              metavariable: $MOD
+              regex: ^(numpy\.(ctypeslib|f2py|distutils|testing)|scipy\.(io|_lib)|pandas\.(testing|compat|io))(\.[\w.]+)?$
+      - patterns:
+          - pattern-either:
+              - pattern: from numpy import $NAME
+              - pattern: from numpy import $NAME as $ALIAS
+          - metavariable-regex:
+              metavariable: $NAME
+              regex: ^(ctypeslib|f2py|distutils|testing)$
+      # testing, compat and io are never needed for analysis; they run text as code (numpy.testing.runstring), unpickle
+      # (pandas.compat.pickle_compat) or open files by other names (pandas.io.common.get_handle).
+      - patterns:
+          - pattern-either:
+              - pattern: from pandas import $NAME
+              - pattern: from pandas import $NAME as $ALIAS
+          - metavariable-regex:
+              metavariable: $NAME
+              regex: ^(testing|compat|io)$
+      - pattern: from scipy import _lib
+      - pattern: from scipy import _lib as $ALIAS
+      - pattern: from scipy import io
+      - pattern: from scipy import io as $ALIAS
+      - pattern: scipy.io
+      # Reached through any object, e.g. np.ctypeslib, np.testing, pd.HDFStore, pd.io.pytables.HDFStore, or a module
+      # that an allowed package imported itself (pd.io.common.os, pd.io.common.gzip, dataclasses.inspect,
+      # warnings.linecache). pd.io holds readers under names file-access doesn't list (get_handle, TextFileReader);
+      # CodeType and FunctionType build a function from raw bytecode.
+      - patterns:
+          - pattern-either:
+              - pattern: $X.$ATTR
+              - pattern: getattr($X, "$ATTR", ...)
+          - metavariable-regex:
+              metavariable: $ATTR
+              regex: ^["']?(ctypeslib|f2py|distutils|testing|compat|io|runstring|pickle_compat|Unpickler|urlopen|get_type_hints|ForwardRef|HDFStore|ExcelWriter|memmap|open_memmap|get_handle|TextFileReader|CodeType|FunctionType|os|sys|subprocess|builtins|importlib|ctypes|socket|shutil|pickle|marshal|pathlib|tempfile|urllib|multiprocessing|pty|runpy|gzip|codecs|bz2|lzma|zipfile|tarfile|mmap|inspect|linecache|tokenize|traceback)["']?$
+      - patterns:
+          - pattern: from $MOD import $NAME
+          - metavariable-regex:
+              metavariable: $NAME
+              regex: ^(get_type_hints|ForwardRef|HDFStore|ExcelWriter|memmap|open_memmap|runstring|pickle_compat|Unpickler|urlopen|get_handle|TextFileReader|CodeType|FunctionType)$
+      # The getattr trick: fine when called directly with a written-out name; refused with a computed one, and when
+      # passed around as a value (map(operator.attrgetter, names)). Also matches an alias (from operator import
+      # attrgetter as ag).
+      - patterns:
+          - pattern-either:
+              - pattern: operator.attrgetter
+              - pattern: operator.methodcaller
+          - pattern-not-inside:
+              patterns:
+                - pattern-either:
+                    - pattern: $FN("...")
+                    - pattern: $FN("...", ...)
+                - focus-metavariable: $FN
+      # Queries run their text as code: fine when called directly with written-out text; refused with text made at
+      # run time, and when the query function itself is kept in a name (f = pd.eval; f(expr)).
+      - patterns:
+          - pattern-either:
+              - pattern: $X.query
+              - pattern: $X.eval
+          - pattern-not-inside: $X.query("...", ...)
+          - pattern-not-inside: $X.eval("...", ...)
+      - patterns:
+          - pattern: getattr($X, "$NAME", ...)
+          - metavariable-regex:
+              metavariable: $NAME
+              regex: ^["']?(query|eval)["']?$

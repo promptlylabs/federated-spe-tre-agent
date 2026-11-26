@@ -16,6 +16,12 @@ namespace Submission.Api.Models
         public string? ErrorMessage { get; set; }
         public string? DatasetSha256 { get; set; }
 
+        /// <summary>Version label of the code-scan rules the Agent applied. Accepted on every state.</summary>
+        public string? ScanRulesVersion { get; set; }
+
+        /// <summary>Lowercase hex SHA-256 of the code-scan rules the Agent applied. Accepted on every state.</summary>
+        public string? ScanRulesSha256 { get; set; }
+
         /// <summary>For a CANCELED report: <c>input_checks</c> or <c>output_approval</c>.</summary>
         public string? RejectedAt { get; set; }
     }

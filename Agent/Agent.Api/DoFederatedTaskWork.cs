@@ -40,7 +40,8 @@ namespace Agent.Api
 
         public DoFederatedTaskWork(IFederatedTaskClient client, IDatasetReader reader, IFederatedTaskExecution execution,
             IResultOutputStore outputs, IOutputApproval approval, IEgressReviewClient egress, IConfiguration config,
-            TimeProvider clock, FederatedTaskSettings settings, AgentStartTime startedAt, DockerFaultTimes? dockerFaults = null)
+            TimeProvider clock, FederatedTaskSettings settings, AgentStartTime startedAt, ICodeScanner scanner,
+            DockerFaultTimes? dockerFaults = null)
         {
             _dockerFaults = dockerFaults ?? new DockerFaultTimes();
             _client = client;
@@ -51,7 +52,7 @@ namespace Agent.Api
             _config = config;
             _clock = clock;
             _settings = settings;
-            _checks = new FederatedInputChecks(reader, settings);
+            _checks = new FederatedInputChecks(reader, settings, scanner);
             _startedAt = startedAt;
         }
 
@@ -123,7 +124,7 @@ namespace Agent.Api
 
             // One line per poll, not per task, so a backlog does not flood the log.
             if (held > 0)
-                Log.Error("Federated tasks: FederatedTaskSettings:ApprovedImages is not configured; {Count} task(s) were not checked or run and keep their phase",
+                Log.Error("Federated tasks: FederatedTaskSettings:ApprovedImages is not configured or the code-scan rule file is not usable (see the errors above); {Count} task(s) were not checked or run and keep their phase",
                     held);
             if (heldForEgress > 0)
                 Log.Error("Federated tasks: FederatedEgressSettings BaseUrl/ClientId/ClientSecret are not configured; {Count} result(s) are held for output approval and not released",
@@ -150,7 +151,7 @@ namespace Agent.Api
             // The id becomes an object key; only a GUID is accepted, and it is stored in its canonical form.
             if (!Guid.TryParse(taskId, out var guid))
             {
-                await ReportErrorAsync(Error(taskId, FederatedTaskErrorCodes.InvalidTask, "the task id is not a valid GUID"));
+                await ReportErrorAsync(Error(taskId, FederatedTaskErrorCodes.InvalidTask, "the task id is not a valid GUID"), null);
                 return Hold.None;
             }
             var storeKey = guid.ToString("D");
@@ -159,6 +160,20 @@ namespace Agent.Api
             {
                 await CancelAsync(taskId, storeKey);
                 return Hold.None;
+            }
+
+            // The rules the task's code was scanned with, for every final report. This poll's checks set them;
+            // otherwise they are read from the store once, when a report needs them. A store error throws.
+            ScanRecord? scan = null;
+            var scanKnown = false;
+            async Task<ScanRecord?> ScanRecordAsync()
+            {
+                if (!scanKnown)
+                {
+                    scan = await _outputs.GetScanRecordAsync(storeKey, CancellationToken.None);
+                    scanKnown = true;
+                }
+                return scan;
             }
 
             // The review is read before the result: once a result has been reviewed, it is never computed again.
@@ -174,11 +189,11 @@ namespace Agent.Api
                     Log.Error("Federated tasks: the saved result of task {TaskId} (reviewed sha256 {Reviewed}) is missing; not releasing it",
                         taskId, review.ResultSha256);
                     await WithdrawPendingReviewAsync(storeKey, ResultChangedReason);
-                    await ReportErrorAsync(ResultChanged(taskId));
+                    await ReportErrorAsync(ResultChanged(taskId), await ScanRecordAsync());
                     return Hold.None;
                 }
 
-                await ActOnDecidedAsync(taskId, storeKey, review, null);
+                await ActOnDecidedAsync(taskId, storeKey, review, null, await ScanRecordAsync());
                 return Hold.None;
             }
 
@@ -196,7 +211,7 @@ namespace Agent.Api
                 if (prepared.Skip) return Hold.None;
                 if (prepared.ErrorReport != null)
                 {
-                    await ReportErrorAsync(prepared.ErrorReport);
+                    await ReportErrorAsync(prepared.ErrorReport, null);
                     return Hold.None;
                 }
 
@@ -212,16 +227,34 @@ namespace Agent.Api
                     {
                         checkOutcome = await _checks.RunAsync(task, prepared.Spec!, CancellationToken.None);
                     }
+                    catch (InputCheckStoreException ex)
+                    {
+                        // The scan ran before the dataset store failed: its rules are kept for the give-up report.
+                        scan = ex.Scan;
+                        scanKnown = true;
+                        await _outputs.SaveScanRecordAsync(storeKey, scan, CancellationToken.None);
+                        await RetryOrGiveUpAsync(task, taskId, ex.InnerException!, "listed", ScanRecordAsync);
+                        return Hold.None;
+                    }
                     catch (Exception ex)
                     {
-                        await RetryOrGiveUpAsync(task, taskId, ex, "listed");
+                        await RetryOrGiveUpAsync(task, taskId, ex, "listed", ScanRecordAsync);
                         return Hold.None;
                     }
 
                     if (checkOutcome.Kind == InputCheckKind.Held) return Hold.InputChecks;
+
+                    // The rules the scan used are saved before any report, so a later poll reports the same ones even
+                    // if the hospital's rule file has changed by then. A task refused before the scan has none.
+                    scan = checkOutcome is { ScanRulesVersion: { } version, ScanRulesSha256: { } rulesSha }
+                        ? new ScanRecord(version, rulesSha)
+                        : null;
+                    scanKnown = true;
+                    if (scan != null) await _outputs.SaveScanRecordAsync(storeKey, scan, CancellationToken.None);
+
                     if (checkOutcome.Kind == InputCheckKind.Rejected)
                     {
-                        await ReportErrorAsync(Error(taskId, checkOutcome.ErrorCode!, checkOutcome.ErrorMessage));
+                        await ReportErrorAsync(Error(taskId, checkOutcome.ErrorCode!, checkOutcome.ErrorMessage), scan);
                         return Hold.None;
                     }
 
@@ -261,7 +294,7 @@ namespace Agent.Api
                 }
                 catch (DatasetStoreException ex)
                 {
-                    if (await RetryOrGiveUpAsync(task, taskId, ex, "read"))
+                    if (await RetryOrGiveUpAsync(task, taskId, ex, "read", ScanRecordAsync))
                         await _execution.RemoveRunAsync(storeKey, CancellationToken.None);
                     return Hold.None;
                 }
@@ -276,13 +309,13 @@ namespace Agent.Api
                     }
 
                     _dockerFaults.Clear(taskId);
-                    if (await ReportErrorAsync(InternalError(taskId, ex)))
+                    if (await ReportErrorAsync(InternalError(taskId, ex), await ScanRecordAsync()))
                         await _execution.RemoveRunAsync(storeKey, CancellationToken.None);
                     return Hold.None;
                 }
                 catch (Exception ex)
                 {
-                    if (await ReportErrorAsync(InternalError(taskId, ex)))
+                    if (await ReportErrorAsync(InternalError(taskId, ex), await ScanRecordAsync()))
                         await _execution.RemoveRunAsync(storeKey, CancellationToken.None);
                     return Hold.None;
                 }
@@ -295,7 +328,7 @@ namespace Agent.Api
                     // The run is removed only once the report is settled, so a lost report does not run the code
                     // again: the next poll finds the run and reports its outcome once more.
                     var settled = await ReportErrorAsync(Error(taskId, executed.ErrorCode!, executed.ErrorMessage,
-                        executed.DatasetSha256, executed.IsRunFailure));
+                        executed.DatasetSha256, executed.IsRunFailure), await ScanRecordAsync());
                     if (settled) await _execution.RemoveRunAsync(storeKey, CancellationToken.None);
                     return Hold.None;
                 }
@@ -327,7 +360,7 @@ namespace Agent.Api
                 Log.Error("Federated tasks: the saved result of task {TaskId} (sha256 {Saved}) does not match the pending review (sha256 {Reviewed}); not registering or waiting",
                     taskId, sha, review.ResultSha256);
                 await WithdrawPendingReviewAsync(storeKey, ResultChangedReason);
-                await ReportErrorAsync(ResultChanged(taskId));
+                await ReportErrorAsync(ResultChanged(taskId), await ScanRecordAsync());
                 return Hold.None;
             }
 
@@ -341,7 +374,7 @@ namespace Agent.Api
                 if (review is { IsPending: true } && await _approval.IsWithdrawnAsync(storeKey, CancellationToken.None))
                 {
                     Log.Error("Federated tasks: the review of task {TaskId} was withdrawn; reporting the task as failed", taskId);
-                    await ReportErrorAsync(InternalError(taskId, null));
+                    await ReportErrorAsync(InternalError(taskId, null), await ScanRecordAsync());
                     return Hold.None;
                 }
 
@@ -366,7 +399,7 @@ namespace Agent.Api
                     // no reviewer can decide a task that has already failed.
                     await WithdrawPendingReviewAsync(storeKey,
                         "The result could not be registered for review in time, so the task has failed. It cannot be decided.");
-                    await ReportErrorAsync(InternalError(taskId, ex));
+                    await ReportErrorAsync(InternalError(taskId, ex), await ScanRecordAsync());
                     return Hold.None;
                 }
             }
@@ -377,7 +410,7 @@ namespace Agent.Api
                 return Hold.None;
             }
 
-            await ActOnDecidedAsync(taskId, storeKey, review, bytes);
+            await ActOnDecidedAsync(taskId, storeKey, review, bytes, await ScanRecordAsync());
             return Hold.None;
         }
 
@@ -398,18 +431,19 @@ namespace Agent.Api
             }
 
             var bytes = await _outputs.TryGetAsync(storeKey, CancellationToken.None);
-            await ActOnDecidedAsync(storeKey, storeKey, review, bytes);
+            var scan = await _outputs.GetScanRecordAsync(storeKey, CancellationToken.None);
+            await ActOnDecidedAsync(storeKey, storeKey, review, bytes, scan);
         }
 
         /// <summary>
         /// Rejects or releases a decided task. Only the exact bytes the reviewer approved may leave; a rejection
         /// stands even when the file is gone. Shared by the poll and <see cref="ActOnDecision"/>.
         /// </summary>
-        private async Task ActOnDecidedAsync(string taskId, string storeKey, OutputReview review, byte[]? bytes)
+        private async Task ActOnDecidedAsync(string taskId, string storeKey, OutputReview review, byte[]? bytes, ScanRecord? scan)
         {
             if (review.IsRejected)
             {
-                await ReportErrorAsync(Rejection(taskId, review));
+                await ReportErrorAsync(Rejection(taskId, review), scan);
                 return;
             }
 
@@ -417,7 +451,7 @@ namespace Agent.Api
             {
                 Log.Error("Federated tasks: the saved result of task {TaskId} (reviewed sha256 {Reviewed}) is missing; not releasing it",
                     taskId, review.ResultSha256);
-                await ReportErrorAsync(ResultChanged(taskId));
+                await ReportErrorAsync(ResultChanged(taskId), scan);
                 return;
             }
 
@@ -426,13 +460,13 @@ namespace Agent.Api
             {
                 Log.Error("Federated tasks: the saved result of task {TaskId} (sha256 {Saved}) does not match the reviewed result (sha256 {Reviewed}); not releasing it",
                     taskId, sha, review.ResultSha256);
-                await ReportErrorAsync(ResultChanged(taskId));
+                await ReportErrorAsync(ResultChanged(taskId), scan);
                 return;
             }
 
             var outcome = await _client.ReportAsync(
-                new FederatedTaskResultReport { TaskId = taskId, State = TesState.COMPLETEEnum }, bytes);
-            await HandleOutcomeAsync(taskId, storeKey, sha, bytes, outcome);
+                WithScan(new FederatedTaskResultReport { TaskId = taskId, State = TesState.COMPLETEEnum }, scan), bytes);
+            await HandleOutcomeAsync(taskId, storeKey, sha, bytes, outcome, scan);
         }
 
         private const string CanceledReason = "The task was cancelled, so it cannot be decided.";
@@ -539,11 +573,12 @@ namespace Agent.Api
         /// <summary>
         /// Reports an error state (no file) and logs when Submission does not accept it. Returns true when the task is
         /// settled: the report was accepted, the task was already final, or it is being cancelled. Otherwise the task
-        /// keeps its phase and the report is sent again at the next poll.
+        /// keeps its phase and the report is sent again at the next poll. <paramref name="scan"/>: the rules the task's code
+        /// was scanned with, or null when it was not scanned.
         /// </summary>
-        private async Task<bool> ReportErrorAsync(FederatedTaskResultReport report)
+        private async Task<bool> ReportErrorAsync(FederatedTaskResultReport report, ScanRecord? scan)
         {
-            var outcome = await _client.ReportAsync(report, null);
+            var outcome = await _client.ReportAsync(WithScan(report, scan), null);
             if (IsCanceling(outcome))
             {
                 Log.Information("Federated tasks: task {TaskId} is being cancelled; the error report was not recorded", report.TaskId);
@@ -566,7 +601,16 @@ namespace Agent.Api
             return true;
         }
 
-        private async Task HandleOutcomeAsync(string taskId, string storeKey, string sha, byte[] bytes, FederatedReportOutcome outcome)
+        /// <summary>Sets the rules the task's code was scanned with on a final report.</summary>
+        private static FederatedTaskResultReport WithScan(FederatedTaskResultReport report, ScanRecord? scan)
+        {
+            report.ScanRulesVersion = scan?.RulesVersion;
+            report.ScanRulesSha256 = scan?.RulesSha256;
+            return report;
+        }
+
+        private async Task HandleOutcomeAsync(string taskId, string storeKey, string sha, byte[] bytes, FederatedReportOutcome outcome,
+            ScanRecord? scan)
         {
             if (outcome.StatusCode == 200 || (outcome.StatusCode == 409 && outcome.ResultSha256 != null))
             {
@@ -578,7 +622,7 @@ namespace Agent.Api
                 outcome.ErrorCode is FederatedTaskErrorCodes.InvalidResult or FederatedTaskErrorCodes.ResultTooLarge)
             {
                 Log.Warning("Federated tasks: Submission rejected the result for task {TaskId} with {ErrorCode}", taskId, outcome.ErrorCode);
-                await ReportErrorAsync(Error(taskId, outcome.ErrorCode!, outcome.ErrorMessage, DatasetShaFrom(bytes)));
+                await ReportErrorAsync(Error(taskId, outcome.ErrorCode!, outcome.ErrorMessage, DatasetShaFrom(bytes)), scan);
                 return;
             }
 
@@ -698,7 +742,8 @@ namespace Agent.Api
         /// or denied would otherwise leave the task unfinished with nothing the orchestrator can see.
         /// </summary>
         /// <returns>True when the task was given up and the error report is settled; false when it is retried.</returns>
-        private async Task<bool> RetryOrGiveUpAsync(TesTask task, string taskId, Exception ex, string action)
+        private async Task<bool> RetryOrGiveUpAsync(TesTask task, string taskId, Exception ex, string action,
+            Func<Task<ScanRecord?>> scan)
         {
             if (!HasWaitedTooLong(task))
             {
@@ -707,7 +752,7 @@ namespace Agent.Api
                 return false;
             }
 
-            return await ReportErrorAsync(InternalError(taskId, ex));
+            return await ReportErrorAsync(InternalError(taskId, ex), await scan());
         }
 
         /// <summary>
@@ -766,12 +811,15 @@ namespace Agent.Api
         {
             Log.Information("Federated tasks: task {TaskId} failed with {ErrorCode}", taskId, code);
             // An input-check failure is a rejection (CANCELED), not an execution failure. A failed run of researcher
-            // code is always an execution failure, even when its code is also an input-check code.
+            // code is always an execution failure, even when its code is also an input-check code. An internal error
+            // is the TRE's own fault (SYSTEM_ERROR), such as a code scan that could not run.
             var rejected = !runFailure && FederatedTaskErrorCodes.InputCheckCodes.Contains(code);
             return new FederatedTaskResultReport
             {
                 TaskId = taskId,
-                State = rejected ? TesState.CANCELEDEnum : TesState.EXECUTORERROREnum,
+                State = rejected ? TesState.CANCELEDEnum
+                    : code == FederatedTaskErrorCodes.InternalError ? TesState.SYSTEMERROREnum
+                    : TesState.EXECUTORERROREnum,
                 RejectedAt = rejected ? FederatedRejectedAt.InputChecks : null,
                 ErrorCode = code,
                 ErrorMessage = message == null ? null : FederatedResultLimits.TruncateErrorMessage(CleanControlChars(message)),

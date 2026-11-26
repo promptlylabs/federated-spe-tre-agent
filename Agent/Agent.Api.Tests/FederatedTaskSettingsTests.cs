@@ -172,12 +172,14 @@ public class FederatedTaskSettingsTests
     }
 
     [Fact]
-    public void RunSettingsProblem_NamesBothWhenBothAreWrong()
+    public void RunSettingsProblem_NamesEveryWrongSetting()
     {
-        var problem = new FederatedTaskSettings { MaxConcurrentRuns = 0, MaxRunMinutes = 0 }.RunSettingsProblem();
+        var problem = new FederatedTaskSettings { MaxConcurrentRuns = 0, MaxRunMinutes = 0, ScanTimeoutSeconds = 0 }
+            .RunSettingsProblem();
 
         Assert.NotNull(problem);
         Assert.Contains("MaxConcurrentRuns", problem);
         Assert.Contains("MaxRunMinutes", problem);
+        Assert.Contains("FederatedTaskSettings:ScanTimeoutSeconds", problem);
     }
 }
