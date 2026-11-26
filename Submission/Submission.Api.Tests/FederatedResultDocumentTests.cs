@@ -247,6 +247,33 @@ public class FederatedResultDocumentTests
         Assert.Equal(ShaOk, result.DatasetSha256);
     }
 
+    [Fact]
+    public void SerializeAnalysis_round_trips_through_Validate()
+    {
+        var doc = new FederatedAnalysisResultDocument
+        {
+            TaskId = TaskGuid.ToString("D"),
+            Tre = "tre-a",
+            StudyId = "study-1",
+            Operation = "run-analysis",
+            Dataset = "cohort_2024",
+            DatasetSha256 = ShaOk,
+            CompletedAt = new DateTimeOffset(2026, 11, 4, 10, 0, 0, TimeSpan.Zero),
+            Result = new FederatedAnalysisResult
+            {
+                N = 120, Value = System.Text.Json.JsonDocument.Parse("{\"mean_age\":41.2}").RootElement.Clone()
+            }
+        };
+
+        var bytes = FederatedResultDocumentJson.SerializeAnalysis(doc);
+        var result = FederatedResultDocumentJson.Validate(bytes, CodeRow());
+
+        Assert.True(result.IsValid, result.Message);
+        Assert.Equal(120, result.AnalysisDocument!.Result.N);
+        Assert.Equal(41.2, result.AnalysisDocument.Result.Value.GetProperty("mean_age").GetDouble());
+        Assert.StartsWith("{\"schemaVersion\":1,", Encoding.UTF8.GetString(bytes));
+    }
+
     [Theory]
     [InlineData("{\"kind\":\"analysis\",\"value\":{}}", "missing required field 'result.n'")]
     [InlineData("{\"kind\":\"analysis\",\"n\":1}", "missing required field 'result.value'")]

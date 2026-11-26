@@ -7,6 +7,7 @@ using Agent.Api.Models;
 using Agent.Api.Repositories.DbContexts;
 using Agent.Api.Services;
 using Credentials.Models.DbContexts;
+using Docker.DotNet;
 using EasyNetQ;
 using FiveSafesTes.Core.Extensions;
 using FiveSafesTes.Core.Models.Settings;
@@ -133,8 +134,11 @@ builder.Services.AddSingleton(minioTRESettings);
 var federatedTaskSettings = FederatedTaskSettings.FromConfiguration(configuration);
 builder.Services.AddSingleton(federatedTaskSettings);
 builder.Services.AddSingleton(new AgentStartTime(TimeProvider.System.GetUtcNow()));
+builder.Services.AddSingleton<DockerFaultTimes>();
 if (federatedTaskSettings.ApprovedImagesProblem() is { } approvedImagesProblem)
     Log.Error("Federated tasks: {Problem}", approvedImagesProblem);
+if (federatedTaskSettings.RunSettingsProblem() is { } runSettingsProblem)
+    Log.Error("Federated tasks: {Problem}", runSettingsProblem);
 
 
 var DmnPath = new FiveSafesTes.Core.Models.DmnPath();
@@ -350,6 +354,19 @@ using (var scope = app.Services.CreateScope())
     {
         Log.Error("Could not create output read policy {PolicyName}", federatedTaskSettings.OutputReadPolicyName);
     }
+
+    // Code tasks run through Docker. Don't fail startup if it is unreachable: code tasks are not run until it is
+    // back, and count and mean tasks do not need it. Checked once, as a hint for the site admin.
+    try
+    {
+        using var dockerPing = new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        await app.Services.GetRequiredService<IDockerClient>().System.PingAsync(dockerPing.Token);
+    }
+    catch (Exception ex)
+    {
+        Log.Error(ex, "Federated tasks: Docker at FederatedTaskSettings:DockerEndpoint {DockerEndpoint} is not reachable; code tasks cannot run until it is",
+            federatedTaskSettings.DockerEndpoint);
+    }
 }
 
 
@@ -403,7 +420,13 @@ void AddDependencies(WebApplicationBuilder builder, ConfigurationManager configu
     builder.Services.AddScoped<IMinioTreHelper, MinioTreHelper>();
     builder.Services.AddScoped<IDatasetStore, MinioDatasetStore>();
     builder.Services.AddScoped<IDatasetReader, DatasetReader>();
-    builder.Services.AddScoped<IFederatedTaskExecution, OperationExecution>();
+    // Code tasks run in containers through the Docker socket; count and mean tasks run in the Agent.
+    builder.Services.AddSingleton<IDockerClient>(sp =>
+        new DockerClientConfiguration(new Uri(sp.GetRequiredService<FederatedTaskSettings>().DockerEndpoint)).CreateClient());
+    builder.Services.AddScoped<ICodeRunner, DockerCodeRunner>();
+    builder.Services.AddScoped<OperationExecution>();
+    builder.Services.AddScoped<CodeExecution>();
+    builder.Services.AddScoped<IFederatedTaskExecution, FederatedTaskExecutionRouter>();
     builder.Services.AddScoped<IResultOutputStore, MinioResultOutputStore>();
     builder.Services.AddScoped<IFederatedTokenSource, KeycloakFederatedTokenSource>();
     builder.Services.AddScoped<IFederatedTaskClient, FederatedTaskClient>();

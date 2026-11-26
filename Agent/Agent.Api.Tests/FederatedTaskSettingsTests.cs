@@ -81,6 +81,32 @@ public class FederatedTaskSettingsTests
     }
 
     [Fact]
+    public void CodeRunDefaults()
+    {
+        var s = new FederatedTaskSettings();
+        Assert.Equal(30, s.MaxRunMinutes);
+        Assert.Equal(1, s.DefaultCpuCores);
+        Assert.Equal(4, s.MaxCpuCores);
+        Assert.Equal(8, s.DefaultRamGb);
+        Assert.Equal(16, s.MaxRamGb);
+        Assert.Equal(1, s.DefaultDiskGb);
+        Assert.Equal(4, s.MaxDiskGb);
+        Assert.Equal(2, s.MaxConcurrentRuns);
+        Assert.Equal("unix:///var/run/docker.sock", s.DockerEndpoint);
+    }
+
+    [Theory]
+    [InlineData("python-runner:1")]
+    [InlineData("registry.example/spms/python-runner:1")]
+    [InlineData("5s-tes/federated-ops:1")]
+    public void ApprovedImagesProblem_NullForKnownImageNames(string image) =>
+        Assert.Null(new FederatedTaskSettings { ApprovedImages = [image] }.ApprovedImagesProblem());
+
+    [Fact]
+    public void ApprovedImagesProblem_FlagsTypo() =>
+        Assert.NotNull(new FederatedTaskSettings { ApprovedImages = ["pyhton-runner:1"] }.ApprovedImagesProblem());
+
+    [Fact]
     public void ApprovedImagesProblem_is_null_when_the_list_is_empty_or_has_the_profile_image()
     {
         Assert.Null(new FederatedTaskSettings().ApprovedImagesProblem());
@@ -90,10 +116,11 @@ public class FederatedTaskSettingsTests
     [Fact]
     public void ApprovedImagesProblem_names_the_profile_image_when_the_list_lacks_it()
     {
-        var warning = new FederatedTaskSettings { ApprovedImages = ["docker.io/5s-tes/federated-ops:1"] }.ApprovedImagesProblem();
+        var warning = new FederatedTaskSettings { ApprovedImages = ["docker.io/5s-tes/federated-opz:1"] }.ApprovedImagesProblem();
 
         Assert.NotNull(warning);
-        Assert.Contains("'5s-tes/federated-ops:1'", warning);
+        Assert.Contains("python-runner", warning);
+        Assert.Contains("federated-ops", warning);
         Assert.Contains("image_not_approved", warning);
     }
 
@@ -108,5 +135,43 @@ public class FederatedTaskSettingsTests
         });
 
         Assert.Equal(["other:1"], settings.ApprovedImages);
+    }
+
+    [Fact]
+    public void RunSettingsProblem_NullForDefaults() =>
+        Assert.Null(new FederatedTaskSettings().RunSettingsProblem());
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void RunSettingsProblem_FlagsMaxConcurrentRunsZeroOrLess(int value)
+    {
+        var problem = new FederatedTaskSettings { MaxConcurrentRuns = value }.RunSettingsProblem();
+
+        Assert.NotNull(problem);
+        Assert.Contains("FederatedTaskSettings:MaxConcurrentRuns", problem);
+        Assert.DoesNotContain("MaxRunMinutes", problem);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-5)]
+    public void RunSettingsProblem_FlagsMaxRunMinutesZeroOrLess(int value)
+    {
+        var problem = new FederatedTaskSettings { MaxRunMinutes = value }.RunSettingsProblem();
+
+        Assert.NotNull(problem);
+        Assert.Contains("FederatedTaskSettings:MaxRunMinutes", problem);
+        Assert.DoesNotContain("MaxConcurrentRuns", problem);
+    }
+
+    [Fact]
+    public void RunSettingsProblem_NamesBothWhenBothAreWrong()
+    {
+        var problem = new FederatedTaskSettings { MaxConcurrentRuns = 0, MaxRunMinutes = 0 }.RunSettingsProblem();
+
+        Assert.NotNull(problem);
+        Assert.Contains("MaxConcurrentRuns", problem);
+        Assert.Contains("MaxRunMinutes", problem);
     }
 }

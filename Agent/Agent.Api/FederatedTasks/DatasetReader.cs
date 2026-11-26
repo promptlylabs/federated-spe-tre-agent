@@ -11,6 +11,7 @@ namespace Agent.Api.FederatedTasks
     {
         // Not AllowedExtensions: that is the upload policy, and the parser reads only CSV.
         private const string DatasetExtension = ".csv";
+        private const string SchemaFileName = "schema.json";
 
         private readonly IDatasetStore _store;
         private readonly FederatedTaskSettings _settings;
@@ -42,8 +43,10 @@ namespace Agent.Api.FederatedTasks
                 throw new DatasetStoreException($"Listing dataset '{datasetName}' failed", ex);
             }
 
-            var keys = listed
+            var children = listed
                 .Where(k => k.IndexOf('/', prefix.Length) < 0) // direct children only
+                .ToList();
+            var keys = children
                 .Where(k => k.EndsWith(DatasetExtension, StringComparison.Ordinal))
                 .ToList();
 
@@ -59,7 +62,8 @@ namespace Agent.Api.FederatedTasks
                     $"more than one dataset file found for '{datasetName}'");
             }
 
-            return DatasetResolveResult.Ok(keys[0]);
+            var schemaKey = $"{prefix}{SchemaFileName}";
+            return DatasetResolveResult.Ok(keys[0], children.Contains(schemaKey, StringComparer.Ordinal) ? schemaKey : null);
         }
 
         public async Task<DatasetReadResult> ReadAsync(string fileKey, CancellationToken ct)

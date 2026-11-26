@@ -34,18 +34,43 @@ cached_login() {
 
 token() { cached_login submission "$KEYCLOAK" Dare-Control-API dev-dare-control-api-secret control-admin 'ControlAdmin1!'; }
 
+# Prints the TES body of a code task: the Python file inline, fed.code_sha256 the SHA-256 of its bytes.
+code_task_body() {
+  local dataset=$1 file=$2
+  [ -f "$file" ] || { echo "no such file: $file" >&2; return 1; }
+  python3 - "$dataset" "$file" <<'PY'
+import hashlib, json, sys
+dataset, path = sys.argv[1], sys.argv[2]
+raw = open(path, "rb").read()
+print(json.dumps({
+    "executors": [{"image": "python-runner:1",
+                   "command": ["run-analysis", "/code/analysis.py", f"/data/{dataset}", "/outputs/result.json"]}],
+    "inputs": [{"path": "/code/analysis.py", "type": "FILE", "content": raw.decode("utf-8")},
+               {"url": f"dataset://{dataset}", "path": f"/data/{dataset}", "type": "DIRECTORY"}],
+    "outputs": [{"path": "/outputs/result.json", "url": "result://", "type": "FILE"}],
+    "tags": {"fed.sites": "my-tre", "fed.study_id": "study-001", "fed.code_sha256": hashlib.sha256(raw).hexdigest()},
+}))
+PY
+}
+
+# enqueue <dataset> [operation] [extra args...]: a count/mean task. enqueue <dataset> code <file.py>: a code task.
 enqueue() {
   local dataset=$1 operation=${2:-count}
   shift $(( $# >= 2 ? 2 : 1 ))
-  local command
-  command=$(python3 -c 'import sys, json; print(json.dumps(sys.argv[1:]))' "$operation" "$@")
   local body
-  body=$(cat <<EOF
+  if [ "$operation" = code ]; then
+    [ $# -eq 1 ] || { echo "usage: enqueue <dataset> code <file.py>" >&2; return 1; }
+    body=$(code_task_body "$dataset" "$1") || return 1
+  else
+    local command
+    command=$(python3 -c 'import sys, json; print(json.dumps(sys.argv[1:]))' "$operation" "$@")
+    body=$(cat <<EOF
 {"executors":[{"image":"5s-tes/federated-ops:1","command":$command}],
  "inputs":[{"url":"dataset://$dataset","path":"/data/$dataset","type":"DIRECTORY"}],
  "outputs":[],"tags":{"fed.sites":"my-tre","fed.study_id":"study-001"}}
 EOF
 )
+  fi
   local response code
   response=$(curl -s -w '\n%{http_code}' -X POST "$SUBMISSION/api/FederatedTask/Enqueue" \
     -H "Authorization: Bearer $(token)" -H 'Content-Type: application/json' -d "$body")

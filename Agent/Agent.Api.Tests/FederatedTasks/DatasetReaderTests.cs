@@ -169,4 +169,41 @@ public class DatasetReaderTests
         var ex = await Assert.ThrowsAsync<DatasetStoreException>(() => Reader(store).ReadAsync("dataset/x/a.csv", CancellationToken.None));
         Assert.IsType<IOException>(ex.InnerException);
     }
+
+    [Fact]
+    public async Task Resolve_ReturnsSchemaKey_WhenPresent()
+    {
+        var store = new FakeDatasetStore()
+            .Add("dataset/x/x.csv", "a\n1\n")
+            .Add("dataset/x/schema.json", "{}");
+
+        var resolved = await Reader(store).ResolveAsync("x", CancellationToken.None);
+
+        Assert.True(resolved.IsSuccess);
+        Assert.Equal("dataset/x/schema.json", resolved.SchemaKey);
+    }
+
+    [Fact]
+    public async Task Resolve_SchemaKeyNull_WhenAbsent()
+    {
+        var store = new FakeDatasetStore().Add("dataset/x/x.csv", "a\n1\n");
+
+        var resolved = await Reader(store).ResolveAsync("x", CancellationToken.None);
+
+        Assert.True(resolved.IsSuccess);
+        Assert.Null(resolved.SchemaKey);
+    }
+
+    [Fact]
+    public async Task Resolve_IgnoresNestedSchemaJson()
+    {
+        var store = new FakeDatasetStore()
+            .Add("dataset/x/x.csv", "a\n1\n")
+            .Add("dataset/x/sub/schema.json", "{}");
+
+        var resolved = await Reader(store).ResolveAsync("x", CancellationToken.None);
+
+        Assert.True(resolved.IsSuccess);
+        Assert.Null(resolved.SchemaKey);
+    }
 }

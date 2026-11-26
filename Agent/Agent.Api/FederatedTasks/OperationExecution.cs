@@ -18,8 +18,20 @@ namespace Agent.Api.FederatedTasks
             _clock = clock;
         }
 
-        public async Task<ExecutionResult> RunAsync(TesTask task, FederatedTaskSpec spec, string fileKey, CancellationToken ct)
+        // Count and mean finish within the poll that starts them, so nothing outlives it.
+        public Task<bool> HasRunAsync(string taskId, CancellationToken ct) => Task.FromResult(false);
+
+        public Task<bool> CanStartAsync(FederatedTaskSpec spec, CancellationToken ct) => Task.FromResult(true);
+
+        public Task RemoveRunAsync(string taskId, CancellationToken ct) => Task.CompletedTask;
+
+        public Task SweepAsync(IReadOnlyCollection<string> pendingTaskIds, CancellationToken ct) => Task.CompletedTask;
+
+        public async Task<ExecutionResult> RunAsync(TesTask task, FederatedTaskSpec spec, string? fileKey, CancellationToken ct)
         {
+            // HasRunAsync is always false, so the poll always passes the key the input checks found.
+            ArgumentNullException.ThrowIfNull(fileKey);
+
             // A bucket failure throws DatasetStoreException; the polling job retries it.
             var dataset = await _reader.ReadAsync(fileKey, ct);
             if (!dataset.IsSuccess)

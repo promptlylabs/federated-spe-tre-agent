@@ -46,6 +46,14 @@ namespace Agent.Api.FederatedTasks
                         Effect = "Allow",
                         Action = new[] { "s3:PutObject", "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts" },
                         Resource = extensions.Select(e => $"arn:aws:s3:::{bucket}/{prefix}*.{e}").ToArray()
+                    },
+                    // The runner of researcher code needs schema.json next to the dataset file.
+                    new
+                    {
+                        Sid = "UploadDatasetSchemas",
+                        Effect = "Allow",
+                        Action = new[] { "s3:PutObject", "s3:AbortMultipartUpload", "s3:ListMultipartUploadParts" },
+                        Resource = new[] { $"arn:aws:s3:::{bucket}/{prefix}*/schema.json" }
                     }
                 }
             };
