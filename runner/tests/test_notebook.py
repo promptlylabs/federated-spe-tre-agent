@@ -37,6 +37,12 @@ def test_converts_without_spe_only_outputs_markdown_and_magics():
     assert text == MARKER + "import pandas as pd\n\n\nx = 1\n\n\ny = 2\n\n\n" + GOOD_FUNCS
 
 
+def test_only_magics_at_the_start_of_a_logical_line_are_touched():
+    cell = 'q = """\n%d rows\n!x\n"""\nok = (1\n      != 2)\n%time r = 1\n%timeit s = 2'
+    text = convert(nb(code(cell), code(GOOD_FUNCS)), "study.ipynb")
+    assert text == MARKER + 'q = """\n%d rows\n!x\n"""\nok = (1\n      != 2)\nr = 1\ns = 2\n\n\n' + GOOD_FUNCS
+
+
 def _base():
     return [code("import pandas as pd", count=1), code("x = 1\n\n", count=2), code(GOOD_FUNCS, count=3)]
 
@@ -71,8 +77,11 @@ def test_same_notebook_same_bytes(variant):
         ("%%bash\nls", "%%bash"),
         ("%%writefile f.py\nx=1", "%%writefile"),
         ("df?", "syntax error"),
+        ("\n%%bash\nls", "%%bash"),
+        ("x = 1\n%%bash\nls", "cell 1, line 2"),
     ],
-    ids=["bang", "bang-assign", "pip", "conda", "bash", "unknown-cell-magic", "ipython-help"],
+    ids=["bang", "bang-assign", "pip", "conda", "bash", "unknown-cell-magic", "ipython-help", "bash-after-blank-line",
+         "cell-magic-not-first"],
 )
 def test_refuses(cell, message_part):
     with pytest.raises(AnalysisError) as e:

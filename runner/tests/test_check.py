@@ -103,9 +103,10 @@ def test_broken_synthetic_data_skips(make_code, make_dataset, capsys):
 
 
 def test_invalid_code_blocks_before_dry_run(make_code, tmp_path, capsys):
-    # The dataset directory doesn't exist: had a dry run started, the message would be about the data.
+    # The dataset directory is empty: had a dry run started, the check would pass with the dry run skipped.
+    (tmp_path / "empty").mkdir()
     code = make_code("def site_analysis(df):\n    return {'n': 0}\n")
-    assert main(["--dataset", str(tmp_path / "nowhere"), str(code)]) == 1
+    assert main(["--dataset", str(tmp_path / "empty"), str(code)]) == 1
     assert "no aggregate(results) function" in capsys.readouterr().out
 
 
@@ -118,4 +119,14 @@ def test_dry_run_output_is_only_ours(make_code, make_dataset, capsys):
 
 def test_usage(capsys):
     assert main([]) == 2
+    assert "usage: check-analysis" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("where", ["missing", "file"])
+def test_dataset_must_be_a_directory(make_code, tmp_path, capsys, where):
+    # A wrong path is a mistake in the call, not broken synthetic data: it must not pass without a dry run.
+    target = tmp_path / "nope"
+    if where == "file":
+        target.write_text("age\n1\n")
+    assert main(["--dataset", str(target), str(make_code(analysis()))]) == 2
     assert "usage: check-analysis" in capsys.readouterr().err

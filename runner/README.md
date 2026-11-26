@@ -247,7 +247,11 @@ install the commands.
   - `!` shell commands (also `x = !ls`), `%pip`, `%conda`, `%sx`, `%system`,
     `%%bash`, `%%sh`, `%%script`, `%%system` and any other cell magic refuse
     the notebook, naming the cell; `%%time`, `%%timeit` and `%%capture` keep
-    their body; other line magics are removed;
+    their body; `%time`, `%timeit` and `%prun` keep the statement after them;
+    other line magics are removed. As in Jupyter, a cell magic counts only on
+    the first non-blank line of a cell (elsewhere it refuses the notebook), and
+    `%` and `!` count only at the start of a logical line: inside a string,
+    brackets or after a backslash they are Python and are kept;
   - line endings and trailing spaces are normalised, cells are separated by two
     blank lines, and the first line says the file was generated
     (`# Generated from <notebook> by convert-notebook. Edit the notebook, not this file.`);

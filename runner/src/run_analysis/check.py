@@ -148,6 +148,10 @@ def main(argv: list[str] | None = None) -> int:
         print(USAGE, file=sys.stderr)
         return 2
     path, dataset, timeout = parsed
+    # A wrong path is a mistake in the call, not broken synthetic data: it must not pass without a dry run.
+    if dataset is not None and not dataset.is_dir():
+        print(f"check-analysis: {dataset} is not a directory\n{USAGE}", file=sys.stderr)
+        return 2
     try:
         source = path.read_bytes()
     except OSError as e:
