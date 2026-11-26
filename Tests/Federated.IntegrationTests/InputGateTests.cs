@@ -66,7 +66,7 @@ public class InputGateTests
         Assert.Equal("rejected_by_input_checks", end.Phase);
         Assert.Equal("unsafe_code", end.ErrorCode);
         Assert.Contains("import-not-allowed line 1", end.ErrorMessage);
-        Assert.Equal("2026-11-1", end.ScanRulesVersion);
+        Assert.Equal("2026-11-2", end.ScanRulesVersion);
         Assert.Null(await stack.Submission.GetResultAsync(queued.Id!));
         Assert.False(await stack.Results.HasResultAsync(queued.Id!));
     }

@@ -57,8 +57,26 @@ df.__class__.__subclasses__()
 smf.ols("y ~ I(__import__('os').system('id'))", data=df)
 # ruleid: dynamic-code
 df.query("age > @vars(np.lib)['o' + 's']")
+# ruleid: dynamic-code
+list(map(getattr, [pd], ["o" + "s"]))
+# ruleid: dynamic-code
+functools.reduce(getattr, ["io", "common"], pd)
+# ruleid: dynamic-code
+g = getattr
+# ruleid: dynamic-code
+getattr(map(getattr, [pd], [name]), "x")
+# ruleid: dynamic-code
+(x for x in [1]).gi_frame.f_builtins["ev" + "al"]("1")
+# ruleid: dynamic-code
+tb.tb_frame.f_globals
+# ruleid: dynamic-code
+smf.ols("y ~ I((x for x in [1]).gi_frame)", data=df)
 # ok: dynamic-code
 getattr(df, "age")
+# ok: dynamic-code
+getattr(df, "age", None)
+# ok: dynamic-code
+stats.f_oneway(a, b)
 # ok: dynamic-code
 smf.ols("age ~ C(sex)", data=df)
 # ok: dynamic-code
@@ -164,6 +182,25 @@ from pandas.io.common import urlopen
 pd.io.common.gzip.GzipFile(name)
 # ruleid: back-door
 c.codecs.decode(data)
+# ruleid: back-door
+pd.io.common.get_handle("/etc/passwd", "r")
+# ruleid: back-door
+pd.io.parsers.readers.TextFileReader("/etc/passwd")
+# ruleid: back-door
+from pandas.io.parsers.readers import TextFileReader
+# ruleid: back-door
+dataclasses.inspect.linecache.getlines("/etc/passwd")
+# ruleid: back-door
+dataclasses.inspect.currentframe()
+# ruleid: back-door
+typing.types.CodeType
+from operator import attrgetter as ag
+# ruleid: back-door
+ag("o" + "s")(pd)
+# ruleid: back-door
+list(map(operator.attrgetter, names))
+# ok: back-door
+pd.api.types.is_numeric_dtype(df["age"])
 # ok: back-door
 df.groupby("sex").agg("mean")
 # ok: back-door

@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Agent.Api.Models;
 
 namespace Agent.Api.FederatedTasks
@@ -58,6 +59,16 @@ namespace Agent.Api.FederatedTasks
             }
 
             var sha = Convert.ToHexStringLower(SHA256.HashData(rules));
+            var encodingLine = NonUtf8EncodingLine(code);
+            if (encodingLine != null)
+            {
+                // Semgrep would scan different code from the code Python runs, so its result could not be trusted.
+                return new CodeScanResult(
+                    CodeScanKind.Findings,
+                    [new CodeScanFinding(CodeScanMessages.EncodingRuleId, encodingLine.Value, CodeScanMessages.EncodingMessage)],
+                    version, sha, null);
+            }
+
             var dir = Directory.CreateTempSubdirectory("fed-scan-");
             try
             {
@@ -255,6 +266,36 @@ namespace Agent.Api.FederatedTasks
 
             return 1;
         }
+
+        /// <summary>
+        /// The line (1 or 2) of an encoding declaration other than UTF-8, or null. Python decodes the file with the
+        /// encoding a comment on line 1 or 2 declares ("# -*- coding: utf-7 -*-"), while Semgrep always reads UTF-8, so
+        /// under another encoding code can hide in what Semgrep sees as a comment. Lines are split both on "\n" alone and
+        /// on any of "\r\n", "\r", "\n", so the check holds whichever way Python splits them. Python reads line 2 only
+        /// when line 1 is a comment or blank; this checks line 2 regardless.
+        /// </summary>
+        internal static int? NonUtf8EncodingLine(string code)
+        {
+            foreach (var lines in new[] { code.Split('\n', 3), code.Split(["\r\n", "\r", "\n"], 3, StringSplitOptions.None) })
+            {
+                for (var i = 0; i < Math.Min(2, lines.Length); i++)
+                {
+                    var match = EncodingDeclaration.Match(lines[i]);
+                    if (match.Success && !Utf8Name.IsMatch(match.Groups[1].Value))
+                    {
+                        return i + 1;
+                    }
+                }
+            }
+
+            return null;
+        }
+
+        /// <summary>Python's own pattern for an encoding declaration (PEP 263).</summary>
+        private static readonly Regex EncodingDeclaration =
+            new(@"^[ \t\f]*#.*?coding[:=][ \t]*([-\w.]+)", RegexOptions.CultureInvariant);
+
+        private static readonly Regex Utf8Name = new("^utf[-_]?8$", RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
         /// <summary>The version from a "# version: &lt;text&gt;" first line, or null.</summary>
         private static string? ReadVersion(byte[] rules)

@@ -34,6 +34,8 @@ namespace Agent.Api.FederatedTasks
     {
         public const string ParseErrorRuleId = "parse-error";
         public const string ParseErrorMessage = "the code could not be parsed";
+        public const string EncodingRuleId = "encoding-not-utf8";
+        public const string EncodingMessage = "declares an encoding other than UTF-8, so the scan can't read the code Python would run";
 
         /// <summary>
         /// The refusal message: each finding as "&lt;rule-id&gt; line &lt;n&gt;: &lt;message&gt;", sorted by line, joined with "; ",

@@ -142,6 +142,47 @@ public class SemgrepCodeScannerTests
     }
 
     [Theory]
+    [InlineData("# -*- coding: utf-7 -*-\nx = 1  # +AAo-import socket\n", 1)]
+    [InlineData("#!/usr/bin/env python\n# vim: set fileencoding=latin-1 :\n", 2)]
+    [InlineData("x = 1\r# coding: utf-7\n", 2)]
+    [InlineData("#a\rb\n# coding=utf-7\n", 2)]
+    [InlineData("# -*- coding: utf-8 -*-\n# coding: UTF8\n", null)]
+    [InlineData("x = 1\n\n# coding: utf-7\n", null)]
+    [InlineData("x = 1  # coding: utf-7 in a comment after code\n", null)]
+    public void NonUtf8EncodingLine_FindsDeclarationOnLine1Or2(string code, int? line)
+    {
+        Assert.Equal(line, SemgrepCodeScanner.NonUtf8EncodingLine(code));
+    }
+
+    [Fact]
+    public async Task Scan_NonUtf8Encoding_RefusedWithoutRunningSemgrep()
+    {
+        var dir = Directory.CreateTempSubdirectory("scan-rules-test-");
+        try
+        {
+            var path = Path.Combine(dir.FullName, "rules.yaml");
+            await File.WriteAllTextAsync(path, "# version: t\nrules: []\n");
+            var scanner = new SemgrepCodeScanner(new FederatedTaskSettings
+            {
+                ScanRulesPath = path,
+                SemgrepPath = "/nonexistent/semgrep",
+            });
+
+            var result = await scanner.ScanAsync("# coding: utf-7\nx = 1\n", CancellationToken.None);
+
+            Assert.Equal(CodeScanKind.Findings, result.Kind);
+            Assert.Equal("t", result.RulesVersion);
+            Assert.Equal(
+                "encoding-not-utf8 line 1: declares an encoding other than UTF-8, so the scan can't read the code Python would run",
+                CodeScanMessages.Format(result.Findings));
+        }
+        finally
+        {
+            dir.Delete(recursive: true);
+        }
+    }
+
+    [Theory]
     [InlineData(null)]
     [InlineData("rules:\n- id: x\n")]
     [InlineData("# version: \nrules: []\n")]
