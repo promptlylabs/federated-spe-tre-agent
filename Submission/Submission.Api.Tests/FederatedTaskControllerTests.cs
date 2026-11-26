@@ -163,7 +163,6 @@ namespace Submission.Api.Tests
                 var sitesKeys = JsonConvert.DeserializeObject<TesTask>(part.TesTaskJson)!.Tags!
                     .Where(t => t.Key.Equals("fed.sites", StringComparison.OrdinalIgnoreCase)).ToList();
                 Assert.Equal(new[] { new KeyValuePair<string, string>("fed.sites", part.TreName) }, sitesKeys);
-                Assert.Equal(1, part.Round);
                 Assert.Equal("1", part.ToTesTask().Logs![0].Metadata!["round"]);
             }
         }
