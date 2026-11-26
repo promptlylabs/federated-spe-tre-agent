@@ -20,8 +20,12 @@ public record TaskView(string State, string? Phase, string? ErrorCode, string? E
 public record ResultView(byte[] Bytes, string Sha256);
 public record HospitalPart(string Tre, string TaskId, string Phase);
 
-/// <summary>A study version as GetStudyVersion returns it: open, canceling or ended, and each hospital's phase.</summary>
-public record StudyView(int Version, string State, IReadOnlyList<HospitalPart> Hospitals)
+/// <summary>
+/// A study version as GetStudyVersion returns it: open, canceling or ended, its outcome once decided, and each hospital's
+/// phase.
+/// </summary>
+public record StudyView(int Version, string State, IReadOnlyList<HospitalPart> Hospitals, string? Outcome = null,
+    string? OutcomeReason = null, string? OutcomeMessage = null)
 {
     public string PhaseOf(string tre) => Hospitals.Single(h => h.Tre == tre).Phase;
 }
@@ -40,6 +44,9 @@ public sealed class StackSettings
 
     /// <summary>A second registered TRE with no Agent: its parts stay queued until they are cancelled.</summary>
     public const string OtherTre = "other-tre";
+
+    /// <summary>A study names at least 2 hospitals. other-tre has no Agent on this stack, so its part stays queued.</summary>
+    public const string BothHospitals = $"{Tre}|{OtherTre}";
     public const string Image = "python-runner:1";
 }
 
@@ -89,7 +96,7 @@ public sealed class SubmissionClient
 
     /// <summary>A new study ID by default, so no test waits for another test's open version.</summary>
     public static JsonObject FederationTags(string? sites = null, string? studyId = null) =>
-        new() { ["fed.sites"] = sites ?? StackSettings.Tre, ["fed.study_id"] = studyId ?? $"study-{Guid.NewGuid():N}" };
+        new() { ["fed.sites"] = sites ?? StackSettings.BothHospitals, ["fed.study_id"] = studyId ?? $"study-{Guid.NewGuid():N}" };
 
     /// <summary>The lowercase hex SHA-256 of the code's UTF-8 bytes, as the tag fed.code_sha256 must hold.</summary>
     public static string CodeSha256(string code) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(code)));
@@ -139,7 +146,8 @@ public sealed class SubmissionClient
         return new StudyView(view["version"]!.GetValue<int>(), view["state"]!.GetValue<string>(),
             view["hospitals"]!.AsArray()
                 .Select(h => new HospitalPart(h!["tre"]!.GetValue<string>(), h["task_id"]!.GetValue<string>(), h["phase"]!.GetValue<string>()))
-                .ToList());
+                .ToList(),
+            view["outcome"]?.GetValue<string>(), view["outcome_reason"]?.GetValue<string>(), view["outcome_message"]?.GetValue<string>());
     }
 
     /// <summary>Null for an empty or non-JSON body (a 401, or a server error page), so the status code is still reported.</summary>
@@ -375,6 +383,20 @@ public static class Await
 
     private static readonly TimeSpan PollEvery = TimeSpan.FromSeconds(2);
     private static readonly TimeSpan TriggerEvery = TimeSpan.FromSeconds(15);
+
+    /// <summary>Polls GetStudyVersion until done(study) or the timeout. The sweep decides outcomes every 15 s on this stack.</summary>
+    public static async Task<StudyView> UntilStudyAsync(StackFixture s, string versionId, Func<StudyView, bool> done, TimeSpan timeout)
+    {
+        var until = DateTime.UtcNow + timeout;
+        while (true)
+        {
+            var study = await s.Submission.GetStudyVersionAsync(versionId);
+            if (done(study)) return study;
+            if (DateTime.UtcNow > until)
+                throw new TimeoutException($"study version {versionId}: still {study.State}/{study.Outcome ?? "no outcome"} after {timeout}");
+            await Task.Delay(PollEvery);
+        }
+    }
 
     /// <summary>
     /// Polls GetTask until done(task) or the timeout. While the task waits for the Agent (phase queued, running or

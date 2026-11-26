@@ -17,7 +17,7 @@ docker compose -f dev/federated/docker-compose.yml down -v         # stop and de
 ```
 
 On start, three one-shot steps prepare the test data:
-- `seed-tre` registers the TREs `my-tre` and `other-tre` in Submission. `other-tre` has no Agent on this stack, so its part of a study version stays `queued` until the version is cancelled: it shows a study sent to two hospitals, one of which has not answered yet;
+- `seed-tre` registers the TREs `my-tre` and `other-tre` in Submission. `other-tre` has no Agent on this stack, so its part of a study version stays `queued` until the version ends: it shows a study sent to two hospitals, one of which has not answered yet. A study needs at least 2 hospitals, so every study here names both. With one Agent, no study on this stack is ready for aggregation: one `my-tre` rejects ends `incomplete` at the next sweep (every 15 s here), and one it releases stays `open` until its deadline (30 minutes here), then ends `incomplete`;
 - `seed-dataset` uploads `data/cohort.csv` as `dataset/cohort_2024/cohort.csv`, and `data/schema.json` next to it (every task needs it);
 - `seed-egress-creds` stores the `egress-app` login (realm `tre-test`) in the Egress app, so the app can send decisions back to the Agent.
 
@@ -64,13 +64,13 @@ The `uploader` login through the RustFS console's "TRE Keycloak" button loops. T
 
 A task runs a Python file that defines `site_analysis(df)` (see `runner/README.md`) in a locked-down `python-runner:1` container. `task.sh` sends the file inline, with its SHA-256 as `fed.code_sha256`. `code/analysis.py` returns the number of people and their mean age.
 
-Each `enqueue` (and `run`) creates a study version and prints its version ID; the commands that follow one hospital (`get`, `result`, `approve`, `reject`) take that hospital's task ID, which `part` prints. `cancel` takes the version ID. Every call is a new study (`study-<random>`), so runs never wait for each other's open version; set `STUDY_ID` to reuse one. The hospitals are `SITES`, `my-tre` by default:
+Each `enqueue` (and `run`) creates a study version and prints its version ID; the commands that follow one hospital (`get`, `result`, `approve`, `reject`) take that hospital's task ID, which `part` prints. `cancel` takes the version ID. Every call is a new study (`study-<random>`), so runs never wait for each other's open version; set `STUDY_ID` to reuse one. The hospitals are `SITES`, `my-tre|other-tre` by default (Submission refuses fewer than 2):
 
 ```bash
-v=$(SITES='my-tre|other-tre' ./task.sh enqueue cohort_2024 code/analysis.py)   # prints the version ID
+v=$(./task.sh enqueue cohort_2024 code/analysis.py)   # prints the version ID
 ./task.sh part "$v"               # my-tre's task ID
 ./task.sh part "$v" other-tre     # other-tre's task ID
-./task.sh study "$v"              # state open, my-tre's and other-tre's phases
+./task.sh study "$v"              # state open (no outcome yet), my-tre's and other-tre's phases
 STUDY_ID=s1 ./task.sh enqueue cohort_2024 code/analysis.py   # twice in a row: the second gets 409 study_version_open
 ./task.sh cancel "$v"             # cancels the whole version: other-tre's part at once, my-tre's once its Agent confirms
 ```
@@ -130,7 +130,7 @@ docker volume ls --filter label=fed.task-id
 
 `demo.sh` runs four requests through both hospital gates, in plain language, for a recorded or live demo:
 
-1. the hospital checks pass, a reviewer approves the result, and it is released (the answer is shown);
+1. the hospital checks pass, a reviewer approves the result, and the hospital releases it to the orchestrator (the result is shown). The researcher does not get it: only results pooled from at least 2 hospitals go to researchers, and the study waits for a second hospital;
 2. the request asks for a dataset the hospital does not hold, and its checks stop it;
 3. R1: the code (`code/open_socket.py`) imports `socket` to send the data out; the hospital's code scan refuses it before the dataset is touched, and the demo prints the refusal with the rule and line;
 4. the hospital checks pass, but the reviewer rejects the result, and nothing leaves.
@@ -222,7 +222,7 @@ The Agent image installs Python and a pinned Semgrep (`ScanRules/requirements.tx
 
 ## Integration tests
 
-`Tests/Federated.IntegrationTests` drives the real loop on this stack (Submission → Agent → Egress app) and checks how each task ends in `GetTask`, and that only a released task has a result file in the orchestrator's result store (RustFS on port 9100). Every task it queues is a code task in `python-runner:1`, with the small `site_analysis` files in `Code.cs`. It covers the three demo cases, cancelling, study versions across `my-tre` and `other-tre`, and a set of deliberately invalid tasks:
+`Tests/Federated.IntegrationTests` drives the real loop on this stack (Submission → Agent → Egress app) and checks how each task ends in `GetTask`, and that only a released task has a result file in the orchestrator's result store (RustFS on port 9100). Every task it queues is a code task in `python-runner:1`, with the small `site_analysis` files in `Code.cs`. It covers the three demo cases, cancelling, study versions across `my-tre` and `other-tre`, and a set of deliberately invalid tasks. Every study names `my-tre` and `other-tre`. The study deadline (timeout) is covered by unit tests only, because the stack's 30 minutes protects the live demo:
 
 | Gate | Case | Expected end |
 |---|---|---|
@@ -236,6 +236,8 @@ The Agent image installs Python and a pinned Semgrep (`ScanRules/requirements.tx
 | Cancel | a queued task, a running task, a task waiting for review, a cancel at the same time as an approval | `CANCELED`, `canceled`; no review left open, no result in the TRE or the orchestrator |
 | Study versions | a version for `my-tre` and `other-tre`: `my-tre` released, `other-tre` queued | version `open`; a second submission gets 409 `study_version_open`; cancelling ends it (`other-tre` `canceled`) and version 2 is accepted |
 | Study versions | cancel while `my-tre` waits for review and `other-tre` is queued | version `canceling`, a new version accepted at once; `ended` once `my-tre` confirms |
+| Study versions | a study naming only `my-tre` | Enqueue refused with 400 `invalid_task` |
+| Study outcome (R2) | `my-tre`'s reviewer rejects, `other-tre` is queued | at the next sweep: outcome `incomplete`, `minimum_unreachable`; `other-tre` `canceled`; version `ended` and a new version accepted |
 
 "Image not approved" cannot happen on this stack (Submission accepts only `python-runner:1`, and the Agent approves it); unit tests cover it.
 

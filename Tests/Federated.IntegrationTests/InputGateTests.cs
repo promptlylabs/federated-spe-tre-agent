@@ -89,7 +89,7 @@ public class InputGateTests
             }),
             _ => WithTags(SubmissionClient.CodeTask("cohort_2024", Code.CountRows), new JsonObject
             {
-                ["fed.sites"] = StackSettings.Tre, ["fed.study_id"] = "study-001", ["fed.code_sha256"] = SubmissionClient.CodeSha256(Code.MeanAge)
+                ["fed.sites"] = StackSettings.BothHospitals, ["fed.study_id"] = "study-001", ["fed.code_sha256"] = SubmissionClient.CodeSha256(Code.MeanAge)
             })
         };
 

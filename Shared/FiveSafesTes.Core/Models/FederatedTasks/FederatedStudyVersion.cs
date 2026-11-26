@@ -25,20 +25,32 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         /// <summary>UTC.</summary>
         public DateTime SubmittedAt { get; set; }
 
-        /// <summary>UTC; set when the orchestrator cancelled the version.</summary>
-        public DateTime? CanceledAt { get; set; }
+        /// <summary>UTC; <see cref="SubmittedAt"/> plus the study timeout configured at intake. Later config changes don't move it.</summary>
+        public DateTime DeadlineAt { get; set; }
+
+        /// <summary>Null until the sweep or an admin cancel decides the version (<see cref="FederatedStudyOutcomes.Decide"/>).</summary>
+        public FederatedStudyOutcome? Outcome { get; set; }
+
+        /// <summary>One of <see cref="FederatedStudyOutcomeReasons"/>; set with <see cref="Outcome"/>.</summary>
+        public string? OutcomeReason { get; set; }
+
+        /// <summary>A sentence for people saying why the version ended.</summary>
+        public string? OutcomeMessage { get; set; }
+
+        /// <summary>UTC; when the outcome was set.</summary>
+        public DateTime? OutcomeAt { get; set; }
 
         public virtual List<FederatedTask> Parts { get; set; } = [];
 
         /// <summary>
-        /// Ended when every part is final, otherwise Canceling once cancelled, otherwise Open. Derived from
-        /// <see cref="Parts"/>: any query whose result's State is read must <c>Include(x =&gt; x.Parts)</c>, or a
-        /// version with no parts loaded would wrongly be Ended.
+        /// Open until there is an outcome; then Canceling while a part is still being cleaned up at its hospital, and Ended
+        /// once every part is final. Only an open version blocks a new one. Any query whose result's State is read must
+        /// <c>Include(x =&gt; x.Parts)</c>, or a decided version with no parts loaded would wrongly be Ended.
         /// </summary>
         [NotMapped]
         public FederatedStudyVersionState State =>
-            Parts.All(p => FederatedTaskPhases.IsFinal(p.Phase)) ? FederatedStudyVersionState.Ended
-            : CanceledAt is not null ? FederatedStudyVersionState.Canceling
-            : FederatedStudyVersionState.Open;
+            Outcome is null ? FederatedStudyVersionState.Open
+            : Parts.All(p => FederatedTaskPhases.IsFinal(p.Phase)) ? FederatedStudyVersionState.Ended
+            : FederatedStudyVersionState.Canceling;
     }
 }

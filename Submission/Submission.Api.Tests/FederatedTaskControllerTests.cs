@@ -88,7 +88,8 @@ namespace Submission.Api.Tests
             return error;
         }
 
-        private static TesTask AnalysisTask(string tre = "tre-a", string dataset = "cohort_2024") =>
+        // A study names two hospitals: intake refuses fewer.
+        private static TesTask AnalysisTask(string tre = "tre-a|tre-b", string dataset = "cohort_2024") =>
             FederatedTesProfile.BuildCodeTask(dataset, Code, "study-1", tre);
 
         private static FederatedStudyVersion NewVersion(ApplicationDbContext db, string studyId = "study-1") =>
@@ -98,7 +99,8 @@ namespace Submission.Api.Tests
                 StudyId = studyId,
                 Version = db.FederatedStudyVersions.Where(v => v.StudyId == studyId).Max(v => (int?)v.Version) + 1 ?? 1,
                 TesTaskJson = "{}",
-                SubmittedAt = DateTime.UtcNow
+                SubmittedAt = DateTime.UtcNow,
+                DeadlineAt = DateTime.UtcNow.AddDays(7)
             };
 
         private static FederatedTask SeedTask(ApplicationDbContext db, int treId, TesState state, TesTask? task = null, string? treName = null, FederatedStudyVersion? version = null)
@@ -113,7 +115,7 @@ namespace Submission.Api.Tests
                 StudyId = "study-1",
                 Operation = "run-analysis",
                 Dataset = "cohort_2024",
-                TesTaskJson = JsonConvert.SerializeObject(task ?? AnalysisTask()),
+                TesTaskJson = JsonConvert.SerializeObject(task ?? AnalysisTask(treName ?? (treId == 1 ? "tre-a" : "tre-b"))),
                 State = state,
                 Phase = state switch
                 {
@@ -168,6 +170,35 @@ namespace Submission.Api.Tests
         }
 
         [Fact]
+        public async Task Enqueue_one_hospital_is_refused_and_stores_nothing()
+        {
+            using var db = NewDb();
+            var task = AnalysisTask();
+            task.Tags!["fed.sites"] = "tre-a";
+
+            var error = AssertError(await ControllerFor(db, "dare-admin").Enqueue(task), 400, FederatedTaskErrorCodes.InvalidTask);
+
+            Assert.Contains("at least 2 hospitals", error.ErrorMessage);
+            Assert.Empty(db.FederatedStudyVersions);
+            Assert.Empty(db.FederatedTasks);
+        }
+
+        [Fact]
+        public async Task Enqueue_sets_the_deadline_from_settings()
+        {
+            using var db = NewDb();
+            var settings = new FederatedTaskSettings { StudyTimeoutMinutes = 90 };
+
+            var versionId = EnqueuedVersionId(await ControllerFor(db, "dare-admin", settings: settings).Enqueue(TwoSiteTask()));
+
+            var version = db.FederatedStudyVersions.Single();
+            Assert.Equal(version.SubmittedAt.AddMinutes(90), version.DeadlineAt);
+            var view = ViewOf(await ControllerFor(db, "dare-admin").GetStudyVersion(versionId.ToString()));
+            Assert.Equal(("open", null), (view.State, view.Outcome));
+            Assert.EndsWith("Z\"", JsonConvert.SerializeObject(view.DeadlineAt));
+        }
+
+        [Fact]
         public async Task Enqueue_UnknownSite_StoresNothing()
         {
             using var db = NewDb();
@@ -208,12 +239,13 @@ namespace Submission.Api.Tests
                 var version = NewVersion(db);
                 if (state == "ended")
                 {
+                    version.Outcome = FederatedStudyOutcome.ReadyForAggregation;
                     SeedTask(db, 1, TesState.COMPLETEEnum, version: version);
                 }
                 else
                 {
-                    // Cancelled, with a part the hospital has not confirmed yet.
-                    version.CanceledAt = DateTime.UtcNow;
+                    // Decided, with a part the hospital has not confirmed cancelling yet.
+                    version.Outcome = FederatedStudyOutcome.Incomplete;
                     var part = SeedTask(db, 1, TesState.QUEUEDEnum, version: version);
                     part.MoveTo(FederatedTaskPhase.Canceling, DateTime.UtcNow);
                     db.SaveChanges();
@@ -232,6 +264,7 @@ namespace Submission.Api.Tests
             var root = new Microsoft.EntityFrameworkCore.Storage.InMemoryDatabaseRoot();
             using var setup = OpenDb(name, root);
             setup.Tres.Add(NewTre(1, "tre-a", "tre-a-admin", "tre-a-client"));
+            setup.Tres.Add(NewTre(2, "tre-b", "tre-b-admin", "tre-b-client"));
             setup.SaveChanges();
             // Another submission saves an open v1 first; the in-memory provider has no unique index, so the collision
             // Postgres would raise is thrown here.
@@ -261,6 +294,7 @@ namespace Submission.Api.Tests
             var root = new Microsoft.EntityFrameworkCore.Storage.InMemoryDatabaseRoot();
             using var setup = OpenDb(name, root);
             setup.Tres.Add(NewTre(1, "tre-a", "tre-a-admin", "tre-a-client"));
+            setup.Tres.Add(NewTre(2, "tre-b", "tre-b-admin", "tre-b-client"));
             setup.SaveChanges();
             var interceptor = new BeforeFirstSave(() => throw new DbUpdateException("insert or update violates foreign key constraint",
                 new Npgsql.PostgresException("fk", "ERROR", "ERROR", Npgsql.PostgresErrorCodes.ForeignKeyViolation)));
@@ -329,7 +363,7 @@ namespace Submission.Api.Tests
             Resources = new TesResources { CpuCores = cpuCores, RamGb = ramGb, DiskGb = diskGb },
             Tags = new Dictionary<string, string>
             {
-                ["fed.sites"] = "tre-a",
+                ["fed.sites"] = "tre-a|tre-b",
                 ["fed.study_id"] = "study-1",
                 ["fed.code_sha256"] = Convert.ToHexStringLower(
                     System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(code)))
@@ -343,7 +377,7 @@ namespace Submission.Api.Tests
             var result = await ControllerFor(db, "dare-admin").Enqueue(CodeTask());
 
             Assert.IsType<OkObjectResult>(result);
-            var row = db.FederatedTasks.Single();
+            var row = db.FederatedTasks.Single(t => t.TreName == "tre-a");
             Assert.Equal("run-analysis", row.Operation);
             Assert.Equal("cohort_2024", row.Dataset);
             Assert.Equal(FederatedTaskPhase.Queued, row.Phase);
@@ -375,24 +409,13 @@ namespace Submission.Api.Tests
         {
             using var db = NewDb();
             Assert.IsType<OkObjectResult>(await ControllerFor(db, "dare-admin").Enqueue(CodeTask()));
-            var row = db.FederatedTasks.Single();
+            var row = db.FederatedTasks.Single(t => t.TreName == "tre-a");
 
             // Init-only stops plain assignments; this is the route EF would still allow.
             db.Entry(row).Property(x => x.TesTaskJson).CurrentValue = "{}";
 
             var error = Assert.Throws<InvalidOperationException>(() => db.SaveChanges());
             Assert.Contains("TesTaskJson", error.Message);
-        }
-
-        [Fact]
-        public async Task Agent_of_another_tre_does_not_receive_the_code()
-        {
-            using var db = NewDb();
-            Assert.IsType<OkObjectResult>(await ControllerFor(db, "dare-admin").Enqueue(CodeTask(code: AwkwardCode)));
-
-            var result = await AgentControllerFor(db, "tre-b-client").GetPendingTasksForTre();
-
-            Assert.Empty(Assert.IsType<List<TesTask>>(Assert.IsType<OkObjectResult>(result).Value));
         }
 
         [Fact]
@@ -498,9 +521,14 @@ namespace Submission.Api.Tests
         [InlineData(0L, 16.0, 20.0, "FederatedTaskSettings:MaxCpuCores must be more than 0")]
         [InlineData(4L, -1.0, 20.0, "FederatedTaskSettings:MaxRamGb must be more than 0")]
         [InlineData(4L, 16.0, double.NaN, "FederatedTaskSettings:MaxDiskGb must be more than 0")]
-        public void Non_positive_maximums_are_problems(long cpu, double ram, double disk, string problem)
+        [InlineData(4L, 16.0, 20.0, "FederatedTaskSettings:StudyTimeoutMinutes must be more than 0", 0)]
+        [InlineData(4L, 16.0, 20.0, "FederatedTaskSettings:StudySweepSeconds must be more than 0", 10080, 0)]
+        public void Non_positive_maximums_are_problems(long cpu, double ram, double disk, string problem, int timeoutMinutes = 10080, int sweepSeconds = 300)
         {
-            var settings = new FederatedTaskSettings { MaxCpuCores = cpu, MaxRamGb = ram, MaxDiskGb = disk };
+            var settings = new FederatedTaskSettings
+            {
+                MaxCpuCores = cpu, MaxRamGb = ram, MaxDiskGb = disk, StudyTimeoutMinutes = timeoutMinutes, StudySweepSeconds = sweepSeconds
+            };
 
             Assert.Equal([problem], settings.Problems());
         }
@@ -529,7 +557,7 @@ namespace Submission.Api.Tests
             using var db = NewDb();
             await ControllerFor(db, "dare-admin").Enqueue(AnalysisTask());
 
-            var row = db.FederatedTasks.Include(x => x.PhaseChanges).Single();
+            var row = db.FederatedTasks.Include(x => x.PhaseChanges).Single(t => t.TreName == "tre-a");
             Assert.Equal(FederatedTaskPhase.Queued, row.Phase);
             var change = Assert.Single(row.PhaseChanges);
             Assert.Equal(FederatedTaskPhase.Queued, change.Phase);
@@ -541,7 +569,7 @@ namespace Submission.Api.Tests
         {
             using var db = NewDb();
             await ControllerFor(db, "dare-admin").Enqueue(AnalysisTask());
-            var id = db.FederatedTasks.Single().TaskId;
+            var id = db.FederatedTasks.Single(t => t.TreName == "tre-a").TaskId;
 
             var task = await GetTask(db, id);
 
@@ -594,7 +622,7 @@ namespace Submission.Api.Tests
 
             await ControllerFor(db, "dare-admin").Enqueue(task);
 
-            Assert.Contains("\"state\":\"UNKNOWN\"", db.FederatedTasks.Single().TesTaskJson);
+            Assert.Contains("\"state\":\"UNKNOWN\"", db.FederatedTasks.Single(t => t.TreName == "tre-a").TesTaskJson);
         }
 
         [Fact]
@@ -656,7 +684,7 @@ namespace Submission.Api.Tests
 
             await ControllerFor(db, "dare-admin").Enqueue(task);
 
-            var stored = JsonConvert.DeserializeObject<TesTask>(db.FederatedTasks.Single().TesTaskJson)!;
+            var stored = JsonConvert.DeserializeObject<TesTask>(db.FederatedTasks.Single(t => t.TreName == "tre-a").TesTaskJson)!;
             Assert.Equal("r-42", stored.Tags!["daams.request"]);
         }
 
@@ -665,11 +693,11 @@ namespace Submission.Api.Tests
         {
             using var db = NewDb();
             var task = AnalysisTask();
-            task.Tags!["fed.sites"] = "TRE-A";
+            task.Tags!["fed.sites"] = "TRE-A|tre-b";
             var result = await ControllerFor(db, "dare-admin").Enqueue(task);
 
             Assert.IsType<OkObjectResult>(result);
-            Assert.Equal(1, db.FederatedTasks.Single().TreId);
+            Assert.Equal(1, db.FederatedTasks.Single(t => t.TreName == "tre-a").TreId);
         }
 
         [Fact]
@@ -1545,7 +1573,9 @@ namespace Submission.Api.Tests
             var view = ViewOf(await Cancel(db, version.VersionId));
 
             Assert.Equal("canceling", view.State);
+            Assert.Equal(("canceled", "canceled"), (view.Outcome, view.OutcomeReason));
             Assert.NotNull(view.CanceledAt);
+            Assert.Equal(view.OutcomeAt, view.CanceledAt);
             Assert.Equal(FederatedTaskPhase.Released, Reload(db, released.TaskId).Phase);
             Assert.Equal(FederatedTaskPhase.Canceled, Reload(db, queued.TaskId).Phase);
             Assert.Equal(FederatedTaskPhase.Canceling, Reload(db, running.TaskId).Phase);
@@ -1556,30 +1586,59 @@ namespace Submission.Api.Tests
             Assert.Equal("ended", ViewOf(await ControllerFor(db, "dare-admin").GetStudyVersion(version.VersionId.ToString())).State);
         }
 
-        [Fact]
-        public async Task Cancel_Twice_NoChange()
+        [Theory]
+        [InlineData(FederatedStudyOutcome.ReadyForAggregation, 409)]
+        [InlineData(FederatedStudyOutcome.Incomplete, 409)]
+        [InlineData(FederatedStudyOutcome.Canceled, 200)]
+        public async Task Cancel_after_an_outcome(FederatedStudyOutcome outcome, int status)
         {
             using var db = NewDb();
             var version = NewTwoSiteVersion(db);
+            var at = new DateTime(2026, 11, 25, 9, 0, 0, DateTimeKind.Utc);
+            (version.Outcome, version.OutcomeAt) = (outcome, at);
             var running = SeedAtPhase(db, FederatedTaskPhase.Running, version: version);
-            var first = ViewOf(await Cancel(db, version.VersionId));
+            if (outcome == FederatedStudyOutcome.Canceled)
+            {
+                running.MoveTo(FederatedTaskPhase.Canceling, at);
+                db.SaveChanges();
+            }
 
-            var second = ViewOf(await Cancel(db, version.VersionId));
+            var result = await Cancel(db, version.VersionId);
 
-            Assert.Equal(first.CanceledAt, second.CanceledAt);
-            Assert.Single(Reload(db, running.TaskId).PhaseChanges, c => c.Phase == FederatedTaskPhase.Canceling);
+            if (status == 409)
+            {
+                AssertError(result, 409, FederatedTaskErrorCodes.TaskAlreadyFinished);
+            }
+            else
+            {
+                Assert.Equal(at, ViewOf(result).CanceledAt);
+            }
+            var stored = db.FederatedStudyVersions.Single();
+            Assert.Equal((outcome, at), (stored.Outcome, stored.OutcomeAt));
+            // Nothing moved: a decided version's parts are not cancelled again.
+            Assert.Equal(outcome == FederatedStudyOutcome.Canceled ? 1 : 0,
+                Reload(db, running.TaskId).PhaseChanges.Count(c => c.Phase == FederatedTaskPhase.Canceling));
         }
 
         [Fact]
-        public async Task Cancel_EndedVersion_409()
+        public async Task Cancel_unknown_version_is_404()
+        {
+            using var db = NewDb();
+
+            AssertError(await Cancel(db, Guid.NewGuid()), 404, FederatedTaskErrorCodes.StudyNotFound);
+        }
+
+        [Fact]
+        public async Task Cancel_with_every_part_final_but_undecided_is_canceled()
         {
             using var db = NewDb();
             var version = NewTwoSiteVersion(db);
-            SeedAtPhase(db, FederatedTaskPhase.Released, version: version);
+            SeedAtPhase(db, FederatedTaskPhase.Released, treId: 1, version: version);
+            SeedTask(db, 2, TesState.EXECUTORERROREnum, version: version);
 
-            AssertError(await Cancel(db, version.VersionId), 409, FederatedTaskErrorCodes.TaskAlreadyFinished);
-            Assert.Null(db.FederatedStudyVersions.Single().CanceledAt);
-            AssertError(await Cancel(db, Guid.NewGuid()), 404, FederatedTaskErrorCodes.StudyNotFound);
+            var view = ViewOf(await Cancel(db, version.VersionId));
+
+            Assert.Equal(("canceled", "ended"), (view.Outcome, view.State));
         }
 
         [Fact]

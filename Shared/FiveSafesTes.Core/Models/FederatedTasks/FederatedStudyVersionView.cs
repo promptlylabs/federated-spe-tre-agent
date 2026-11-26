@@ -23,10 +23,28 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         [JsonProperty("code_sha256")]
         public string CodeSha256 { get; set; } = "";
 
-        /// <summary>open, canceling or ended.</summary>
+        /// <summary>open (no outcome yet), canceling (decided, a hospital is still cleaning up) or ended.</summary>
         [JsonProperty("state")]
         public string State { get; set; } = "";
 
+        /// <summary>ready_for_aggregation, incomplete or canceled; null while open.</summary>
+        [JsonProperty("outcome")]
+        public string? Outcome { get; set; }
+
+        /// <summary>all_final, timeout, minimum_unreachable, timeout_below_minimum or canceled.</summary>
+        [JsonProperty("outcome_reason")]
+        public string? OutcomeReason { get; set; }
+
+        [JsonProperty("outcome_message")]
+        public string? OutcomeMessage { get; set; }
+
+        [JsonProperty("outcome_at")]
+        public DateTime? OutcomeAt { get; set; }
+
+        [JsonProperty("deadline_at")]
+        public DateTime DeadlineAt { get; set; }
+
+        /// <summary>The outcome's time when an admin cancelled the version.</summary>
         [JsonProperty("canceled_at")]
         public DateTime? CanceledAt { get; set; }
 
