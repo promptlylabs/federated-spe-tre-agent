@@ -18,6 +18,16 @@ namespace Agent.Api.FederatedTasks
     /// </remarks>
     public sealed class DockerCodeRunner : ICodeRunner
     {
+        /// <summary>
+        /// A Docker fault that may pass by itself: the daemon is down or restarting, the socket broke, a call timed out,
+        /// or Docker answered with a server error. A 4xx answer (an image that doesn't exist, a bad request) does not
+        /// pass by waiting.
+        /// </summary>
+        public static bool IsTransient(Exception ex) =>
+            ex is DockerApiException { StatusCode: >= HttpStatusCode.InternalServerError }
+                or HttpRequestException or IOException or System.Net.Sockets.SocketException or TimeoutException
+                or TaskCanceledException;
+
         private const string TaskIdLabel = "fed.task-id";
         private const string RoleLabel = "fed.role";
         private const string DatasetShaLabel = "fed.dataset-sha256";

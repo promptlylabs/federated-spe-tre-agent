@@ -1,9 +1,11 @@
+using System.Net;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text;
 using Agent.Api.FederatedTasks;
 using Agent.Api.Models;
 using Agent.Api.Tests.FederatedTasks;
+using Docker.DotNet;
 using FiveSafesTes.Core.Models.FederatedTasks;
 using FiveSafesTes.Core.Models.Tes;
 using Microsoft.Extensions.Configuration;
@@ -1924,23 +1926,38 @@ public class DoFederatedTaskWorkTests
         Assert.Equal("image_not_approved", Assert.Single(client.Reports).ErrorCode);
     }
 
-    [Fact]
-    public async Task Execute_substituted_execution_store_failure_on_a_young_task_keeps_it_running()
+    private static Exception RunFault(string fault) => fault switch
+    {
+        "store" => new DatasetStoreException("read failed", new IOException("store down")),
+        "docker-500" => new DockerApiException(HttpStatusCode.InternalServerError, "daemon restarting"),
+        "docker-socket" => new HttpRequestException("connection refused"),
+        "docker-404" => new DockerApiException(HttpStatusCode.NotFound, "no such image"),
+        _ => new InvalidOperationException("container crashed")
+    };
+
+    [Theory]
+    [InlineData("store")]
+    [InlineData("docker-500")]
+    [InlineData("docker-socket")]
+    public async Task Execute_substituted_execution_fault_that_may_pass_keeps_a_young_task_running_and_its_run(string fault)
     {
         var client = OneMean();
-        var execution = new FakeExecution(() => throw new DatasetStoreException("read failed", new IOException("store down")));
+        var execution = new FakeExecution(() => throw RunFault(fault));
 
         await Work(client, new ThrowingReader(), execution: execution).Execute();
 
         Assert.Single(client.ProgressCalls);
         Assert.Empty(client.Calls);
+        Assert.Empty(execution.Removed);
     }
 
-    [Fact]
-    public async Task Execute_substituted_execution_that_throws_reports_internal_error()
+    [Theory]
+    [InlineData("other")]
+    [InlineData("docker-404")]
+    public async Task Execute_substituted_execution_that_throws_reports_internal_error(string fault)
     {
         var client = OneMean();
-        var execution = new FakeExecution(() => throw new InvalidOperationException("container crashed"));
+        var execution = new FakeExecution(() => throw RunFault(fault));
 
         await Work(client, new ThrowingReader(), execution: execution).Execute();
 

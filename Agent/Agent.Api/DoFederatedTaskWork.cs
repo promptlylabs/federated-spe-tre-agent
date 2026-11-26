@@ -246,9 +246,10 @@ namespace Agent.Api
                         Log.Warning("Federated tasks: task {TaskId} is running but has no run at this TRE; starting it again", taskId);
                 }
 
-                // The task is running now. If the bucket fails during the read, it stays running and is resumed at the
-                // next poll, under the same time limit as a failed listing. Any other fault cannot be fixed by
-                // waiting, so it is reported at once. Once a report is settled, the task's run (if any) is removed:
+                // The task is running now. If the bucket fails during the read, or Docker has a fault that may pass by
+                // itself (see DockerCodeRunner.IsTransient), it stays running and is resumed at the next poll, under the
+                // same time limit as a failed listing; a finished run is kept, so its result is collected once Docker
+                // is back. Any other fault cannot be fixed by waiting, so it is reported at once. Once a report is settled, the task's run (if any) is removed:
                 // it is removed after every run, whatever the outcome.
                 ExecutionResult executed;
                 try
@@ -258,6 +259,12 @@ namespace Agent.Api
                 catch (DatasetStoreException ex)
                 {
                     if (await RetryOrGiveUpAsync(task, taskId, ex, "read"))
+                        await _execution.RemoveRunAsync(storeKey, CancellationToken.None);
+                    return Hold.None;
+                }
+                catch (Exception ex) when (DockerCodeRunner.IsTransient(ex))
+                {
+                    if (await RetryOrGiveUpAsync(task, taskId, ex, "reached", "Docker"))
                         await _execution.RemoveRunAsync(storeKey, CancellationToken.None);
                     return Hold.None;
                 }
@@ -673,16 +680,18 @@ namespace Agent.Api
         }
 
         /// <summary>
-        /// A dataset store failure is retried at the next poll, but not for ever: a bucket that is wrongly configured
-        /// or denied would otherwise leave the task unfinished with nothing the orchestrator can see.
+        /// A dataset store failure, or a Docker fault that may pass by itself, is retried at the next poll, but not for
+        /// ever: a bucket or a Docker daemon that is wrongly configured or denied would otherwise leave the task
+        /// unfinished with nothing the orchestrator can see.
         /// </summary>
         /// <returns>True when the task was given up and the error report is settled; false when it is retried.</returns>
-        private async Task<bool> RetryOrGiveUpAsync(TesTask task, string taskId, Exception ex, string action)
+        private async Task<bool> RetryOrGiveUpAsync(TesTask task, string taskId, Exception ex, string action,
+            string what = "the dataset bucket")
         {
             if (!HasWaitedTooLong(task))
             {
-                Log.Warning(ex, "Federated tasks: the dataset bucket could not be {Action} for task {TaskId}; it keeps its phase and is tried again at the next poll",
-                    action, taskId);
+                Log.Warning(ex, "Federated tasks: {What} could not be {Action} for task {TaskId}; it keeps its phase and is tried again at the next poll",
+                    what, action, taskId);
                 return false;
             }
 
