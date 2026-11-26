@@ -23,5 +23,9 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         /// <summary>On a 409 for a COMPLETE task: the key of the stored result, so the Agent can tag its TRE copy.</summary>
         [JsonProperty("result_key", NullValueHandling = NullValueHandling.Ignore)]
         public string? ResultKey { get; set; }
+
+        /// <summary>On a 409 <c>study_version_open</c>: the version of the study that is still open.</summary>
+        [JsonProperty("version_id", NullValueHandling = NullValueHandling.Ignore)]
+        public Guid? VersionId { get; set; }
     }
 }

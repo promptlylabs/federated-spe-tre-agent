@@ -19,6 +19,8 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         /// longer matches its TRE and is not handed to the Agent.
         /// </summary>
         public string TreName { get; set; } = string.Empty;
+        public int StudyVersionId { get; set; }
+        public virtual FederatedStudyVersion? StudyVersion { get; set; }
         public string StudyId { get; set; } = string.Empty;
         public string Operation { get; set; } = string.Empty;
         public string Dataset { get; set; } = string.Empty;
@@ -139,6 +141,23 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             });
         }
 
+        /// <summary>
+        /// When each phase was first reached, as <c>"&lt;phase&gt;_at"</c> keys with ISO-8601 UTC values, in the order reached.
+        /// A phase is recorded once on Postgres, where a failed save rolls back. The in-memory test provider can keep a
+        /// row from a save that lost a race, so the first time a phase was reached wins.
+        /// </summary>
+        public Dictionary<string, string> PhaseTimes()
+        {
+            var times = new Dictionary<string, string>();
+            foreach (var change in PhaseChanges.OrderBy(c => c.At).ThenBy(c => c.Id))
+            {
+                times.TryAdd(FederatedTaskPhases.ToWire(change.Phase) + "_at",
+                    DateTime.SpecifyKind(change.At, DateTimeKind.Utc).ToString("O"));
+            }
+
+            return times;
+        }
+
         public TesTask ToTesTask()
         {
             var task = JsonConvert.DeserializeObject<TesTask>(TesTaskJson) ?? new TesTask();
@@ -147,29 +166,15 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             task.CreationTime = AsUtc(SubmittedAt);
 
             var metadata = new Dictionary<string, string> { ["phase"] = FederatedTaskPhases.ToWire(Phase) };
-            DateTime? runningAt = null;
-            DateTime? finalAt = null;
-            foreach (var change in PhaseChanges.OrderBy(c => c.At).ThenBy(c => c.Id))
+            foreach (var (key, at) in PhaseTimes())
             {
-                var key = FederatedTaskPhases.ToWire(change.Phase) + "_at";
-                // A phase is recorded once on Postgres, where a failed save rolls back. The in-memory test provider
-                // can keep a row from a save that lost a race, so the first time a phase was reached wins.
-                if (metadata.ContainsKey(key))
-                {
-                    continue;
-                }
-
-                metadata[key] = DateTime.SpecifyKind(change.At, DateTimeKind.Utc).ToString("O");
-                if (change.Phase == FederatedTaskPhase.Running)
-                {
-                    runningAt = change.At;
-                }
-
-                if (change.Phase == Phase && FederatedTaskPhases.IsFinal(Phase))
-                {
-                    finalAt = change.At;
-                }
+                metadata[key] = at;
             }
+
+            var runningAt = PhaseChanges.Where(c => c.Phase == FederatedTaskPhase.Running).Select(c => (DateTime?)c.At).Min();
+            DateTime? finalAt = FederatedTaskPhases.IsFinal(Phase)
+                ? PhaseChanges.Where(c => c.Phase == Phase).Select(c => (DateTime?)c.At).Min()
+                : null;
 
             if (Phase == FederatedTaskPhase.Released)
             {

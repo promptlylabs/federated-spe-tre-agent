@@ -11,9 +11,20 @@ using Amazon.S3.Model;
 
 namespace Federated.IntegrationTests;
 
-public record EnqueueOutcome(int Status, string? Id, string? ErrorCode);
+/// <summary>
+/// Id is the my-tre part's task ID (null when my-tre is not among the hospitals). VersionId is the study version
+/// Enqueue created, or on a 409 study_version_open the version still open.
+/// </summary>
+public record EnqueueOutcome(int Status, string? Id, string? ErrorCode, string? VersionId = null);
 public record TaskView(string State, string? Phase, string? ErrorCode, string? ErrorMessage, string? ResultSha256);
 public record ResultView(byte[] Bytes, string Sha256);
+public record HospitalPart(string Tre, string TaskId, string Phase);
+
+/// <summary>A study version as GetStudyVersion returns it: open, canceling or ended, and each hospital's phase.</summary>
+public record StudyView(int Version, string State, IReadOnlyList<HospitalPart> Hospitals)
+{
+    public string PhaseOf(string tre) => Hospitals.Single(h => h.Tre == tre).Phase;
+}
 
 /// <summary>Addresses and dev logins of the stack in dev/federated (see its README). The host can be overridden.</summary>
 public sealed class StackSettings
@@ -26,6 +37,9 @@ public sealed class StackSettings
     public string RustFs => $"http://{Host}:9000";
     public string ResultsStore => $"http://{Host}:9100";
     public const string Tre = "my-tre";
+
+    /// <summary>A second registered TRE with no Agent: its parts stay queued until they are cancelled.</summary>
+    public const string OtherTre = "other-tre";
     public const string Image = "python-runner:1";
 }
 
@@ -66,11 +80,16 @@ public sealed class SubmissionClient
         token = new TokenSource(http, s.Keycloak, "Dare-Control", "Dare-Control-API", "dev-dare-control-api-secret", "control-admin", "ControlAdmin1!");
     }
 
-    /// <summary>Queues a code task that runs <paramref name="code"/> on the dataset, in the approved runner image by default.</summary>
-    public Task<EnqueueOutcome> EnqueueCodeAsync(string dataset, string code, string? image = null) =>
-        EnqueueBodyAsync(CodeTask(dataset, code, image ?? StackSettings.Image));
+    /// <summary>
+    /// Queues a code task that runs <paramref name="code"/> on the dataset, in the approved runner image, for my-tre and
+    /// a new study by default.
+    /// </summary>
+    public Task<EnqueueOutcome> EnqueueCodeAsync(string dataset, string code, string? image = null, string? sites = null, string? studyId = null) =>
+        EnqueueBodyAsync(CodeTask(dataset, code, image ?? StackSettings.Image, sites, studyId));
 
-    public static JsonObject FederationTags() => new() { ["fed.sites"] = StackSettings.Tre, ["fed.study_id"] = "study-001" };
+    /// <summary>A new study ID by default, so no test waits for another test's open version.</summary>
+    public static JsonObject FederationTags(string? sites = null, string? studyId = null) =>
+        new() { ["fed.sites"] = sites ?? StackSettings.Tre, ["fed.study_id"] = studyId ?? $"study-{Guid.NewGuid():N}" };
 
     /// <summary>The lowercase hex SHA-256 of the code's UTF-8 bytes, as the tag fed.code_sha256 must hold.</summary>
     public static string CodeSha256(string code) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(code)));
@@ -79,9 +98,9 @@ public sealed class SubmissionClient
     /// A code task in the shape FederatedTesProfile.BuildCodeTask builds (see docs/federated-tasks.md, "Code tasks"):
     /// the exact run-analysis command, the code inline, the dataset, the result:// output and the fed.* tags.
     /// </summary>
-    public static JsonObject CodeTask(string dataset, string code, string image = StackSettings.Image)
+    public static JsonObject CodeTask(string dataset, string code, string image = StackSettings.Image, string? sites = null, string? studyId = null)
     {
-        var tags = FederationTags();
+        var tags = FederationTags(sites, studyId);
         tags["fed.code_sha256"] = CodeSha256(code);
         return new JsonObject
         {
@@ -98,15 +117,29 @@ public sealed class SubmissionClient
         };
     }
 
-    /// <summary>Posts any task body as it is, for the tasks Submission must refuse.</summary>
+    /// <summary>Posts any task body as it is, for the tasks Submission must refuse. On a 200, reads my-tre's part from the version.</summary>
     public async Task<EnqueueOutcome> EnqueueBodyAsync(JsonObject body)
     {
         using var response = await SendAsync(HttpMethod.Post, "/api/FederatedTask/Enqueue",
             new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json"));
         var json = TryParse(await response.Content.ReadAsStringAsync());
-        return response.IsSuccessStatusCode
-            ? new EnqueueOutcome((int)response.StatusCode, json?["id"]?.GetValue<string>(), null)
-            : new EnqueueOutcome((int)response.StatusCode, null, json?["error_code"]?.GetValue<string>());
+        if (!response.IsSuccessStatusCode)
+            return new EnqueueOutcome((int)response.StatusCode, null, json?["error_code"]?.GetValue<string>(), json?["version_id"]?.GetValue<string>());
+        var versionId = json!["id"]!.GetValue<string>();
+        var study = await GetStudyVersionAsync(versionId);
+        var mine = study.Hospitals.SingleOrDefault(h => h.Tre == StackSettings.Tre);
+        return new EnqueueOutcome((int)response.StatusCode, mine?.TaskId, null, versionId);
+    }
+
+    public async Task<StudyView> GetStudyVersionAsync(string versionId)
+    {
+        using var response = await SendAsync(HttpMethod.Get, $"/api/FederatedTask/GetStudyVersion?id={versionId}");
+        response.EnsureSuccessStatusCode();
+        var view = JsonNode.Parse(await response.Content.ReadAsStringAsync())!;
+        return new StudyView(view["version"]!.GetValue<int>(), view["state"]!.GetValue<string>(),
+            view["hospitals"]!.AsArray()
+                .Select(h => new HospitalPart(h!["tre"]!.GetValue<string>(), h["task_id"]!.GetValue<string>(), h["phase"]!.GetValue<string>()))
+                .ToList());
     }
 
     /// <summary>Null for an empty or non-JSON body (a 401, or a server error page), so the status code is still reported.</summary>
@@ -126,12 +159,12 @@ public sealed class SubmissionClient
         return new TaskView(task["state"]!.GetValue<string>(), Meta("phase"), Meta("error_code"), Meta("error_message"), Meta("result_sha256"));
     }
 
-    /// <summary>Cancels the task as an orchestrator admin. Returns the HTTP status and the phase the task moved to.</summary>
-    public async Task<(int Status, string? Phase)> CancelAsync(string id)
+    /// <summary>Cancels a study version as an orchestrator admin. Returns the HTTP status and the version's state after it.</summary>
+    public async Task<(int Status, string? State)> CancelAsync(string versionId)
     {
-        using var response = await SendAsync(HttpMethod.Post, $"/api/FederatedTask/Cancel?id={id}");
+        using var response = await SendAsync(HttpMethod.Post, $"/api/FederatedTask/Cancel?id={versionId}");
         var json = TryParse(await response.Content.ReadAsStringAsync());
-        return ((int)response.StatusCode, json?["phase"]?.GetValue<string>());
+        return ((int)response.StatusCode, json?["state"]?.GetValue<string>());
     }
 
     /// <summary>The stored result, or null when Submission has none for the task.</summary>

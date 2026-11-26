@@ -88,6 +88,7 @@ namespace Submission.Api.Tests
             builder.Services.AddSingleton(store);
             builder.Services.AddSingleton<IFederatedResultStore>(store);
             builder.Services.AddSingleton(new FederatedTaskSettings());
+            builder.Services.AddSingleton<IFederatedTaskDispatch, AgentPollDispatch>();
             builder.Services.AddDbContext<ApplicationDbContext>(o => o.UseInMemoryDatabase(dbName));
             builder.Services.AddAuthentication("Test").AddScheme<AuthenticationSchemeOptions, TestAuthHandler>("Test", null);
             builder.Services.AddAuthorization();
@@ -107,6 +108,10 @@ namespace Submission.Api.Tests
                 db.Tres.Add(new Tre { Id = 1, Name = "tre-a", AdminUsername = "tre-a-admin", KeycloakClientId = "tre-a-client", About = "", FormData = "" });
                 db.FederatedTasks.Add(new FederatedTask
                 {
+                    StudyVersion = new FederatedStudyVersion
+                    {
+                        VersionId = Guid.NewGuid(), StudyId = "study-1", Version = 1, TesTaskJson = "{}", SubmittedAt = DateTime.UtcNow
+                    },
                     TaskId = taskId,
                     TreId = 1,
                     TreName = "tre-a",

@@ -32,12 +32,23 @@ namespace Submission.Api.Repositories.DbContexts
 
         public DbSet<FederatedTask> FederatedTasks { get; set; }
 
+        public DbSet<FederatedStudyVersion> FederatedStudyVersions { get; set; }
+
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
             base.OnModelCreating(modelBuilder);
             modelBuilder.Entity<UsedOnboardingJti>(b =>
             {
                 b.HasIndex(x => x.Jti).IsUnique();
+            });
+            modelBuilder.Entity<FederatedStudyVersion>(b =>
+            {
+                b.HasIndex(x => new { x.StudyId, x.Version }).IsUnique();
+                b.HasIndex(x => x.VersionId).IsUnique();
+                // A version is the audit record of what was submitted; deleting it must not erase its parts.
+                b.HasMany(x => x.Parts).WithOne(x => x.StudyVersion).HasForeignKey(x => x.StudyVersionId).IsRequired().OnDelete(DeleteBehavior.Restrict);
+                // Like FederatedTask: once saved, EF refuses to change the submitted code (ANZE-6045).
+                b.Property(x => x.TesTaskJson).Metadata.SetAfterSaveBehavior(PropertySaveBehavior.Throw);
             });
             modelBuilder.Entity<FederatedTask>(b =>
             {

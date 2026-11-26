@@ -42,5 +42,11 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
 
         /// <summary>A cancel was asked for a task that is already in a final phase.</summary>
         public const string TaskAlreadyFinished = "task_already_finished";
+
+        /// <summary>A new version of a study was submitted while its latest version is still open.</summary>
+        public const string StudyVersionOpen = "study_version_open";
+
+        /// <summary>No version of the study exists.</summary>
+        public const string StudyNotFound = "study_not_found";
     }
 }

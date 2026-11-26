@@ -8,8 +8,17 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         string Operation,
         string Dataset,
         string StudyId,
-        string TreName,
-        string CodeSha256);
+        IReadOnlyList<string> Sites,
+        string CodeSha256)
+    {
+        /// <summary>
+        /// The one hospital of a single-site part. Throws for a list of hospitals: only a part addressed to one
+        /// hospital has a TRE name.
+        /// </summary>
+        public string TreName => Sites.Count == 1
+            ? Sites[0]
+            : throw new InvalidOperationException("TreName is only valid on a task for exactly one hospital");
+    }
 
     /// <summary>
     /// Outcome of parsing a TES task against the federated profile: either a spec or an error code and message.

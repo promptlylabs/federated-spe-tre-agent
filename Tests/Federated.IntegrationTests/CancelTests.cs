@@ -2,7 +2,7 @@ using Xunit;
 
 namespace Federated.IntegrationTests;
 
-/// <summary>The orchestrator cancels a task: the hospital closes the review, removes the result and confirms.</summary>
+/// <summary>The orchestrator cancels a one-hospital study version: the hospital closes the review, removes the result and confirms.</summary>
 [Collection(StackCollection.Name)]
 public class CancelTests
 {
@@ -10,13 +10,13 @@ public class CancelTests
 
     public CancelTests(StackFixture stack) => this.stack = stack;
 
-    private async Task<string> WaitingForReviewAsync()
+    private async Task<EnqueueOutcome> WaitingForReviewAsync()
     {
         var queued = await stack.Submission.EnqueueCodeAsync("cohort_2024", Code.CountRows);
         Assert.Equal(200, queued.Status);
         var waiting = await Await.UntilSettledAsync(stack, queued.Id!, Await.PhaseWait);
         Assert.Equal("waiting_for_output_approval", waiting.Phase);
-        return queued.Id!;
+        return queued;
     }
 
     private Task<TaskView> CanceledAsync(string id) => Await.UntilAsync(stack, id, t => t.Phase != "canceling", Await.PhaseWait);
@@ -33,10 +33,11 @@ public class CancelTests
     public async Task Cancel_while_waiting_for_review_closes_the_review_and_removes_the_result()
     {
         stack.EnsureReady();
-        var id = await WaitingForReviewAsync();
+        var queued = await WaitingForReviewAsync();
+        var id = queued.Id!;
         Assert.True(await stack.Storage.HasOutputAsync(id));
 
-        var cancel = await stack.Submission.CancelAsync(id);
+        var cancel = await stack.Submission.CancelAsync(queued.VersionId!);
         var end = await CanceledAsync(id);
 
         Assert.Equal((200, "canceling"), cancel);
@@ -55,7 +56,7 @@ public class CancelTests
         var running = await Await.UntilAsync(stack, queued.Id!, t => t.Phase != "queued", Await.PhaseWait);
         Assert.Equal("running", running.Phase);
 
-        var cancel = await stack.Submission.CancelAsync(queued.Id!);
+        var cancel = await stack.Submission.CancelAsync(queued.VersionId!);
         var end = await CanceledAsync(queued.Id!);
 
         Assert.Equal((200, "canceling"), cancel);
@@ -68,9 +69,10 @@ public class CancelTests
     public async Task Approval_at_the_same_time_as_a_cancel_never_releases_the_result()
     {
         stack.EnsureReady();
-        var id = await WaitingForReviewAsync();
+        var queued = await WaitingForReviewAsync();
+        var id = queued.Id!;
 
-        await stack.Submission.CancelAsync(id);
+        await stack.Submission.CancelAsync(queued.VersionId!);
         try
         {
             await stack.Egress.DecideAsync(id, approve: true, reason: null);
@@ -93,12 +95,12 @@ public class CancelTests
         var queued = await stack.Submission.EnqueueCodeAsync("cohort_2024", Code.CountRows);
         Assert.Equal(200, queued.Status);
 
-        var cancel = await stack.Submission.CancelAsync(queued.Id!);
+        var cancel = await stack.Submission.CancelAsync(queued.VersionId!);
         await stack.Agent.TriggerAsync();
         await Task.Delay(TimeSpan.FromSeconds(5));
         var end = await stack.Submission.GetTaskAsync(queued.Id!);
 
-        Assert.Equal((200, "canceled"), cancel);
+        Assert.Equal((200, "ended"), cancel);
         Assert.Equal("CANCELED", end.State);
         Assert.Equal("canceled", end.Phase);
         Assert.False(await stack.Storage.HasOutputAsync(queued.Id!));

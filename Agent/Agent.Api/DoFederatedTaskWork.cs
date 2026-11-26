@@ -438,18 +438,20 @@ namespace Agent.Api
         private const string CanceledReason = "The task was cancelled, so it cannot be decided.";
 
         /// <summary>
-        /// The orchestrator cancelled the task: no decision is accepted any more, the result is removed from the TRE,
-        /// then the cancel is confirmed. Each part is safe to repeat, so a failure is retried at the next poll.
+        /// The orchestrator cancelled the task: its run is stopped first, since a cancelled study version stops blocking
+        /// a new one at once. Then no decision is accepted any more, the result is removed from the TRE, and the cancel
+        /// is confirmed. Each part is safe to repeat, so a failure is retried at the next poll.
         /// </summary>
         private async Task CancelAsync(string taskId, string storeKey)
         {
+            // The run of the task's code is stopped and removed first, so it stops even when Egress is unreachable
+            // below; a Docker error is thrown like a store error below.
+            await _execution.RemoveRunAsync(storeKey, CancellationToken.None);
+
             var review = await _approval.GetAsync(storeKey, CancellationToken.None);
             // No decision is accepted from here on, and the Egress request must close before the cancel is confirmed.
             if (review is { IsPending: true })
                 await _approval.WithdrawAndCloseAsync(storeKey, CanceledReason, CancellationToken.None);
-
-            // A run of the task's code is stopped and removed too; a Docker error is thrown like a store error below.
-            await _execution.RemoveRunAsync(storeKey, CancellationToken.None);
 
             // A store error is thrown: the task keeps its phase and the cancel is tried again at the next poll.
             await _outputs.DeleteAsync(storeKey, CancellationToken.None);
@@ -659,10 +661,12 @@ namespace Agent.Api
 
             // Tasks are polled per TRE, so a mismatch means this agent's TreName disagrees with the TRE's name
             // in Submission. Don't read data, and don't report: the task stays as it is and runs once config is fixed.
-            if (!string.Equals(parsed.Spec!.TreName, treName, StringComparison.OrdinalIgnoreCase))
+            // A task for several hospitals is not a part of one hospital: it is not run here either.
+            var sites = parsed.Spec!.Sites;
+            if (sites.Count != 1 || !string.Equals(sites[0], treName, StringComparison.OrdinalIgnoreCase))
             {
-                Log.Error("Federated tasks: task {TaskId} is for TRE '{TaskTre}' but this agent's TreName is '{TreName}'; not running it",
-                    taskId, parsed.Spec.TreName, treName);
+                Log.Error("Federated tasks: task {TaskId} is for TRE(s) '{TaskTre}' but this agent's TreName is '{TreName}'; not running it",
+                    taskId, string.Join("|", sites), treName);
                 return new Prepared(null, null, true);
             }
 

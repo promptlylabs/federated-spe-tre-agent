@@ -73,6 +73,53 @@ namespace Submission.Api.Migrations
                     b.ToTable("AuditLogs");
                 });
 
+            modelBuilder.Entity("FiveSafesTes.Core.Models.FederatedTasks.FederatedStudyVersion", b =>
+                {
+                    b.Property<int>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("integer");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityByDefaultColumn(b.Property<int>("Id"));
+
+                    b.Property<DateTime?>("CanceledAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("CodeSha256")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("Sites")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<string>("StudyId")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<DateTime>("SubmittedAt")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<string>("TesTaskJson")
+                        .IsRequired()
+                        .HasColumnType("text");
+
+                    b.Property<int>("Version")
+                        .HasColumnType("integer");
+
+                    b.Property<Guid>("VersionId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("VersionId")
+                        .IsUnique();
+
+                    b.HasIndex("StudyId", "Version")
+                        .IsUnique();
+
+                    b.ToTable("FederatedStudyVersions");
+                });
+
             modelBuilder.Entity("FiveSafesTes.Core.Models.FederatedTasks.FederatedTask", b =>
                 {
                     b.Property<int>("Id")
@@ -135,6 +182,9 @@ namespace Submission.Api.Migrations
                         .IsRequired()
                         .HasColumnType("text");
 
+                    b.Property<int>("StudyVersionId")
+                        .HasColumnType("integer");
+
                     b.Property<DateTime>("SubmittedAt")
                         .HasColumnType("timestamp with time zone");
 
@@ -153,6 +203,8 @@ namespace Submission.Api.Migrations
                         .HasColumnType("text");
 
                     b.HasKey("Id");
+
+                    b.HasIndex("StudyVersionId");
 
                     b.HasIndex("TaskId")
                         .IsUnique();
@@ -596,11 +648,19 @@ namespace Submission.Api.Migrations
 
             modelBuilder.Entity("FiveSafesTes.Core.Models.FederatedTasks.FederatedTask", b =>
                 {
+                    b.HasOne("FiveSafesTes.Core.Models.FederatedTasks.FederatedStudyVersion", "StudyVersion")
+                        .WithMany("Parts")
+                        .HasForeignKey("StudyVersionId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
                     b.HasOne("FiveSafesTes.Core.Models.Tre", "Tre")
                         .WithMany()
                         .HasForeignKey("TreId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
+
+                    b.Navigation("StudyVersion");
 
                     b.Navigation("Tre");
                 });
@@ -731,6 +791,11 @@ namespace Submission.Api.Migrations
                         .HasForeignKey("UsersId")
                         .OnDelete(DeleteBehavior.Cascade)
                         .IsRequired();
+                });
+
+            modelBuilder.Entity("FiveSafesTes.Core.Models.FederatedTasks.FederatedStudyVersion", b =>
+                {
+                    b.Navigation("Parts");
                 });
 
             modelBuilder.Entity("FiveSafesTes.Core.Models.FederatedTasks.FederatedTask", b =>

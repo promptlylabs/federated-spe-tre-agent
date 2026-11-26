@@ -129,12 +129,13 @@ review() {
 run_case() {
   local n=$1 title=$2 ask=$3 expected=$4
   shift 4
-  local id view state phase code message outcome left decision
+  local version id view state phase code message outcome left decision
   pause "to start case $n"
   heading "Case $n of 3 · $title"
   say "${DIM}${ask}${X}"
   echo
-  if ! id=$(enqueue "$@" 2>/dev/null); then
+  # Each case is its own study, sent to my-tre only; the hospital's part of it is the task followed below.
+  if ! version=$(enqueue "$@" 2>/dev/null) || ! id=$(part "$version" 2>/dev/null); then
     stop "The request could not be sent to the hospital"; FAILURES=$((FAILURES + 1))
     SUMMARY+=("$n|$title|request failed|no"); return
   fi

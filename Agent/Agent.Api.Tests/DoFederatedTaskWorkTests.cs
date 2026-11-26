@@ -469,6 +469,21 @@ public class DoFederatedTaskWorkTests
     }
 
     [Fact]
+    public async Task Execute_TaskForSeveralSites_IsNotRun()
+    {
+        var store = Store();
+        var client = new FakeClient();
+        var task = PendingTask(T1);
+        task.Tags!["fed.sites"] = "tre-a|tre-b";
+        client.Pending.Add(task);
+
+        await Work(client, store).Execute();
+
+        Assert.Empty(client.Reports);
+        Assert.Equal(0, store.ListCalls);
+    }
+
+    [Fact]
     public async Task Execute_TreNameMatchesCaseInsensitively()
     {
         var client = new FakeClient();
@@ -2038,6 +2053,21 @@ public class DoFederatedTaskWorkTests
         Assert.Empty(outputs.Files);
         Assert.Empty(execution.Runs);
         Assert.Equal(new[] { (T1, FederatedTaskPhase.Canceled) }, client.ProgressCalls);
+    }
+
+    [Fact]
+    public async Task Cancel_RemovesRunEvenWhenWithdrawalFails()
+    {
+        var client = OneTask(TesState.RUNNINGEnum);
+        Canceling(client.Pending[0]);
+        var outputs = Saved();
+        var approval = new FakeOutputApproval { AutoApprove = false, FailClose = true }.Preset(T1, PendingReview(ShaOf(outputs.Files[T1])), registered: true);
+        var execution = new FakeExecution { HasRun = true };
+
+        await Work(client, execution, outputs: outputs, approval: approval).Execute();
+
+        Assert.Equal(new[] { T1 }, execution.Removed);
+        Assert.Empty(client.ProgressCalls);
     }
 
     [Fact]

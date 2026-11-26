@@ -29,6 +29,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         /// result past output approval, so none is accepted. The result leaves through output approval and ReportResult.
         /// </summary>
         public const string ResultUrl = "result://";
+        public const int MaxSites = 20;
         public const int MaxCodeBytes = 262144;
 
         private static readonly Regex Sha256Pattern = new(@"^[0-9a-f]{64}\z", RegexOptions.Compiled);
@@ -128,14 +129,14 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             }
 
             // Tags: the TRE and study, plus the hash of the code that runs.
-            if (ReadTags(task, out var tags, out var tre, out var studyId) is { } tagFailure)
+            if (ReadTags(task, out var tags, out var sites, out var studyId) is { } tagFailure)
                 return tagFailure;
             if (!tags.TryGetValue(CodeSha256Tag, out var codeSha) || codeSha is null || !Sha256Pattern.IsMatch(codeSha))
                 return Fail(FederatedTaskErrorCodes.InvalidTask, $"tag '{CodeSha256Tag}' must be a lowercase hex SHA-256");
             if (codeSha != Convert.ToHexStringLower(SHA256.HashData(codeBytes)))
                 return Fail(FederatedTaskErrorCodes.InvalidTask, $"tag '{CodeSha256Tag}' does not match the code");
 
-            var spec = new FederatedTaskSpec(RunAnalysisCommand, dataset, studyId, tre, codeSha);
+            var spec = new FederatedTaskSpec(RunAnalysisCommand, dataset, studyId, sites, codeSha);
             return new FederatedTaskParseResult(spec, null, null);
         }
 
@@ -148,30 +149,39 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         }
 
         /// <summary>
-        /// The fed.* tags every task needs. <paramref name="tre"/> is trimmed and lowercased. Returns null when they
-        /// are valid, otherwise the failure.
+        /// The fed.* tags every task needs. <paramref name="sites"/> is the '|' list of hospitals, each trimmed and
+        /// lowercased, in the submitted order. Returns null when they are valid, otherwise the failure.
         /// </summary>
         private static FederatedTaskParseResult? ReadTags(
-            TesTask task, out Dictionary<string, string> tags, out string tre, out string studyId)
+            TesTask task, out Dictionary<string, string> tags, out IReadOnlyList<string> sites, out string studyId)
         {
             tags = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-            tre = studyId = string.Empty;
+            sites = [];
+            studyId = string.Empty;
             foreach (var tag in task.Tags ?? [])
             {
                 if (!tags.TryAdd(tag.Key, tag.Value))
                     return Fail(FederatedTaskErrorCodes.InvalidTask, "duplicate tag key");
             }
 
-            // Exactly one TRE: non-empty after trimming, no '|' separator. Existence is checked later.
-            if (!tags.TryGetValue(SitesTag, out var sites) || string.IsNullOrWhiteSpace(sites) || sites.Contains('|'))
-                return Fail(FederatedTaskErrorCodes.InvalidTask, $"tag '{SitesTag}' must name exactly one TRE");
+            // One or more hospitals separated by '|'. Existence is checked later.
+            if (!tags.TryGetValue(SitesTag, out var sitesTag) || string.IsNullOrWhiteSpace(sitesTag))
+                return Fail(FederatedTaskErrorCodes.InvalidTask, $"tag '{SitesTag}' must name at least one TRE");
             if (!tags.TryGetValue(StudyIdTag, out var study) || string.IsNullOrWhiteSpace(study))
                 return Fail(FederatedTaskErrorCodes.InvalidTask, $"tag '{StudyIdTag}' is required");
-            if (sites.Length > FederatedResultLimits.MaxStringLength || study.Length > FederatedResultLimits.MaxStringLength)
+            if (sitesTag.Length > FederatedResultLimits.MaxStringLength || study.Length > FederatedResultLimits.MaxStringLength)
                 return Fail(FederatedTaskErrorCodes.InvalidTask,
                     $"tags '{SitesTag}' and '{StudyIdTag}' must be at most {FederatedResultLimits.MaxStringLength} characters");
 
-            tre = sites.Trim().ToLowerInvariant();
+            var names = sitesTag.Split('|').Select(n => n.Trim().ToLowerInvariant()).ToList();
+            if (names.Any(n => n.Length == 0))
+                return Fail(FederatedTaskErrorCodes.InvalidTask, $"tag '{SitesTag}' must not contain an empty TRE name");
+            if (names.Distinct().Count() != names.Count)
+                return Fail(FederatedTaskErrorCodes.InvalidTask, $"tag '{SitesTag}' must not name a TRE twice");
+            if (names.Count > MaxSites)
+                return Fail(FederatedTaskErrorCodes.InvalidTask, $"tag '{SitesTag}' must name at most {MaxSites} TREs");
+
+            sites = names;
             studyId = study;
             return null;
         }

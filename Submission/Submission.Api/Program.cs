@@ -115,6 +115,7 @@ if (federatedTaskSettingsProblems.Count > 0 && !Microsoft.EntityFrameworkCore.EF
 }
 builder.Services.AddSingleton(federatedTaskSettings);
 builder.Services.AddSingleton<IFederatedResultStore>(_ => new RustFsFederatedResultStore(federatedResultsStorageSettings));
+builder.Services.AddSingleton<IFederatedTaskDispatch, AgentPollDispatch>();
 
 
 var emailSettings = new EmailSettings();

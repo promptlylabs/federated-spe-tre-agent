@@ -35,12 +35,15 @@ cached_login() {
 token() { cached_login submission "$KEYCLOAK" Dare-Control-API dev-dare-control-api-secret control-admin 'ControlAdmin1!'; }
 
 # Prints the TES body of a code task: the Python file inline, fed.code_sha256 the SHA-256 of its bytes.
+# The hospitals are $SITES (default my-tre; e.g. "my-tre|other-tre"). The study is $STUDY_ID, by default a new one per
+# call, so one run never waits for another's open version.
 code_task_body() {
   local dataset=$1 file=$2
   [ -f "$file" ] || { echo "no such file: $file" >&2; return 1; }
-  python3 - "$dataset" "$file" <<'PY'
-import hashlib, json, sys
-dataset, path = sys.argv[1], sys.argv[2]
+  python3 - "$dataset" "$file" "${SITES:-my-tre}" "${STUDY_ID:-}" <<'PY'
+import hashlib, json, sys, uuid
+dataset, path, sites = sys.argv[1], sys.argv[2], sys.argv[3]
+study = sys.argv[4] or f"study-{uuid.uuid4().hex[:12]}"
 raw = open(path, "rb").read()
 print(json.dumps({
     "executors": [{"image": "python-runner:1",
@@ -48,12 +51,13 @@ print(json.dumps({
     "inputs": [{"path": "/code/analysis.py", "type": "FILE", "content": raw.decode("utf-8")},
                {"url": f"dataset://{dataset}", "path": f"/data/{dataset}", "type": "DIRECTORY"}],
     "outputs": [{"path": "/outputs/result.json", "url": "result://", "type": "FILE"}],
-    "tags": {"fed.sites": "my-tre", "fed.study_id": "study-001", "fed.code_sha256": hashlib.sha256(raw).hexdigest()},
+    "tags": {"fed.sites": sites, "fed.study_id": study, "fed.code_sha256": hashlib.sha256(raw).hexdigest()},
 }))
 PY
 }
 
-# enqueue <dataset> <file.py>: queues a code task that runs the file on the dataset; prints its id.
+# enqueue <dataset> <file.py>: queues a study version that runs the file on the dataset at each hospital; prints the
+# version ID. `part` gives a hospital's task ID.
 enqueue() {
   [ $# -eq 2 ] || { echo "usage: enqueue <dataset> <file.py>" >&2; return 1; }
   local body
@@ -68,6 +72,24 @@ enqueue() {
     return 1
   fi
   python3 -c 'import sys, json; print(json.load(sys.stdin)["id"])' <<<"$response"
+}
+
+# part <version-id> [tre]: prints that hospital's task ID in the study version (default my-tre).
+part() {
+  [ $# -ge 1 ] || { echo "usage: part <version-id> [tre]" >&2; return 1; }
+  curl -sf "$SUBMISSION/api/FederatedTask/GetStudyVersion?id=$1" -H "Authorization: Bearer $(token)" |
+    python3 -c '
+import sys, json
+ids = [h["task_id"] for h in json.load(sys.stdin)["hospitals"] if h["tre"] == sys.argv[1]]
+if not ids:
+    sys.exit(f"no part for {sys.argv[1]} in this version")
+print(ids[0])' "${2:-my-tre}"
+}
+
+# study <version-id>: prints the study version (state open, canceling or ended, and each hospital's phase) as JSON.
+study() {
+  [ $# -eq 1 ] || { echo "usage: study <version-id>" >&2; return 1; }
+  curl -sf "$SUBMISSION/api/FederatedTask/GetStudyVersion?id=$1" -H "Authorization: Bearer $(token)" | python3 -m json.tool
 }
 
 # The task as GetTask returns it (JSON).
@@ -101,7 +123,8 @@ result() {
   rm -f "$tmp"
 }
 
-# Cancels the task as an orchestrator admin. Queued: canceled at once; picked up: canceling until the hospital confirms.
+# cancel <version-id>: cancels the study version as an orchestrator admin. A queued part is canceled at once; a part a
+# hospital picked up is canceling until that hospital confirms.
 cancel() {
   local response code
   response=$(curl -s -w '\n%{http_code}' -X POST "$SUBMISSION/api/FederatedTask/Cancel?id=$1" -H "Authorization: Bearer $(token)") ||
