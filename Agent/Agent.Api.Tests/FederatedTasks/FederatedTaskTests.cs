@@ -15,13 +15,13 @@ public class FederatedTaskTests
     {
         var tes = new TesTask
         {
-            Executors = [new TesExecutor { Image = "tre", Command = ["mean", "age"] }]
+            Executors = [new TesExecutor { Image = "tre", Command = ["run-analysis", "/code/analysis.py", "/data/cohort", "/outputs/result.json"] }]
         };
         return In(new FederatedTask
         {
             TaskId = TaskId,
             StudyId = "study",
-            Operation = "mean",
+            Operation = "run-analysis",
             Dataset = "cohort",
             TesTaskJson = JsonConvert.SerializeObject(tes),
             SubmittedAt = Submitted
@@ -52,7 +52,7 @@ public class FederatedTaskTests
         Assert.Equal("queued", log.Metadata["phase"]);
         Assert.Null(log.EndTime);
         Assert.Equal(new DateTimeOffset(Submitted, TimeSpan.Zero), task.CreationTime);
-        Assert.Equal(["mean", "age"], task.Executors![0].Command);
+        Assert.Equal(["run-analysis", "/code/analysis.py", "/data/cohort", "/outputs/result.json"], task.Executors![0].Command);
     }
 
     [Fact]

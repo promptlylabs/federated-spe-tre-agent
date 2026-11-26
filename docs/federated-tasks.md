@@ -1,6 +1,6 @@
 # Federated tasks
 
-The orchestrator (Submission.Api) queues a GA4GH TES task for one TRE. The TRE Agent (Agent.Api) polls for it, reads a CSV dataset from the TRE bucket, runs `count` or `mean`, or runs the researcher's Python code in a locked-down container, holds the result until a hospital reviewer approves it in the Data Egress app, and then reports the result.
+The orchestrator (Submission.Api) queues a GA4GH TES task for one TRE. The TRE Agent (Agent.Api) polls for it, runs the researcher's Python code on a CSV dataset from the TRE bucket, in a locked-down container, holds the result until a hospital reviewer approves it in the Data Egress app, and then reports the result.
 
 There is no DAAMS signing or approval gate on the orchestrator side yet.
 
@@ -10,9 +10,9 @@ To try the flow locally, see [dev/federated](../dev/federated/README.md). It is 
 
 1. A `dare-control-admin` user calls `POST /api/FederatedTask/Enqueue` with a TES task. Submission validates it against the federated profile. The task is stored at the phase `queued`. The response holds the task id.
 2. The Agent job `Run Federated Tasks` (`JobSettings:FederatedTaskJobName`) runs every `JobSettings:federatedTaskSchedule` minutes. It calls `GET /api/FederatedTask/GetPendingTasksForTre`. The TRE is taken from the token.
-3. The Agent checks the task against the profile, then runs the hospital's input checks in this order: the executor image is in `ApprovedImages` (see "Approved images"), and the one `.csv` under `dataset/<name>/` is in the dataset bucket, and, for a code task, a `schema.json` is in the same folder. It reads no data values yet. If a check fails, or there is no file or more than one, the task is rejected (`rejected_by_input_checks`). If `ApprovedImages` is not set, the task still gets the profile check, but the hospital's checks do not run. The task is not run or reported, and keeps its phase. A `queued` task rejected here never reaches `running`. A resumed `running` task is checked again, so if its dataset was removed in the meantime it is rejected with a `running_at` in its history. If the dataset bucket cannot be listed, the task keeps its phase and is tried again at the next poll, until `DatasetUnreachableGiveUpMinutes` (default 60) have passed since it was queued, or since the Agent started if that is later. A task that waited while the Agent was down, or while `ApprovedImages` was not set, so gets the full time. Each restart of the Agent gives pending tasks the full time again. After that it fails with `SYSTEM_ERROR` and `internal_error`, so a bucket that is wrongly configured or denied does not leave tasks queued for good.
-4. For a `queued` task, the Agent calls `POST /api/FederatedTask/ReportProgress` with the phase `running`. Submission moves the task to `running`. Then the Agent reads the file. If the bucket fails during the read, or Docker has a fault that may pass by itself (the daemon is down or restarting, a server error, a broken socket or a timeout), the task stays `running` and is resumed at the next poll, with the same `DatasetUnreachableGiveUpMinutes` limit as a failed listing (for a Docker fault, counted from the first fault, so a task that waited long in the queue still gets the whole time). A finished run is kept meanwhile, so its result is collected once Docker is back. A Docker error that waiting can't fix (for example an image that doesn't exist) is reported at once (`internal_error`). A file that is not valid CSV is reported at once (`invalid_dataset`).
-5. A count/mean task runs in-process, with no container. A code task runs in a container (see "Running a code task"); the Agent starts it and checks it again at each poll, so a poll never waits for the code. The result is a JSON file (see "Task state and result").
+3. The Agent checks the task against the profile, then runs the hospital's input checks in this order: the executor image is in `ApprovedImages` (see "Approved images"), and the one `.csv` under `dataset/<name>/` is in the dataset bucket, and a `schema.json` is in the same folder. It reads no data values yet. If a check fails, or there is no file or more than one, the task is rejected (`rejected_by_input_checks`). If `ApprovedImages` is not set, the task still gets the profile check, but the hospital's checks do not run. The task is not run or reported, and keeps its phase. A `queued` task rejected here never reaches `running`. A resumed `running` task is checked again, so if its dataset was removed in the meantime it is rejected with a `running_at` in its history. If the dataset bucket cannot be listed, the task keeps its phase and is tried again at the next poll, until `DatasetUnreachableGiveUpMinutes` (default 60) have passed since it was queued, or since the Agent started if that is later. A task that waited while the Agent was down, or while `ApprovedImages` was not set, so gets the full time. Each restart of the Agent gives pending tasks the full time again. After that it fails with `SYSTEM_ERROR` and `internal_error`, so a bucket that is wrongly configured or denied does not leave tasks queued for good.
+4. For a `queued` task, the Agent calls `POST /api/FederatedTask/ReportProgress` with the phase `running`. Submission moves the task to `running`. Then the Agent reads the CSV and `schema.json` to stage them for the run. If the bucket fails during the read, or Docker has a fault that may pass by itself (the daemon is down or restarting, a server error, a broken socket or a timeout), the task stays `running` and is resumed at the next poll, with the same `DatasetUnreachableGiveUpMinutes` limit as a failed listing (for a Docker fault, counted from the first fault, so a task that waited long in the queue still gets the whole time). A finished run is kept meanwhile, so its result is collected once Docker is back. A Docker error that waiting can't fix (for example an image that doesn't exist) is reported at once (`internal_error`). A finished run is kept meanwhile, so its result is collected once Docker is back. A Docker error that waiting can't fix (for example an image that doesn't exist) is reported at once (`internal_error`).
+5. The code runs in a container (see "Running a code task"). The Agent starts it and checks it again at each poll, so a poll never waits for the code. The runner checks the CSV against `schema.json`; a file that is not valid CSV fails with `invalid_dataset`. The result is a JSON file (see "Task state and result").
 6. The Agent saves the file in the TRE bucket `federated-outputs` as `<taskId>.json`. If the file is already there from an earlier poll, the Agent reuses it and does not compute again.
 7. The Agent registers the result with the Data Egress app, then calls `ReportProgress` with the phase `waiting_for_output_approval`. The task stays `RUNNING`. Nothing has left the TRE. See "Output approval".
 8. A hospital reviewer opens the request in the Egress app. The page shows the study ID, the code that ran (image and command) and the result in full, with its SHA-256. The reviewer approves, or rejects with a reason. The Egress app sends the decision to the Agent, which records it in `federated-outputs/<taskId>.review.json`.
@@ -20,7 +20,7 @@ To try the flow locally, see [dev/federated](../dev/federated/README.md). It is 
 10. After a release, the Agent compares the SHA-256 that Submission stored with the SHA-256 of its own copy. If they match, it adds the metadata `released-key` and `released-sha256` to the TRE copy.
 11. A `dare-control-admin` user calls `GET /api/FederatedTask/GetTask?id=<taskId>` for the phase, the state and where the result is stored, and `GET /api/FederatedTask/GetTaskResult?id=<taskId>` for the file.
 
-If the Agent cannot save the file, or the registration with the Egress app fails, or the release fails (network error, 5xx, or a 4xx that is not listed under "Reporting a result"), the task stays `running` and the Agent tries again at the next poll. A task that fails before there is a file (for example `dataset_not_found`, or `timeout` for a code task) is reported as a rejection or a failure, with no file, and does not go through save and release.
+If the Agent cannot save the file, or the registration with the Egress app fails, or the release fails (network error, 5xx, or a 4xx that is not listed under "Reporting a result"), the task stays `running` and the Agent tries again at the next poll. A task that fails before there is a file (for example `dataset_not_found` or `timeout`) is reported as a rejection or a failure, with no file, and does not go through save and release.
 
 `GetPendingTasksForTre` returns the tasks that are not finished: `canceling` first, then `running`, then `queued`, then `waiting_for_output_approval`, oldest first inside each group. For a `waiting_for_output_approval` task the Agent reads the review record and acts on the decision, if there is one (see "Output approval"). A `running` task was marked by an earlier poll that did not finish. The Agent resumes it, and does not report `running` again. If the result file from the earlier poll is in the TRE bucket, the Agent reuses it. Otherwise it runs the task again from the start, so every step the Agent does before it reports must be safe to do twice. The Agent skips, and logs, a pending task in any state other than `QUEUED` or `RUNNING`. A `RUNNING` task is either `running` or `waiting_for_output_approval`; the Agent reads the phase to tell which.
 
@@ -53,8 +53,8 @@ sequenceDiagram
     end
     Agent->>Sub: POST ReportProgress (phase running), only for a queued task
     Sub-->>Agent: 200, task is running (409 if the task is past running)
-    Agent->>TS: read dataset CSV
-    Agent->>Agent: compute result, build result JSON
+    Agent->>TS: read dataset CSV and schema.json
+    Agent->>Agent: run the code in a container, build result JSON
     alt success
         Agent->>TS: save federated-outputs/taskId.json (once, reused on retry)
         Agent->>TS: save taskId.review.json (pending, result sha256)
@@ -93,7 +93,7 @@ sequenceDiagram
     else input check fails (e.g. dataset_not_found)
         Agent->>Sub: POST ReportResult (CANCELED, RejectedAt input_checks, error_code, error_message, no file)
         Sub-->>Agent: 200, phase rejected_by_input_checks, no file written
-    else task fails (e.g. column_not_found)
+    else task fails (e.g. code_error)
         Agent->>Sub: POST ReportResult (EXECUTOR_ERROR or SYSTEM_ERROR, error_code, no file)
         Sub-->>Agent: 200, phase failed, no file written
     end
@@ -115,7 +115,7 @@ Every 4xx from these endpoints has the same JSON body. Its keys are the same as 
 
 | Status | `error_code` | When |
 |---|---|---|
-| 400 | `invalid_task`, or any profile code from the table below (for example `unknown_operation`) | The request or the task is not valid. This includes a form with an unknown `State` value or a bad `ErrorCode`, and a request over the size limit of `ReportResult` (73728 bytes). |
+| 400 | `invalid_task` or `invalid_dataset_name` | The request or the task is not valid. This includes a form with an unknown `State` value or a bad `ErrorCode`, and a request over the size limit of `ReportResult` (73728 bytes). |
 | 400 | `invalid_result` | `ReportResult`: the result file is not valid, or does not match the task. |
 | 400 | `result_too_large` | `ReportResult`: the result file is over 65536 bytes. |
 | 404 | `task_not_found` | No such task. `ReportProgress` and `ReportResult` also return this for a task that belongs to another TRE. |
@@ -250,47 +250,11 @@ Withdrawing. If the saved result changes or disappears while its review is still
 
 ## The federated TES profile
 
-| TES field | Rule |
-|---|---|
-| `executors` | Exactly 1. `image` must be `5s-tes/federated-ops:1`. |
-| `executors[0].command` | `[<operation>, ...args]`. The operation is `count` or `mean`. |
-| command args | `--column <name>`: at most once. Required for `mean`, optional for `count`. `--filter <column>:<op>:<value>`: repeatable. |
-| filter `<op>` | `eq`, `gt`, `lt`, `gte` or `lte`. Split on the first two `:` only, so a value may contain `:`. |
-| `inputs` | Exactly 1. `url` is `dataset://<name>`. |
-| `outputs` | Must be null or empty. The result is returned in the task log. |
-| `tags` | `fed.sites` names the TRE the task runs at. For now it must name exactly one existing TRE; study fan-out will let a study name several. It is trimmed and lowercased, and must not contain `\|`, which is kept for that list. `fed.study_id` must not be empty. Both are at most 1024 characters, the limit for strings in the result document. Tags without the `fed.` prefix are kept and ignored. |
-| `resources`, `volumes`, `name`, `description` | Accepted and ignored. |
-
-The dataset name must match `^[a-z0-9][a-z0-9_-]{0,62}$`.
-
-Example: the mean of `age` on dataset `cohort_2024`, for rows where `sex` is `F`.
-
-```json
-{
-  "executors": [
-    {
-      "image": "5s-tes/federated-ops:1",
-      "command": ["mean", "--column", "age", "--filter", "sex:eq:F"]
-    }
-  ],
-  "inputs": [
-    {
-      "url": "dataset://cohort_2024",
-      "path": "/data/cohort_2024",
-      "type": "DIRECTORY"
-    }
-  ],
-  "outputs": [],
-  "tags": {
-    "fed.sites": "my-tre",
-    "fed.study_id": "study-001"
-  }
-}
-```
+Every federated task is a code task. Submission checks it against these rules at intake, and the Agent checks it again before its input checks.
 
 ### Code tasks
 
-A code task runs the researcher's Python file with `run-analysis` in an approved runner image (see `runner/README.md`). Intake decides by the executor image: `5s-tes/federated-ops:1` is a count/mean task with the rules above, any other image is a code task with these rules.
+A code task runs the researcher's Python file with `run-analysis` in an approved runner image (see `runner/README.md`).
 
 | TES field | Rule |
 |---|---|
@@ -300,11 +264,14 @@ A code task runs the researcher's Python file with `run-analysis` in an approved
 | `outputs` | Exactly 1: `path` `/outputs/result.json`, `type` `FILE`, `url` `result://`. TES requires a `url`; any real address is refused, so no runtime can upload the result past output approval. The result goes through output approval at the hospital and back to Submission, as for every task. |
 | `volumes` | Must be null or empty. |
 | `resources` | May be left out. If given, `cpu_cores`, `ram_gb` and `disk_gb` must each be more than 0 and at most `MaxCpuCores`, `MaxRamGb` and `MaxDiskGb`. `zones`, `preemptible` and `backend_parameters` must not be set. |
-| `tags` | `fed.sites` and `fed.study_id` as for count/mean. `fed.code_sha256` is required: the lowercase hex SHA-256 of the code's UTF-8 bytes. It must match the code, so the hash the hospital reviews is the hash of the code that runs. |
+| `tags` | `fed.sites` names the TRE the task runs at. For now it must name exactly one existing TRE; study fan-out will let a study name several. It is trimmed and lowercased, and must not contain `\|`, which is kept for that list. `fed.study_id` must not be empty. Both are at most 1024 characters, the limit for strings in the result document. `fed.code_sha256` is required: the lowercase hex SHA-256 of the code's UTF-8 bytes. It must match the code, so the hash the hospital reviews is the hash of the code that runs. Tags without the `fed.` prefix are kept and ignored. |
+| `name`, `description` | Accepted and ignored. |
+
+The dataset name must match `^[a-z0-9][a-z0-9_-]{0,62}$`.
 
 Every rule that fails gives `invalid_task` (or `invalid_dataset_name` for the name), and the message names the rule. Nothing is stored.
 
-The stored task has the operation `run-analysis`. The whole task, with the code, is kept as for every task.
+The stored task has the operation `run-analysis`. The whole task, with the code, is kept.
 
 Example:
 
@@ -346,7 +313,7 @@ The Agent runs a code task in a Docker container, through the Docker socket (`Fe
 
 A `running` code task that has no run and no saved result (the run was lost, or the start failed part-way) is started again, so its code runs again. The Agent logs this as a warning.
 
-The Agent also removes old runs at every poll (the sweep). A run is removed when its task has a saved result, or when the task is not pending and the run is older than twice `MaxRunMinutes`. The sweep also removes staged data that has no run container (volumes, which can hold a copy of the dataset, or a staging container), as a removal or a failed start that was cut short leaves it. If one removal fails, the sweep goes on with the others and the next poll tries again.
+The Agent also removes old runs at every poll (the sweep). A run is removed when its task has a saved result, or when the task is not pending and the run is older than twice `MaxRunMinutes`. The sweep also removes staged data that has no run container (volumes, which can hold a copy of the dataset, or a staging container), as a removal or a failed start that was cut short leaves it. If one removal fails, the sweep goes on with the others and the next poll tries again. Use one Agent per Docker daemon. The sweep treats staged data without a run container as left over, which is safe only because the same Agent's poll stages and starts runs, one poll at a time. A second Agent on the same daemon could remove the other Agent's staged data while it starts a run.
 
 The container:
 
@@ -387,8 +354,6 @@ The Agent maps `result.json` (format in `runner/README.md`) as follows. It never
 
 **Known limitation:** the Agent holds the whole CSV in memory while it stages it, so a very large upload can exhaust the Agent's memory. Uploaders must keep a dataset within the runner's 256 MiB limit.
 
-Count/mean tasks and the `5s-tes/federated-ops:1` image are still supported and are to be removed later.
-
 ### Task phases and state
 
 A task has a phase. It says where the task is, from intake to release. `GetTask` returns a valid TES task, so `state` is always a standard TES state. The phase is in the metadata.
@@ -399,7 +364,7 @@ A task has a phase. It says where the task is, from intake to release. `GetTask`
 | `running` | `RUNNING` | The Agent has picked the task up. |
 | `waiting_for_output_approval` | `RUNNING` | The result is saved in the TRE and waits for a reviewer's decision in the Egress app. Set by the Agent. |
 | `released` | `COMPLETE` | The result file is stored in the orchestrator. |
-| `rejected_by_input_checks` | `CANCELED` | The task was refused before it ran. The error code is one of `invalid_task`, `unknown_operation`, `invalid_filter`, `image_not_approved`, `invalid_dataset_name`, `dataset_not_found`, `ambiguous_dataset` or `schema_not_found`. |
+| `rejected_by_input_checks` | `CANCELED` | The task was refused before it ran. The error code is one of `invalid_task`, `image_not_approved`, `invalid_dataset_name`, `dataset_not_found`, `ambiguous_dataset` or `schema_not_found`. |
 | `rejected_at_output_approval` | `CANCELED` | A reviewer refused the result. The error code is `rejected_by_reviewer` and the message is the reviewer's reason. |
 | `canceling` | `CANCELING` | The orchestrator cancelled a task a hospital had picked up. The hospital is closing the review and removing the result. |
 | `canceled` | `CANCELED` | The task was cancelled: before any hospital picked it up, or after the hospital confirmed its clean-up. |
@@ -413,8 +378,8 @@ The result is in `logs[0].metadata`. Every key and value is a string.
 - `<phase>_at` for each phase the task has reached, for example `queued_at` and `running_at`. The value is a UTC time in ISO 8601 form (`O` format). A task rejected before it ran has no `running_at`. `logs[0].start_time` is `running_at`. `logs[0].end_time` is the time of the final phase.
 - On `released`: `result_bucket`, `result_key` and `result_sha256` (where the result file is stored in the orchestrator, and its SHA-256). On a rejection or a failure: `error_code` and `error_message`.
 
-- The computed values (count, mean) are in the result file, not in the metadata.
-- `dataset_sha256` is added whenever the Agent read the dataset file, on success and on errors raised after the read (including `invalid_dataset`). It is the lowercase hex SHA-256 of the exact bytes of the CSV. It is absent when the file was not read: every input-check rejection (`invalid_task`, `unknown_operation`, `invalid_filter`, `image_not_approved`, `invalid_dataset_name`, `dataset_not_found`, `ambiguous_dataset`, `schema_not_found`), `tre_renamed`, and `internal_error` before the read. An empty file gives `invalid_dataset` with the hash.
+- The values the code returned are in the result file, not in the metadata.
+- `dataset_sha256` is added whenever the Agent read the dataset file, on success and on errors raised after the read (including `invalid_dataset`). It is the lowercase hex SHA-256 of the exact bytes of the CSV. It is absent when the file was not read: every input-check rejection (`invalid_task`, `image_not_approved`, `invalid_dataset_name`, `dataset_not_found`, `ambiguous_dataset`, `schema_not_found`), `tre_renamed`, and `internal_error` before the read. An empty file gives `invalid_dataset` with the hash.
 
 ### How the phases fit the standards
 
@@ -433,27 +398,21 @@ The result file is one JSON document. The property names are camelCase. `schemaV
   "taskId": "0b9a3c4e-6f1d-4c1e-9a52-3d7b8e2f1a10",
   "tre": "my-tre",
   "studyId": "study-001",
-  "operation": "mean",
+  "operation": "run-analysis",
   "dataset": "cohort_2024",
   "datasetSha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
   "completedAt": "2026-11-05T09:30:00+00:00",
   "result": {
-    "kind": "scalar",
-    "value": 41.5,
-    "rowCount": 120
+    "kind": "analysis",
+    "n": 120,
+    "value": { "n": 120, "mean_age": 41.2 }
   }
 }
 ```
 
-`result.value` is a decimal. It is `null` when there are no rows. `result.kind` is `scalar` for a count/mean task.
+`operation` is `run-analysis` and `result.kind` is `analysis`. `result.n` is the non-negative integer the researcher's code returned as `n` (it must equal `result.value.n`), and `result.value` is the dict it returned. Any other kind is refused.
 
-For a code task, `operation` is `run-analysis` and `result.kind` is `analysis`. `result.n` is the non-negative integer the researcher's code returned as `n` (it must equal `result.value.n`), and `result.value` is the dict it returned:
-
-```json
-"result": { "kind": "analysis", "n": 120, "value": { "n": 120, "mean_age": 41.2 } }
-```
-
-The kind must match the task. The whole file is at most 65,536 bytes, and JSON nesting at most 16 levels. The runner limits the researcher's dict to 61,440 bytes so that the document fits.
+The whole file is at most 65,536 bytes, and JSON nesting at most 16 levels. The runner limits the researcher's dict to 61,440 bytes so that the document fits.
 
 The file is stored under the key `<treId>/<taskId>/<sha256>.json` in the orchestrator bucket `federated-results`. `treId` is the TRE id in Submission and `sha256` is the SHA-256 of the file.
 
@@ -471,13 +430,9 @@ TODO: researcher access scoped by study once study_id → project mapping exists
 | `image_not_approved` | The executor image is not in this TRE's `ApprovedImages`. The message names the image. |
 | `invalid_dataset_name` | The name does not match `^[a-z0-9][a-z0-9_-]{0,62}$`. |
 | `dataset_not_found` | No `.csv` file under `dataset/<name>/`. From a code run, the runner found no dataset file (the input checks normally catch this first); the message is "the runner found no dataset file". |
-| `schema_not_found` | A code task, and no `schema.json` in `dataset/<name>/`. An input check, so the task is rejected, and the message names the dataset. If the runner itself finds no schema, the message is "the runner found no schema.json for the dataset". |
+| `schema_not_found` | No `schema.json` in `dataset/<name>/`. An input check, so the task is rejected, and the message names the dataset. If the runner itself finds no schema, the message is "the runner found no schema.json for the dataset". |
 | `ambiguous_dataset` | More than one `.csv` file under `dataset/<name>/`. From a code run, the runner found more than one dataset file (the input checks normally catch this first); the message is "the runner found more than one dataset file". |
-| `invalid_dataset` | The file is empty, is not valid CSV (for example a stray `"` inside a field), or has two columns with the same name. The message gives the line number or the column name, never the data. For a code run the message is "the runner could not read the dataset as CSV". |
-| `unknown_operation` | The operation is not `count` or `mean`. |
-| `invalid_filter` | The operator is not `eq`, `gt`, `lt`, `gte` or `lte`, or the filter is not `<column>:<op>:<value>`. |
-| `column_not_found` | The column, or a filter column, is not in the dataset. |
-| `non_numeric_value` | `mean` found a value that is not a number. |
+| `invalid_dataset` | Runner code. The file is empty, is not UTF-8, is not valid CSV (for example a stray `"` inside a field), or a row has the wrong number of fields. The message is "the runner could not read the dataset as CSV". |
 | `internal_error` | An unexpected failure, for example storage is unreachable. The message is generic, so that bucket names and hosts do not leave the TRE. The details are in the Agent log. |
 | `tre_renamed` | The TRE was renamed in Submission before the task finished. Set by Submission, not the Agent. Enqueue the task again under the new name. |
 | `rejected_by_reviewer` | A hospital reviewer rejected the result in the Egress app (phase `rejected_at_output_approval`, state `CANCELED`). The message is the reviewer's reason, at most 512 characters, with control characters removed. No file is released. |
@@ -510,9 +465,9 @@ A TRE that has federated tasks cannot be deleted. The tasks are the record of wh
 
 ### Approved images
 
-Set `FederatedTaskSettings:ApprovedImages` to the executor images that this TRE accepts. For example, as an environment variable: `FederatedTaskSettings__ApprovedImages__0=5s-tes/federated-ops:1`. A single value also works, with images separated by commas: `FederatedTaskSettings__ApprovedImages=5s-tes/federated-ops:1`. A single value replaces any indexed entries, for example those in `appsettings`. Matching is exact and case-sensitive. Entries are trimmed, and blank entries are ignored.
+Set `FederatedTaskSettings:ApprovedImages` to the executor images that this TRE accepts. For example, as an environment variable: `FederatedTaskSettings__ApprovedImages__0=python-runner:1`. A single value also works, with images separated by commas: `FederatedTaskSettings__ApprovedImages=python-runner:1`. A single value replaces any indexed entries, for example those in `appsettings`. Matching is exact and case-sensitive. Entries are trimmed, and blank entries are ignored.
 
-There is no default, because the site approves the images. Only `appsettings.Development*.json` lists `5s-tes/federated-ops:1`. If the list is not set, the Agent logs an error. A task that fails the profile is still rejected. Other new tasks are not run or reported. They keep their phase and run when the list is set. A task whose result file is already saved still goes on to output approval. Every federated task uses `5s-tes/federated-ops:1` today, so a list without it rejects every federated task at this TRE with `image_not_approved`. The Agent cannot tell a deliberate refusal from a typo or a registry prefix, so at startup it logs an error when the list is set but does not include that image.
+There is no default, because the site approves the images. Only `appsettings.Development*.json` lists `python-runner:1`. If the list is not set, the Agent logs an error. A task that fails the profile is still rejected. Other new tasks are not run or reported. They keep their phase and run when the list is set. A task whose result file is already saved still goes on to output approval. Every federated task runs in the runner image, so a list without it rejects every federated task at this TRE with `image_not_approved`. The Agent cannot tell a deliberate refusal from a typo, so at startup it logs an error when the list is set but has no image named `python-runner` (with any registry prefix and tag).
 
 The input checks run on every poll until the task's result file is saved, so a resumed `running` task is checked again. After the file is saved, the input checks don't run again: whether the result leaves is the decision of output approval, not of the input checks. If its image was removed from the list in the meantime, the Agent logs a warning and the result still goes on to output approval.
 
@@ -658,7 +613,7 @@ What a code task may ask for is set in the section `FederatedTaskSettings`:
 
 These are Submission's settings. The Agent has its own `MaxCpuCores`, `MaxRamGb` and `MaxDiskGb` (see "Buckets and policies"), with their own defaults (the disk maximum is 4 there, 20 here), and reduces a request to them. Keep Submission's maxima at or below the Agent's. The poll response carries the code of every queued code task, up to 256 KiB each.
 
-The resource defaults are placeholders until the hospitals confirm their capacity. The 256 KiB limit on the code is fixed. Submission refuses to start if a maximum is 0 or less, or if `ApprovedRunnerImages` lists `5s-tes/federated-ops:1`.
+The resource defaults are placeholders until the hospitals confirm their capacity. The 256 KiB limit on the code is fixed. Submission refuses to start if a maximum is 0 or less.
 
 ## Security
 
@@ -684,8 +639,8 @@ Integrity:
 
 Known risks:
 
-- There is no automatic disclosure control. A reviewer approves each result, but nothing flags a narrow filter that gives a `count` of 1 or the exact value of one person in a `mean`. The reviewer must catch it.
-- Error reports are not reviewed. Error reports (`EXECUTOR_ERROR`, `SYSTEM_ERROR`, input-check rejections) leave without review. Today that is safe: the Agent runs fixed operations and writes every error message itself, echoing only what the researcher sent (for example a column name). It would not be safe with arbitrary Python, where a script can put data in an exception or in its output. So for a code run the Agent never forwards text the script produced: the orchestrator gets a fixed code and message, and the details stay in the TRE logs. The cost is that a researcher sees only the kind of failure (see "Running a code task"). The container's stdout and stderr are never kept.
+- There is no automatic disclosure control. A reviewer approves each result, but nothing flags a result based on very few people, or one that gives the exact value of one person. The reviewer must catch it.
+- Error reports are not reviewed. Error reports (`EXECUTOR_ERROR`, `SYSTEM_ERROR`, input-check rejections) leave without review. The researcher's code can put data in an exception or in its output, so the Agent never forwards text the code produced: the orchestrator gets a fixed code and message, and the details stay in the TRE logs. The cost is that a researcher sees only the kind of failure (see "Running a code task"). The container's stdout and stderr are never kept.
 - The Agent has the Docker socket, which is root-equivalent on the host, and `/outputs` has no size limit beyond the per-file cap. Both are PoC limits (see "Running a code task").
 - Orchestrator admins are trusted not to change stored results or hashes, until signed results are added.
 - Any `dare-control-admin` user can read the results of every study.
@@ -707,10 +662,10 @@ Planned follow-ups:
 3. Use one folder per dataset under `dataset/`. Name it with the GOV-12 dataset name, for example `dataset/cohort_2024/`.
 4. Put exactly one lowercase `.csv` file in the folder.
 5. To replace a dataset, upload a file with the same name. It overwrites the old one.
-6. Numbers use `.` as the decimal point, with no thousands separators and no exponent. Any other format fails with `non_numeric_value`.
+6. Numbers use `.` as the decimal point, with no thousands separators. A value that is not of its column's type in `schema.json` fails with `schema_mismatch`.
 7. Only files directly in the dataset folder count. Subfolders are ignored.
 8. Each column name must be unique. Names are case-sensitive, so `age` and `Age` are different columns.
-9. For a dataset that code tasks run on, put a `schema.json` in the same folder, next to the `.csv`. The Agent rejects a code task with `schema_not_found` without it. It lists each column in the file's order, with its `name` and its `type`: `integer`, `number`, `string` or `boolean`:
+9. Put a `schema.json` in the same folder, next to the `.csv`. The Agent rejects a task with `schema_not_found` without it. It lists each column in the file's order, with its `name` and its `type`: `integer`, `number`, `string` or `boolean`:
 
    ```json
    {"columns": [{"name": "age", "type": "integer"}, {"name": "sex", "type": "string"}]}

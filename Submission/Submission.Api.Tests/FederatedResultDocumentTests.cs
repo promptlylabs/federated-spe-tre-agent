@@ -11,26 +11,31 @@ public class FederatedResultDocumentTests
     private const string ParseMessage =
         "result file is not valid JSON (malformed UTF-8 or JSON, a duplicate property, or nesting deeper than 16 levels)";
 
+    private const string AnalysisResult = "{\"kind\":\"analysis\",\"n\":120,\"value\":{\"mean_age\":41.2,\"n\":120}}";
+
     private static FederatedTask Row() => new()
     {
-        TaskId = TaskGuid, TreName = "tre-a", StudyId = "study-1", Operation = "mean", Dataset = "cohort_2024"
+        TaskId = TaskGuid, TreName = "tre-a", StudyId = "study-1", Operation = "run-analysis", Dataset = "cohort_2024"
     };
 
-    private static FederatedResultDocument Doc() => new()
+    private static FederatedAnalysisResultDocument Doc() => new()
     {
         TaskId = TaskGuid.ToString("D"),
         Tre = "tre-a",
         StudyId = "study-1",
-        Operation = "mean",
+        Operation = "run-analysis",
         Dataset = "cohort_2024",
         DatasetSha256 = ShaOk,
         CompletedAt = new DateTimeOffset(2026, 11, 4, 10, 0, 0, TimeSpan.Zero),
-        Result = new FederatedScalarResult { Value = 1.5m, RowCount = 3 }
+        Result = new FederatedAnalysisResult
+        {
+            N = 120, Value = System.Text.Json.JsonDocument.Parse("{\"mean_age\":41.2}").RootElement.Clone()
+        }
     };
 
     private static string Json(string taskId = "11111111-2222-3333-4444-555555555555", string tre = "tre-a",
-        string studyId = "study-1", string operation = "mean", string dataset = "cohort_2024",
-        string extra = "", string result = "{\"kind\":\"scalar\",\"value\":1.5,\"rowCount\":3}") =>
+        string studyId = "study-1", string operation = "run-analysis", string dataset = "cohort_2024",
+        string extra = "", string result = AnalysisResult) =>
         $"{{\"schemaVersion\":1,\"taskId\":\"{taskId}\",\"tre\":\"{tre}\",\"studyId\":\"{studyId}\"," +
         $"\"operation\":\"{operation}\",\"dataset\":\"{dataset}\",\"datasetSha256\":\"{ShaOk}\",\"completedAt\":\"2026-11-04T10:00:00+00:00\"," +
         $"\"result\":{result}{extra}}}";
@@ -39,37 +44,15 @@ public class FederatedResultDocumentTests
         FederatedResultDocumentJson.Validate(Encoding.UTF8.GetBytes(json), Row());
 
     [Fact]
-    public void Serialize_round_trips_full_precision_decimal()
-    {
-        var doc = Doc();
-        doc.Result.Value = 35.333333333333333333333333333m;
-
-        var result = FederatedResultDocumentJson.Validate(FederatedResultDocumentJson.Serialize(doc), Row());
-
-        Assert.True(result.IsValid, result.Message);
-        Assert.Equal(35.333333333333333333333333333m, result.Document!.Result.Value);
-    }
-
-    [Fact]
     public void Serialize_writes_camelCase_and_schemaVersion_1()
     {
-        var bytes = FederatedResultDocumentJson.Serialize(Doc());
+        var bytes = FederatedResultDocumentJson.SerializeAnalysis(Doc());
         var text = Encoding.UTF8.GetString(bytes);
 
         Assert.Equal((byte)'{', bytes[0]);
         Assert.Contains("\"schemaVersion\":1", text);
         Assert.Contains("\"taskId\":", text);
-        Assert.Contains("\"rowCount\":", text);
-    }
-
-    [Fact]
-    public void Validate_accepts_null_value()
-    {
-        var doc = Doc();
-        doc.Result.Value = null;
-        doc.Result.RowCount = 0;
-
-        Assert.True(FederatedResultDocumentJson.Validate(FederatedResultDocumentJson.Serialize(doc), Row()).IsValid);
+        Assert.Contains("\"datasetSha256\":", text);
     }
 
     [Fact]
@@ -188,7 +171,7 @@ public class FederatedResultDocumentTests
         var doc = Doc();
         doc.DatasetSha256 = "ABC";
 
-        var result = FederatedResultDocumentJson.Validate(FederatedResultDocumentJson.Serialize(doc), Row());
+        var result = FederatedResultDocumentJson.Validate(FederatedResultDocumentJson.SerializeAnalysis(doc), Row());
 
         Assert.False(result.IsValid);
     }
@@ -220,18 +203,9 @@ public class FederatedResultDocumentTests
         Assert.DoesNotMatch(FederatedResultLimits.ErrorCodePattern, new string('a', 65));
     }
 
-    // Code tasks: result kind "analysis".
+    // The result: kind "analysis".
 
-    private static FederatedTask CodeRow() => new()
-    {
-        TaskId = TaskGuid, TreName = "tre-a", StudyId = "study-1", Operation = "run-analysis", Dataset = "cohort_2024"
-    };
-
-    private const string AnalysisResult = "{\"kind\":\"analysis\",\"n\":120,\"value\":{\"mean_age\":41.2,\"n\":120}}";
-
-    private static FederatedResultValidation ValidateCode(string result) =>
-        FederatedResultDocumentJson.Validate(
-            Encoding.UTF8.GetBytes(Json(operation: "run-analysis", result: result)), CodeRow());
+    private static FederatedResultValidation ValidateCode(string result) => Validate(Json(result: result));
 
     [Fact]
     public void Valid_analysis_document_passes()
@@ -239,7 +213,6 @@ public class FederatedResultDocumentTests
         var result = ValidateCode(AnalysisResult);
 
         Assert.True(result.IsValid, result.Message);
-        Assert.Null(result.Document);
         var doc = result.AnalysisDocument!;
         Assert.Equal("analysis", doc.Result.Kind);
         Assert.Equal(120, doc.Result.N);
@@ -266,7 +239,7 @@ public class FederatedResultDocumentTests
         };
 
         var bytes = FederatedResultDocumentJson.SerializeAnalysis(doc);
-        var result = FederatedResultDocumentJson.Validate(bytes, CodeRow());
+        var result = FederatedResultDocumentJson.Validate(bytes, Row());
 
         Assert.True(result.IsValid, result.Message);
         Assert.Equal(120, result.AnalysisDocument!.Result.N);
@@ -281,7 +254,7 @@ public class FederatedResultDocumentTests
     [InlineData("{\"kind\":\"analysis\",\"n\":-1,\"value\":{}}", "field 'result.n' must be a non-negative integer")]
     [InlineData("{\"kind\":\"analysis\",\"n\":\"1\",\"value\":{}}", "field 'result.n' must be a non-negative integer")]
     [InlineData("{\"kind\":\"analysis\",\"n\":1,\"value\":[1]}", "field 'result.value' must be a JSON object")]
-    [InlineData("{\"kind\":\"scalar\",\"n\":1,\"value\":{}}", "result.kind does not match the task")]
+    [InlineData("{\"kind\":\"scalar\",\"n\":1,\"value\":{}}", "result.kind must be 'analysis'")]
     public void Invalid_analysis_documents_fail(string result, string message)
     {
         var validation = ValidateCode(result);
@@ -319,27 +292,27 @@ public class FederatedResultDocumentTests
     }
 
     [Fact]
-    public void Scalar_document_for_code_task_fails()
+    public void Validate_ScalarDocument_Invalid()
     {
-        var validation = ValidateCode("{\"kind\":\"scalar\",\"value\":1.5,\"rowCount\":3}");
+        // A well-formed scalar document, as the removed count/mean tasks wrote it.
+        const string scalar = "{\"kind\":\"scalar\",\"value\":1.5,\"rowCount\":3}";
+        var forCodeRow = ValidateCode(scalar);
+        // Also for a row stored before count/mean were removed.
+        var oldRow = Row();
+        oldRow.Operation = "mean";
+        var forOldRow = FederatedResultDocumentJson.Validate(
+            Encoding.UTF8.GetBytes(Json(operation: "mean", result: scalar)), oldRow);
 
-        Assert.False(validation.IsValid);
-        Assert.Equal("result.kind does not match the task", validation.Message);
-    }
-
-    [Fact]
-    public void Analysis_document_for_count_task_fails()
-    {
-        var validation = Validate(Json(result: AnalysisResult));
-
-        Assert.False(validation.IsValid);
+        Assert.False(forCodeRow.IsValid);
+        Assert.Equal("result.kind must be 'analysis'", forCodeRow.Message);
+        Assert.False(forOldRow.IsValid);
     }
 
     [Fact]
     public void Analysis_document_operation_must_match_the_task()
     {
         var validation = FederatedResultDocumentJson.Validate(
-            Encoding.UTF8.GetBytes(Json(operation: "mean", result: AnalysisResult)), CodeRow());
+            Encoding.UTF8.GetBytes(Json(operation: "mean", result: AnalysisResult)), Row());
 
         Assert.False(validation.IsValid);
         Assert.Equal("field 'operation' does not match the task", validation.Message);

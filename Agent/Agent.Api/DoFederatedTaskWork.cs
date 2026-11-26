@@ -201,10 +201,9 @@ namespace Agent.Api
                 }
 
                 // A run of researcher code started by an earlier poll passed the input checks and was marked running
-                // then; it is only checked now. Without a run, the task is checked and started. Only code tasks have
-                // runs, so a count or mean task never asks (and never waits on Docker).
+                // then; it is only checked now. Without a run, the task is checked and started.
                 string? fileKey = null;
-                if (!prepared.Spec!.IsCodeTask || !await _execution.HasRunAsync(storeKey, CancellationToken.None))
+                if (!await _execution.HasRunAsync(storeKey, CancellationToken.None))
                 {
                     // The hospital's input checks run before the task is marked running and before any data is read.
                     // A task that fails one is rejected; one the TRE cannot judge now keeps its phase.
@@ -242,9 +241,9 @@ namespace Agent.Api
                     if (task.State == TesState.QUEUEDEnum && !await ReportRunningAsync(taskId))
                         return Hold.None;
 
-                    // A RUNNING code task with no run and no saved result lost its run (the Agent lost it, or the
-                    // start failed). It is started again, which runs the code again, so say so.
-                    if (task.State == TesState.RUNNINGEnum && prepared.Spec!.IsCodeTask)
+                    // A RUNNING task with no run and no saved result lost its run (the Agent lost it, or the start
+                    // failed). It is started again, which runs the code again, so say so.
+                    if (task.State == TesState.RUNNINGEnum)
                         Log.Warning("Federated tasks: task {TaskId} is running but has no run at this TRE; starting it again", taskId);
                 }
 
@@ -301,9 +300,7 @@ namespace Agent.Api
                     return Hold.None;
                 }
 
-                bytes = executed.AnalysisDocument != null
-                    ? FederatedResultDocumentJson.SerializeAnalysis(executed.AnalysisDocument)
-                    : FederatedResultDocumentJson.Serialize(executed.Document!);
+                bytes = FederatedResultDocumentJson.SerializeAnalysis(executed.AnalysisDocument!);
                 await _outputs.SaveAsync(storeKey, bytes, CancellationToken.None);
 
                 // The saved result means the task is never run again, so its run can go. If the Agent stops before
@@ -475,9 +472,9 @@ namespace Agent.Api
             var studyId = parsed.IsSuccess
                 ? parsed.Spec!.StudyId
                 : task.Tags?.GetValueOrDefault(FederatedTesProfile.StudyIdTag) ?? string.Empty;
-            // For a code task the reviewer also sees which code produced the result. The parsed hash, checked against
-            // the code, is used, never the raw tag.
-            var codeSha = parsed.IsSuccess && parsed.Spec!.IsCodeTask ? $" code sha256 {parsed.Spec.CodeSha256}" : string.Empty;
+            // The reviewer also sees which code produced the result. The parsed hash, checked against the code, is
+            // used, never the raw tag.
+            var codeSha = parsed.IsSuccess ? $" code sha256 {parsed.Spec!.CodeSha256}" : string.Empty;
             return new EgressRegistration(
                 storeKey,
                 $"Federated task {storeKey}: {command}{codeSha}",

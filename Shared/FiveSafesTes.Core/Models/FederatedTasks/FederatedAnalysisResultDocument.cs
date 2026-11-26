@@ -3,8 +3,8 @@ using System.Text.Json;
 namespace FiveSafesTes.Core.Models.FederatedTasks
 {
     /// <summary>
-    /// The result document of a code task (operation "run-analysis"). Same fields as
-    /// <see cref="FederatedResultDocument"/>; the result is the researcher's dict, not a number.
+    /// The JSON document a TRE Agent saves for a completed code task (operation "run-analysis") and uploads to the
+    /// orchestrator. The result is the researcher's dict.
     /// </summary>
     public sealed class FederatedAnalysisResultDocument
     {

@@ -15,6 +15,7 @@ MODE=live
 # --- look -------------------------------------------------------------------------------------------------------------
 B=$'\033[1m'; DIM=$'\033[2m'; G=$'\033[32m'; R=$'\033[31m'; A=$'\033[33m'; C=$'\033[36m'; X=$'\033[0m'
 PICKUP_TIMEOUT=150   # seconds for the Agent to pick a task up (it polls once a minute)
+RUN_TIMEOUT=600      # seconds for the code to run and its result to be saved (several polls; MaxRunMinutes is 5 here)
 ACT_TIMEOUT=60       # seconds for the Agent to act on a decision (it acts within seconds)
 REVIEW_TIMEOUT=$(( ${DEMO_REVIEW_MINUTES:-15} * 60 ))   # live: how long to wait for the reviewer
 
@@ -74,7 +75,8 @@ wait_while_phase() {
   done
 }
 
-# The released value in plain words, e.g. "40 (from 3 records)".
+# The released result in plain words: what the code returned (result.value) and how many people it is based on
+# (result.n), e.g. '{"n": 3, "mean_age": 40.0} (from 3 records)'.
 result_words() {
   result "$1" 2>/dev/null | python3 -c '
 import sys, json
@@ -82,16 +84,16 @@ try:
     r = json.load(sys.stdin).get("result") or {}
 except Exception:
     sys.exit()
-v = r.get("value")
-if isinstance(v, float): v = round(v, 2)
-n = r.get("rowCount")
-print(f"{v} (from {n} records)" if n is not None else f"{v}")'
+v = json.dumps(r.get("value"))
+n = r.get("n")
+print(f"{v} (from {n} records)" if n is not None else v)'
 }
 
 plain_reason() {
   case "$1" in
     dataset_not_found) echo "the hospital does not hold this dataset" ;;
     ambiguous_dataset) echo "the dataset is not clearly identified" ;;
+    schema_not_found) echo "the dataset has no schema.json" ;;
     image_not_approved) echo "the hospital has not approved this analysis code" ;;
     *) echo "${2:-$1}" ;;
   esac
@@ -123,7 +125,7 @@ review() {
 }
 
 # --- one case ---------------------------------------------------------------------------------------------------------
-# run_case <n> <title> <researcher line> <expected: released|dataset_not_found|rejected_by_reviewer> <dataset> <op> [args...]
+# run_case <n> <title> <researcher line> <expected: released|dataset_not_found|rejected_by_reviewer> <dataset> <file.py>
 run_case() {
   local n=$1 title=$2 ask=$3 expected=$4
   shift 4
@@ -154,8 +156,9 @@ run_case() {
     stop "The task ended unexpectedly" "task $id · $state · $phase · $code"
     outcome="$state/$phase/$code"; decision="$state"
   else
-    ok "Hospital checks passed" "approved code, dataset held by the hospital"
-    view=$(wait_while_phase "$id" "$PICKUP_TIMEOUT" "Analysis running inside the hospital…" "" running) || true
+    ok "Hospital checks passed" "approved runner image, dataset held by the hospital"
+    view=$(wait_while_phase "$id" "$RUN_TIMEOUT" "Analysis running inside the hospital…" \
+      "the code runs in a locked-down container" running) || true
     IFS='|' read -r state phase code message <<<"$view"
     if [ "$phase" = waiting_for_output_approval ]; then
       ok "Analysis ran inside the hospital" "the researcher sees nothing yet"
@@ -267,12 +270,13 @@ preflight() {
 # --- run --------------------------------------------------------------------------------------------------------------
 preflight
 opening
+CODE=$(dirname "$0")/code
 run_case 1 "A safe result leaves the hospital" \
-  "A researcher asks for the average age in the cohort_2024 dataset." released cohort_2024 mean --column age
+  "A researcher asks for the average age in the cohort_2024 dataset." released cohort_2024 "$CODE/analysis.py"
 run_case 2 "A request for data the hospital does not hold" \
-  "A researcher asks to count records in a dataset this hospital does not have." dataset_not_found no_such_dataset count
+  "A researcher asks to count records in a dataset this hospital does not have." dataset_not_found no_such_dataset "$CODE/count_rows.py"
 run_case 3 "The hospital reviewer says no" \
-  "A researcher asks to count the records in cohort_2024." rejected_by_reviewer cohort_2024 count
+  "A researcher asks to count the records in cohort_2024." rejected_by_reviewer cohort_2024 "$CODE/count_rows.py"
 pause "for the summary"
 summary
 

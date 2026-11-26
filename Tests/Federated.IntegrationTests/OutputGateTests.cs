@@ -7,29 +7,27 @@ namespace Federated.IntegrationTests;
 [Collection(StackCollection.Name)]
 public class OutputGateTests
 {
-    private static readonly TimeSpan Pickup = TimeSpan.FromSeconds(120);
-    private static readonly TimeSpan Act = TimeSpan.FromSeconds(60);
     private readonly StackFixture stack;
 
     public OutputGateTests(StackFixture stack) => this.stack = stack;
 
-    private async Task<string> WaitingForReviewAsync(string operation, params string[] args)
+    private async Task<string> WaitingForReviewAsync(string code)
     {
-        var queued = await stack.Submission.EnqueueAsync("cohort_2024", operation, args);
+        var queued = await stack.Submission.EnqueueCodeAsync("cohort_2024", code);
         Assert.Equal(200, queued.Status);
-        var waiting = await Await.UntilSettledAsync(stack, queued.Id!, Pickup);
+        var waiting = await Await.UntilSettledAsync(stack, queued.Id!, Await.PhaseWait);
         Assert.Equal("RUNNING", waiting.State);
         Assert.Equal("waiting_for_output_approval", waiting.Phase);
         return queued.Id!;
     }
 
-    private Task<TaskView> FinalAsync(string id) => Await.UntilAsync(stack, id, t => t.Phase != "waiting_for_output_approval", Act);
+    private Task<TaskView> FinalAsync(string id) => Await.UntilAsync(stack, id, t => t.Phase != "waiting_for_output_approval", Await.PhaseWait);
 
     [SkippableFact]
     public async Task Approved_result_is_released_and_stored_with_the_reviewed_sha256()
     {
         stack.EnsureReady();
-        var id = await WaitingForReviewAsync("mean", "--column", "age");
+        var id = await WaitingForReviewAsync(Code.MeanAge);
 
         await stack.Egress.DecideAsync(id, approve: true, reason: null);
         var end = await FinalAsync(id);
@@ -46,7 +44,7 @@ public class OutputGateTests
     public async Task Reviewer_rejection_is_reported_with_the_reason_and_nothing_is_stored()
     {
         stack.EnsureReady();
-        var id = await WaitingForReviewAsync("count");
+        var id = await WaitingForReviewAsync(Code.CountRows);
 
         await stack.Egress.DecideAsync(id, approve: false, reason: "small cells");
         var end = await FinalAsync(id);
@@ -63,7 +61,7 @@ public class OutputGateTests
     public async Task Result_changed_after_registration_is_never_released_even_when_approved()
     {
         stack.EnsureReady();
-        var id = await WaitingForReviewAsync("count");
+        var id = await WaitingForReviewAsync(Code.CountRows);
 
         await stack.Storage.OverwriteResultAsync(id, Encoding.UTF8.GetBytes("{\"tampered\":true}"));
         await stack.Egress.DecideAsync(id, approve: true, reason: null);

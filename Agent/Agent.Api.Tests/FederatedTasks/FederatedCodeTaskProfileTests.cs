@@ -47,14 +47,26 @@ public class FederatedCodeTaskProfileTests
 
         Assert.True(result.IsSuccess, result.ErrorMessage);
         var spec = result.Spec!;
-        Assert.True(spec.IsCodeTask);
         Assert.Equal("run-analysis", spec.Operation);
         Assert.Equal("cohort_2024", spec.Dataset);
-        Assert.Null(spec.Column);
-        Assert.Empty(spec.Filters);
         Assert.Equal(Sha(Code), spec.CodeSha256);
         Assert.Equal("tre-a", spec.TreName);
         Assert.Equal("s1", spec.StudyId);
+    }
+
+    [Fact]
+    public void BuildCodeTask_ParsesAsCodeTask()
+    {
+        const string code = "def site_analysis(df): return {'n': 0}\n";
+
+        var result = FederatedTesProfile.Parse(FederatedTesProfile.BuildCodeTask("cohort_2024", code, "study-1", "my-tre"));
+
+        Assert.True(result.IsSuccess, result.ErrorMessage);
+        Assert.Equal("run-analysis", result.Spec!.Operation);
+        Assert.Equal(Sha(code), result.Spec.CodeSha256);
+        Assert.Equal("cohort_2024", result.Spec.Dataset);
+        Assert.Equal("study-1", result.Spec.StudyId);
+        Assert.Equal("my-tre", result.Spec.TreName);
     }
 
     [Fact]
@@ -66,13 +78,13 @@ public class FederatedCodeTaskProfileTests
         var result = FederatedTesProfile.Parse(task);
 
         Assert.True(result.IsSuccess, result.ErrorMessage);
-        Assert.True(result.Spec!.IsCodeTask);
+        Assert.Equal(Sha(Code), result.Spec!.CodeSha256);
     }
 
     public static TheoryData<string, Action<TesTask>, string> Violations => new()
     {
         { "image not approved", t => t.Executors[0].Image = "python-runner:2",
-            "executor image must be 5s-tes/federated-ops:1 or an approved runner image" },
+            "executor image must be an approved runner image" },
         { "env set", t => t.Executors[0].Env = new Dictionary<string, string> { ["PYTHONPATH"] = "/x" },
             "executor env, workdir, stdin, stdout and stderr must not be set" },
         { "workdir set", t => t.Executors[0].Workdir = "/tmp",
@@ -206,26 +218,5 @@ public class FederatedCodeTaskProfileTests
         task.Resources = null;
 
         Assert.True(FederatedTesProfile.Parse(task, Limits()).IsSuccess);
-    }
-
-    [Fact]
-    public void Count_task_is_unchanged()
-    {
-        var task = new TesTask
-        {
-            Executors = [new TesExecutor { Image = "5s-tes/federated-ops:1", Command = ["mean", "--column", "age"] }],
-            Inputs = [new TesInput { Url = "dataset://cohort_2024", Path = "/data/cohort_2024", Type = TesFileType.DIRECTORYEnum }],
-            Tags = new Dictionary<string, string> { ["fed.sites"] = "tre-a", ["fed.study_id"] = "s1" }
-        };
-
-        var withLimits = FederatedTesProfile.Parse(task, Limits());
-        var without = FederatedTesProfile.Parse(task);
-
-        Assert.True(withLimits.IsSuccess);
-        Assert.Equal(without.Spec! with { Filters = [] }, withLimits.Spec! with { Filters = [] });
-        Assert.Empty(withLimits.Spec!.Filters);
-        Assert.Equal("mean", withLimits.Spec!.Operation);
-        Assert.Null(withLimits.Spec.CodeSha256);
-        Assert.False(withLimits.Spec.IsCodeTask);
     }
 }

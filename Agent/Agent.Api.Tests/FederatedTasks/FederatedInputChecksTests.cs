@@ -8,11 +8,18 @@ namespace Agent.Api.Tests.FederatedTasks;
 
 public class FederatedInputChecksTests
 {
+    private const string RunnerImage = "python-runner:1";
+    private const string Code = "def site_analysis(df):\n    return {}\n";
+
+    /// <summary>A dataset with its data file and the schema.json its uploader puts next to it.</summary>
     private static FakeDatasetStore Store() =>
+        StoreWithoutSchema().Add("dataset/cohort_2024/schema.json", "{}");
+
+    private static FakeDatasetStore StoreWithoutSchema() =>
         new FakeDatasetStore().Add("dataset/cohort_2024/cohort.csv", "person_id,age\n1,34\n");
 
     private static TesTask Task(string dataset = "cohort_2024") =>
-        FederatedTesProfile.Build(new FederatedTaskSpec("count", dataset, null, [], "study-1", "tre-a"));
+        FederatedTesProfile.BuildCodeTask(dataset, Code, "study-1", "tre-a");
 
     private static FederatedTaskSpec Spec(TesTask task) => FederatedTesProfile.Parse(task).Spec!;
 
@@ -29,15 +36,12 @@ public class FederatedInputChecksTests
     {
         public Task<DatasetResolveResult> ResolveAsync(string datasetName, CancellationToken ct) =>
             throw new DatasetStoreException("bucket down", new IOException("down"));
-
-        public Task<DatasetReadResult> ReadAsync(string fileKey, CancellationToken ct) =>
-            throw new InvalidOperationException("reader must not be called");
     }
 
     [Fact]
     public async Task Approved_image_and_existing_dataset_passes_with_the_file_key()
     {
-        var outcome = await Run(Checks(Store(), FederatedTesProfile.ExecutorImage), Task());
+        var outcome = await Run(Checks(Store(), RunnerImage), Task());
 
         Assert.Equal(InputCheckKind.Passed, outcome.Kind);
         Assert.Equal("dataset/cohort_2024/cohort.csv", outcome.FileKey);
@@ -52,14 +56,14 @@ public class FederatedInputChecksTests
 
         Assert.Equal(InputCheckKind.Rejected, outcome.Kind);
         Assert.Equal("image_not_approved", outcome.ErrorCode);
-        Assert.Equal("image '5s-tes/federated-ops:1' is not approved at this TRE", outcome.ErrorMessage);
+        Assert.Equal("image 'python-runner:1' is not approved at this TRE", outcome.ErrorMessage);
         Assert.Equal(0, store.ListCalls);
     }
 
     [Fact]
     public async Task Image_match_is_case_sensitive()
     {
-        var outcome = await Run(Checks(Store(), "5S-TES/federated-ops:1"), Task());
+        var outcome = await Run(Checks(Store(), "Python-Runner:1"), Task());
 
         Assert.Equal(InputCheckKind.Rejected, outcome.Kind);
         Assert.Equal("image_not_approved", outcome.ErrorCode);
@@ -68,7 +72,7 @@ public class FederatedInputChecksTests
     [Fact]
     public async Task Missing_dataset_is_rejected_with_dataset_not_found()
     {
-        var outcome = await Run(Checks(Store(), FederatedTesProfile.ExecutorImage), Task("nope"));
+        var outcome = await Run(Checks(Store(), RunnerImage), Task("nope"));
 
         Assert.Equal(InputCheckKind.Rejected, outcome.Kind);
         Assert.Equal("dataset_not_found", outcome.ErrorCode);
@@ -89,68 +93,18 @@ public class FederatedInputChecksTests
     [Fact]
     public async Task Store_failure_while_resolving_throws()
     {
-        var checks = Checks(new ThrowingResolveReader(), FederatedTesProfile.ExecutorImage);
+        var checks = Checks(new ThrowingResolveReader(), RunnerImage);
 
         await Assert.ThrowsAsync<DatasetStoreException>(() => Run(checks, Task()));
     }
 
-    private static TesTask CodeTask(string dataset = "cohort_2024") => new()
-    {
-        Executors =
-        [
-            new TesExecutor
-            {
-                Image = "python-runner:1",
-                Command = ["run-analysis", "/code/analysis.py", $"/data/{dataset}", "/outputs/result.json"]
-            }
-        ],
-        Inputs =
-        [
-            new TesInput { Path = "/code/analysis.py", Type = TesFileType.FILEEnum, Content = "def site_analysis(df):\n    return {}\n" },
-            new TesInput { Url = $"dataset://{dataset}", Path = $"/data/{dataset}", Type = TesFileType.DIRECTORYEnum }
-        ],
-        Outputs = [new TesOutput { Path = "/outputs/result.json", Url = "result://", Type = TesFileType.FILEEnum }],
-        Resources = new TesResources { CpuCores = 2, RamGb = 8, DiskGb = 10 },
-        Tags = new Dictionary<string, string>
-        {
-            ["fed.sites"] = "tre-a",
-            ["fed.study_id"] = "s1",
-            ["fed.code_sha256"] = Convert.ToHexStringLower(System.Security.Cryptography.SHA256.HashData(
-                System.Text.Encoding.UTF8.GetBytes("def site_analysis(df):\n    return {}\n")))
-        }
-    };
-
     [Fact]
-    public async Task CodeTask_WithoutSchema_RejectedSchemaNotFound()
+    public async Task Without_schema_is_rejected_with_schema_not_found()
     {
-        var task = CodeTask();
-        var spec = FederatedTesProfile.Parse(task).Spec!;
-        Assert.True(spec.IsCodeTask);
-
-        var outcome = await Checks(Store(), "python-runner:1").RunAsync(task, spec, CancellationToken.None);
+        var outcome = await Run(Checks(StoreWithoutSchema(), RunnerImage), Task());
 
         Assert.Equal(InputCheckKind.Rejected, outcome.Kind);
         Assert.Equal("schema_not_found", outcome.ErrorCode);
         Assert.Equal("no schema.json found for 'cohort_2024'", outcome.ErrorMessage);
-    }
-
-    [Fact]
-    public async Task CodeTask_WithSchema_Passes()
-    {
-        var task = CodeTask();
-        var spec = FederatedTesProfile.Parse(task).Spec!;
-        var store = Store().Add("dataset/cohort_2024/schema.json", "{}");
-
-        var outcome = await Checks(store, "python-runner:1").RunAsync(task, spec, CancellationToken.None);
-
-        Assert.Equal(InputCheckKind.Passed, outcome.Kind);
-    }
-
-    [Fact]
-    public async Task CountTask_WithoutSchema_Passes()
-    {
-        var outcome = await Run(Checks(Store(), FederatedTesProfile.ExecutorImage), Task());
-
-        Assert.Equal(InputCheckKind.Passed, outcome.Kind);
     }
 }

@@ -63,7 +63,7 @@ public class CodeExecutionTests
     };
 
     private static readonly FederatedTaskSpec Spec =
-        new("run-analysis", "cohort_2024", null, [], "study-1", "tre-a", Sha(Code));
+        new("run-analysis", "cohort_2024", "study-1", "tre-a", Sha(Code));
 
     private void Exited(string? resultJson, bool oom = false, string? stagedSha = null, bool tooLarge = false)
     {
