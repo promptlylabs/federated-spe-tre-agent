@@ -124,7 +124,7 @@ namespace Submission.Api.Controllers
         [SwaggerOperation("GetTask")]
         [SwaggerResponse(statusCode: 200, type: typeof(TesTask), description: "")]
         [SwaggerResponse(statusCode: 404, type: typeof(FederatedApiError), description: "")]
-        public virtual async Task<IActionResult> GetTaskAsync([FromRoute][Required] string id, [FromQuery] string view,
+        public virtual async Task<IActionResult> GetTaskAsync([FromRoute][Required] string id, [FromQuery] string? view,
             CancellationToken cancellationToken)
         {
             if (ParseView(view) is not { } viewEnum)
@@ -155,9 +155,9 @@ namespace Submission.Api.Controllers
         [Route("/v1/tasks")]
         [SwaggerOperation("ListTasks")]
         [SwaggerResponse(statusCode: 200, type: typeof(TesListTasksResponse), description: "")]
-        public virtual async Task<IActionResult> ListTasks([FromQuery(Name = "name_prefix")] string namePrefix,
-            [FromQuery(Name = "page_size")] long? pageSize, [FromQuery(Name = "page_token")] string pageToken,
-            [FromQuery] string view, CancellationToken cancellationToken)
+        public virtual async Task<IActionResult> ListTasks([FromQuery(Name = "name_prefix")] string? namePrefix,
+            [FromQuery(Name = "page_size")] long? pageSize, [FromQuery(Name = "page_token")] string? pageToken,
+            [FromQuery] string? view, CancellationToken cancellationToken)
         {
             if (ParseView(view) is not { } viewEnum)
             {
