@@ -30,7 +30,7 @@ These parts of 5S-TES are in the repository but take no part in the federated SP
 
 | Part | Where |
 |---|---|
-| The native TES routes: create, get, list and cancel a task | `Submission/Submission.Api/Controllers/TESController.cs` |
+| The native TES task pipeline. The TES routes in `Submission/Submission.Api/Controllers/TESController.cs` now serve federated studies only (ANZE-6134, "The TES API" in `docs/federated-tasks.md`); the native submission forms of `Submission.Web` that post to them are refused | `Submission/Submission.Web` |
 | Submissions, with a child submission per TRE, projects and their memberships | the `Submissions` tables and the project code in Submission |
 | RabbitMQ messaging between the services | `Shared/FiveSafesTes.Core/Rabbit`, setup in each `Program.cs` |
 | The native processing in the Agent, and the Funnel TES executor | `Agent/Agent.Api/Services/SubmissionHelper.cs`, `funnel/` |
@@ -38,7 +38,7 @@ These parts of 5S-TES are in the repository but take no part in the federated SP
 | Teleport and Kibana | `Teleport/`, `kibana-provisioning/` |
 | The web front ends | `Submission/Submission.Web` (except a small federated addition), `Agent/Agent.Web`, `Agent/agent-web` |
 
-Unused code still has a cost: people read it, build it and review it, and some of it is reachable. For example, the native `GET /v1/tasks` routes accept anonymous callers. Removing the native pipeline is planned work for after the PoC.
+Unused code still has a cost: people read it, build it and review it. The native TES routes, which accepted anonymous callers, were replaced by the federated ones (ANZE-6134). Removing the rest of the native pipeline is planned work for after the PoC.
 
 ## What changed, and why
 
@@ -51,6 +51,7 @@ Unused code still has a cost: people read it, build it and review it, and some o
 | Disclosure control | The TRE's reviewer reads the outputs | The TRE's reviewer, then small-number checks on the pooled result with ACRO's evidence (`docs/proposals/small-numbers-at-aggregation.md`) | Small numbers are checked where they are released, after pooling |
 | Study rules | Each TRE approves or not | At least 2 hospitals must release, a deadline, cancellation that waits for each hospital, an audit trail | One hospital that does not answer cannot hold up a study, and every step can be traced |
 | Who can submit | Project membership, and credentials minted per project | The DAAMS data permit, as `fed.study_id`. The `dare-control-admin` role for now (ANZE-6148) | SPMS grants access with data permits in DAAMS |
+| Job API | The GA4GH TES routes create, get, list and cancel 5S-TES tasks; get and list accept anonymous callers | The same TES routes serve federated study versions only, with the `dare-control-admin` role; `fed.request_id` makes a submission idempotent | DAAMS, or any TES client, uses the standard API; nothing is readable without a token |
 | Messaging | RabbitMQ between the services, and HTTP | HTTP only. The Agents and the aggregator poll Submission | One channel and one set of secrets fewer |
 | Results in storage | Per-project buckets | Results stored by their SHA-256, and checked against it when stored, read back and reviewed | Each step can prove that it has the bytes the previous step approved |
 

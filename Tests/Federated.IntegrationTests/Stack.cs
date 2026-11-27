@@ -288,6 +288,22 @@ public sealed class SubmissionClient
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await token.GetAsync());
         return await http.SendAsync(request);
     }
+
+    /// <summary>A call to the standard TES routes (/v1/...), as DAAMS makes it; <paramref name="anonymous"/> sends no token.</summary>
+    public async Task<(int Status, JsonNode? Body)> TesAsync(HttpMethod method, string path, JsonObject? body = null, bool anonymous = false)
+    {
+        using var request = new HttpRequestMessage(method, new Uri(baseUri, path))
+        {
+            Content = body == null ? null : new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json")
+        };
+        if (!anonymous)
+        {
+            request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await token.GetAsync());
+        }
+
+        using var response = await http.SendAsync(request);
+        return ((int)response.StatusCode, TryParse(await response.Content.ReadAsStringAsync()));
+    }
 }
 
 /// <summary>The hospital reviewer in the Data Egress app (user reviewer).</summary>

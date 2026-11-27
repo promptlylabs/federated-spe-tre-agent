@@ -248,6 +248,8 @@ The Agent image installs Python and a pinned Semgrep (`ScanRules/requirements.tx
 | Pooling | `my-tre` releases (its reviewer approves), the test releases `other-tre`'s result (`n` 20, so the pooled `n` is 10 or more) | outcome `aggregated`; the pooled result in `studies/<versionId>/` has the summed `n` and the `n`-weighted mean, and its hash is `pooled_result_sha256` |
 | Pooling | as above, but `aggregate()` raises | outcome `failed`, `aggregation_error_code` `code_error`; no pooled result |
 | Pooling | code with no `aggregate` | Enqueue refused with 400 `invalid_task` |
+| TES API (ANZE-6134) | submit, follow and cancel a study through `/v1/tasks` | `POST` returns the version ID; `GET /v1/tasks/{id}` is `RUNNING` with both hospitals' task IDs, without the code in BASIC; after `:cancel`, `CANCELING` or `CANCELED` |
+| TES API | an unapproved image; a repeated `fed.request_id`; no token | 400 `invalid_task` and nothing listed; the same version ID twice; 401 |
 | Small numbers (ANZE-6142) | `code/acro_count_by_sex.py`: `my-tre` (F 2, M 1) and `other-tre` (F 9, M 3) each release an ACRO table | outcome `aggregated`; M (4) is withheld, and F (11) with it so that M is not the pooled `n` minus F: both `null`, `checks.withheldCells` 2, `valueChecked` false |
 | Small numbers (ANZE-6142) | as the first Pooling row, but `other-tre` releases `n` 2 (pooled 5) | outcome `failed`, `small_numbers`; nothing is run or pooled |
 | Audit (3.4) | the pooled study above; the R2 study | `GetStudyResult` serves the pooled file and `GetStudyAudit` shows the submitter, both hospitals' phases and hashes, and the pooled hash; for R2, `incomplete`, no pooled hash, and `GetStudyResult` 404 |
