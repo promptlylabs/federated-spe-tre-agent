@@ -104,6 +104,10 @@ EOF
   run_locked "$tmp/7in" "$tmp/7" run-analysis /in/analysis.py /in/cohort /outputs/result.json
   grep -q '"status":"ok"' "$tmp/7/result.json" || fail "libraries: $(cat "$tmp/7/result.json")"
 
+  echo "8. ACRO runs locked down in federated mode"
+  run_locked "$examples" "$tmp/7" python3 -c 'import acro; assert acro.ACRO(federated=True).federated' \
+    || fail "ACRO does not run in federated mode"
+
   echo "image checks passed"
 }
 

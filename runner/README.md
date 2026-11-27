@@ -11,10 +11,9 @@ command, `run-analysis`, and no package installers.
 built on Open Data Hub 2025a with Python 3.11. The SPE actually runs Open Data
 Hub 2025b with Python 3.12 (`s2i-generic-data-science-notebook:2025.2`, public
 build `odh-workbench-jupyter-datascience-cpu-py312-ubi9:2025b-v1.40`), plus
-ACRO 1.1.0 with SPMS's disclosure thresholds. The image must be moved to that
-base, with ACRO and the same thresholds. That move is still to do. Code tasks
-already run on the placeholder base, so until it is done, code that works in the
-SPE may fail at the hospital, for example any code that uses `acro`. See "Base
+ACRO 1.1.0. This image has ACRO 1.1.0 too (see "ACRO"), but the move to the
+2025b base is still to do. Code tasks already run on the placeholder base, so
+until it is done, code that works in the SPE may fail at the hospital. See "Base
 image" below.
 
 The Agent runs this image for a federated code task. On the dev stack it
@@ -312,17 +311,20 @@ To match it (still to do; code tasks run on the placeholder base until then):
 1. Change `FROM` to the 2025b runtime image with Python 3.12:
    `quay.io/opendatahub/odh-pipeline-runtime-datascience-cpu-py312-ubi9@sha256:293512b01037b87ed095a56f1bebdc45ed1c6025ed55ff6f3517e59f95a16fa3`
    (`2025b-v1.40`).
-2. Install `acro==1.1.0` the same way, apply the same SPMS `thresholds.yaml`,
-   and make the ACRO folder read-only, before pip is removed.
+2. Keep the ACRO install (the `acro` stage of the `Dockerfile`: `acro==1.1.0`
+   with the base's versions as constraints, its folder read-only). If SPMS sets
+   thresholds, they do not matter here: the hospital runs ACRO in federated
+   mode, which applies no rules (the aggregator does).
 3. Update the Python check in `runner/test.sh` to 3.12, check that the
-   installer removal still covers the new image, add an image check that
-   `import acro` works with SPMS's thresholds, and redo the library comparison
-   below against the 2025b notebook image.
+   installer removal still covers the new image, and redo the library
+   comparison below against the 2025b notebook image.
 
 For the placeholder: the runtime image has the same data-science libraries as
 the Open Data Hub 2025a notebook image (`odh-workbench-jupyter-datascience-cpu-py311-ubi9:2025a-v1.35`):
 pandas 2.2.3, numpy 2.2.6, scipy 1.15.3, scikit-learn 1.6.1, matplotlib
-3.10.5, pyarrow 21.0.0. statsmodels and seaborn are in neither. The packages
+3.10.5, pyarrow 21.0.0. seaborn is in neither. ACRO adds statsmodels, patsy,
+lifelines, rdflib and tabulate (its dependencies); no library that was already
+there changes version. The packages
 that differ are Jupyter and infrastructure packages (ipython, ipykernel,
 pyzmq, kubernetes, protobuf, psutil, urllib3, click, opentelemetry-proto),
 and onnx (1.19.0 here, 1.18.0 in the notebook).
