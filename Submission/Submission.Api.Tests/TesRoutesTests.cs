@@ -138,16 +138,41 @@ public class TesRoutesTests
         else Assert.Equal(id, (string?)Json(result)["id"]);
     }
 
+    // TES 1.1 service-info is a GA4GH service-info: id, name, type (org.ga4gh / tes / 1.1.0), organization and version.
     [Fact]
     public void Service_info_describes_the_federated_profile()
     {
         var info = Assert.IsType<TesServiceInfo>(Assert.IsType<ObjectResult>(Tes(NewDb()).GetServiceInfo()).Value);
 
         Assert.Equal("SPMS federated TES", info.Name);
+        Assert.Equal(("org.ga4gh", "tes", "1.1.0"), (info.Type.Group, info.Type.Artifact, info.Type.Version));
+        Assert.False(string.IsNullOrEmpty(info.Id));
+        Assert.False(string.IsNullOrEmpty(info.Organization.Name));
+        Assert.False(string.IsNullOrEmpty(info.Organization.Url));
+        Assert.False(string.IsNullOrEmpty(info.Version));
         foreach (var tag in new[] { "fed.sites", "fed.study_id", "fed.code_sha256", "fed.request_id" })
         {
-            Assert.Contains(tag, info.Doc);
+            Assert.Contains(tag, info.Description);
         }
+    }
+
+    [Fact]
+    public async Task List_filters_by_state_and_tags()
+    {
+        using var db = NewDb();
+        var open = await Submit(db, "study-1");
+        var cancelled = await Submit(db, "study-2");
+        await Tes(db).CancelTask(cancelled.ToString(), default);
+
+        async Task<string[]> Ids(string? state, string[]? keys, string[]? values) =>
+            Json(await Tes(db).ListTasks(null, null, null, "MINIMAL", default, state, keys, values))["tasks"]!.Select(t => (string)t["id"]!).ToArray();
+
+        Assert.Equal([open.ToString()], await Ids("RUNNING", null, null));
+        Assert.Equal([cancelled.ToString()], await Ids("CANCELED", null, null));
+        Assert.Equal([cancelled.ToString()], await Ids(null, ["fed.study_id"], ["study-2"]));
+        Assert.Equal(2, (await Ids(null, ["fed.study_id"], null)).Length);          // key only: any value
+        Assert.Empty(await Ids(null, ["fed.study_id", "fed.sites"], ["study-1", "tre-a"]));   // every pair must match
+        Assert.Equal(400, Assert.IsAssignableFrom<ObjectResult>(await Tes(db).ListTasks(null, null, null, "MINIMAL", default, "BOGUS")).StatusCode);
     }
 
     [Fact]

@@ -118,12 +118,17 @@ namespace Submission.Api.Controllers
         [SwaggerResponse(statusCode: 200, type: typeof(TesServiceInfo), description: "")]
         public virtual IActionResult GetServiceInfo() => StatusCode(StatusCodes.Status200OK, new TesServiceInfo
         {
+            Id = _settings.ServiceId,
             Name = "SPMS federated TES",
-            Doc = "GA4GH TES 1.1, federated studies only. A task is a study version: required tags " +
+            Type = new TesServiceType(),
+            Description = "GA4GH TES 1.1, federated studies only. A task is a study version: required tags " +
                   $"{FederatedTesProfile.SitesTag} (2 or more hospitals, separated by '|'), {FederatedTesProfile.StudyIdTag} and " +
                   $"{FederatedTesProfile.CodeSha256Tag}; optional {FederatedTesProfile.RequestIdTag} (makes the submission " +
                   $"idempotent) and {FederatedTesProfile.RoundTag}. Pooled results only; no task returns a hospital's result. " +
-                  "See docs/federated-tasks.md, \"The TES API\".",
+                  "Hospital nodes fetch their parts with ListTasks and their own login. See docs/federated-tasks.md, \"The TES API\", " +
+                  "and docs/node-contract.md.",
+            Organization = new TesServiceOrganization { Name = _settings.OrganizationName, Url = _settings.OrganizationUrl },
+            Version = _settings.ServiceVersion,
             Storage = [],
             TesResourcesSupportedBackendParameters = []
         });
@@ -185,7 +190,8 @@ namespace Submission.Api.Controllers
         [SwaggerResponse(statusCode: 200, type: typeof(TesListTasksResponse), description: "")]
         public virtual async Task<IActionResult> ListTasks([FromQuery(Name = "name_prefix")] string? namePrefix,
             [FromQuery(Name = "page_size")] long? pageSize, [FromQuery(Name = "page_token")] string? pageToken,
-            [FromQuery] string? view, CancellationToken cancellationToken)
+            [FromQuery] string? view, CancellationToken cancellationToken, [FromQuery] string? state = null,
+            [FromQuery(Name = "tag_key")] string[]? tagKey = null, [FromQuery(Name = "tag_value")] string[]? tagValue = null)
         {
             if (ParseView(view) is not { } viewEnum)
             {
@@ -198,12 +204,28 @@ namespace Submission.Api.Controllers
                     "page_size must be more than 0 and less than 2048; it defaults to 256");
             }
 
+            TesState? stateFilter = null;
+            if (!string.IsNullOrEmpty(state))
+            {
+                stateFilter = TesStates.FromWire(state);
+                if (stateFilter == null)
+                {
+                    return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "state is not a TES state");
+                }
+            }
+
+            // TES 1.1: tag_key and tag_value are zipped; a key without a value (or with an empty one) matches any value.
+            var tagFilters = (tagKey ?? []).Select((key, i) => (Key: key, Value: tagValue is { } v && i < v.Length ? v[i] : null)).ToList();
+            bool Matches(TesTask t) =>
+                (stateFilter == null || t.State == stateFilter)
+                && tagFilters.All(f => t.Tags != null && t.Tags.TryGetValue(f.Key, out var value) && (string.IsNullOrEmpty(f.Value) || value == f.Value));
+
             // A hospital's Agent: its pending parts, most urgent first, as it polls for work (at most 50, one page).
             var hospital = ControllerHelpers.GetAgentTre(User, _db);
             if (hospital != null)
             {
                 var pending = await FederatedHospitalTasks.PendingAsync(_db, hospital, MaxPendingTasks, cancellationToken);
-                return TesJson(new TesListTasksResponse { Tasks = pending.Select(PartTask).ToList() }, viewEnum);
+                return TesJson(new TesListTasksResponse { Tasks = pending.Select(PartTask).Where(Matches).ToList() }, viewEnum);
             }
 
             var start = 0;
@@ -219,6 +241,7 @@ namespace Submission.Api.Controllers
                 .ToListAsync(cancellationToken);
             var tasks = versions.Select(FederatedStudyVersions.ToTesTask)
                 .Where(t => string.IsNullOrEmpty(namePrefix) || (t.Name ?? "").StartsWith(namePrefix, StringComparison.OrdinalIgnoreCase))
+                .Where(Matches)
                 .ToList();
             var page = tasks.Skip(start).Take(size).ToList();
             var next = (long)start + size < tasks.Count

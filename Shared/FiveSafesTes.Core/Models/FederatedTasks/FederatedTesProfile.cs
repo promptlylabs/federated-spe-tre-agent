@@ -76,6 +76,10 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             if (executor.Env is { Count: > 0 } || !string.IsNullOrEmpty(executor.Workdir) || !string.IsNullOrEmpty(executor.Stdin)
                 || !string.IsNullOrEmpty(executor.Stdout) || !string.IsNullOrEmpty(executor.Stderr))
                 return Fail(FederatedTaskErrorCodes.InvalidTask, "executor env, workdir, stdin, stdout and stderr must not be set");
+            if (executor.IgnoreError == true)
+                return Fail(FederatedTaskErrorCodes.InvalidTask, "executor ignore_error must not be set");
+            if (task.Inputs?.Any(i => i?.Streamable == true) == true)
+                return Fail(FederatedTaskErrorCodes.InvalidTask, "inputs must not be streamable");
             if (task.Volumes is { Count: > 0 })
                 return Fail(FederatedTaskErrorCodes.InvalidTask, "task must not declare volumes");
 
@@ -117,7 +121,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
 
             // Outputs: the one file the result may leave in, with a url that points nowhere.
             if (task.Outputs is not { Count: 1 } || task.Outputs[0] is not { } output
-                || output.Path != ResultPath || output.Type != TesFileType.FILEEnum)
+                || output.Path != ResultPath || output.Type != TesFileType.FILEEnum || !string.IsNullOrEmpty(output.PathPrefix))
                 return Fail(FederatedTaskErrorCodes.InvalidTask, $"task must have exactly one output, {ResultPath}");
             if (output.Url != ResultUrl)
                 return Fail(FederatedTaskErrorCodes.InvalidTask, $"the output url must be {ResultUrl}");
