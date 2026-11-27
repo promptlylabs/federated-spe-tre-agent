@@ -39,7 +39,11 @@ public class TesRoutesTests
         {
             ControllerContext = new ControllerContext
             {
-                HttpContext = new DefaultHttpContext { User = new ClaimsPrincipal(new ClaimsIdentity([new Claim("preferred_username", "daams")], "test")) }
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(
+                        [new Claim("preferred_username", "daams"), new Claim(ClaimTypes.Role, "dare-control-admin")], "test", "preferred_username", ClaimTypes.Role))
+                }
             }
         };
 
@@ -115,6 +119,30 @@ public class TesRoutesTests
         Assert.Equal(mine.Order(), list["tasks"]!.Select(t => (string)t["id"]!).Order());
         Assert.All(list["tasks"]!, t => Assert.Equal("tre-a", (string?)t["tags"]!["fed.sites"]));
         Assert.Null((string?)list["next_page_token"]);
+    }
+
+    // A hospital's human admin (role dare-tre-admin, but not the TRE's Agent service account) is neither a hospital Agent nor
+    // an orchestrator admin: refused, never the admin view of every study.
+    [Fact]
+    public async Task A_tre_admin_that_is_not_a_hospital_agent_is_refused()
+    {
+        using var db = NewDb();
+        var version = await Submit(db);
+        var human = new TaskServiceApiController(db, new FederatedTaskSettings(), new AgentPollDispatch())
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(
+                        [new Claim("azp", "Dare-Control-API"), new Claim("preferred_username", "tre-agent-my-tre"), new Claim(ClaimTypes.Role, "dare-tre-admin")],
+                        "test", "preferred_username", ClaimTypes.Role))
+                }
+            }
+        };
+
+        Assert.IsType<ForbidResult>(await human.ListTasks(null, null, null, "FULL", default));
+        Assert.IsType<ForbidResult>(await human.GetTaskAsync(version.ToString(), "FULL", default));
     }
 
     [Theory]

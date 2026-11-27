@@ -75,7 +75,7 @@ Error codes and messages come from the fixed list in `docs/federated-tasks.md` (
 
 ### The run
 
-5. The code must run isolated: **no network**, a **read-only file system** except a scratch `/tmp`, an **unprivileged user**, **no package installers**, and **limits** on CPU, memory, disk and time.
+5. The code must run isolated: **no network**, a **read-only file system** except a scratch `/tmp` and the output folder `/outputs`, an **unprivileged user**, **no package installers**, and **limits** on CPU, memory, disk and time.
 6. The node must **not keep** the run's standard output and error. Researcher code can print data values.
 7. The run must produce only `result.json` in the result document format (`docs/federated-tasks.md`, "Result document"): a small JSON object with `n`, at most 65,536 bytes.
 
@@ -101,7 +101,7 @@ Error codes and messages come from the fixed list in `docs/federated-tasks.md` (
 
 ## 7. The reference implementation: our Agent
 
-Our Agent (`Agent/Agent.Api`) does all of the above:
+Our Agent (`Agent/Agent.Api`) does all of the above, except that its record of deleting staged data (obligation 13) is only in its own log for now; sending it to the orchestrator's audit trail is planned (section 8):
 
 | Obligation | Where |
 |---|---|

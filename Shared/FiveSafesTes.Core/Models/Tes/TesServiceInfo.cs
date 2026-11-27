@@ -22,13 +22,13 @@ namespace FiveSafesTes.Core.Models.Tes
         [DataMember(Name = "type")]
         public TesServiceType Type { get; set; } = new();
 
-        [DataMember(Name = "description")]
+        [DataMember(Name = "description", EmitDefaultValue = false)]
         public string? Description { get; set; }
 
         [DataMember(Name = "organization")]
         public TesServiceOrganization Organization { get; set; } = new();
 
-        [DataMember(Name = "documentationUrl")]
+        [DataMember(Name = "documentationUrl", EmitDefaultValue = false)]
         public string? DocumentationUrl { get; set; }
 
         /// <summary>Version of the service (not of the TES API, which is in <see cref="Type"/>).</summary>

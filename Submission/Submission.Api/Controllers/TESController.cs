@@ -31,9 +31,6 @@ namespace Submission.Api.Controllers
 
         /// <summary>Reading: an orchestrator admin (study versions) or a hospital's Agent (its own parts only).</summary>
         private const string ReadRoles = "dare-control-admin,dare-tre-admin";
-
-        /// <summary>Upper bound on parts handed to a hospital in one ListTasks, as FederatedTask/GetPendingTasksForTre.</summary>
-        private const int MaxPendingTasks = 50;
         private const int DefaultPageSize = 256;
 
         private static readonly Dictionary<TesView, JsonSerializerSettings> TesJsonSerializerSettings = new()
@@ -153,8 +150,15 @@ namespace Submission.Api.Controllers
                 return TaskNotFound();
             }
 
-            // A hospital's Agent reads only its own parts; everything else is not found for it.
+            // A hospital's Agent reads only its own parts; everything else is not found for it. Any other caller must be an
+            // orchestrator admin: a hospital's human admin (dare-tre-admin, not the Agent's service account) gets nothing. A
+            // token with both roles that resolves to a hospital gets the hospital's view.
             var hospital = ControllerHelpers.GetAgentTre(User, _db);
+            if (hospital == null && !User.IsInRole(AdminRole))
+            {
+                return Forbid();
+            }
+
             if (hospital != null)
             {
                 var own = await _db.FederatedTasks.AsNoTracking().Include(t => t.PhaseChanges)
@@ -220,11 +224,17 @@ namespace Submission.Api.Controllers
                 (stateFilter == null || t.State == stateFilter)
                 && tagFilters.All(f => t.Tags != null && t.Tags.TryGetValue(f.Key, out var value) && (string.IsNullOrEmpty(f.Value) || value == f.Value));
 
-            // A hospital's Agent: its pending parts, most urgent first, as it polls for work (at most 50, one page).
+            // A hospital's Agent: its pending parts, most urgent first, as it polls for work (at most 50, one page; the state
+            // and tag filters apply to those). Any other caller must be an orchestrator admin, as in GetTask.
             var hospital = ControllerHelpers.GetAgentTre(User, _db);
+            if (hospital == null && !User.IsInRole(AdminRole))
+            {
+                return Forbid();
+            }
+
             if (hospital != null)
             {
-                var pending = await FederatedHospitalTasks.PendingAsync(_db, hospital, MaxPendingTasks, cancellationToken);
+                var pending = await FederatedHospitalTasks.PendingAsync(_db, hospital, FederatedHospitalTasks.MaxPendingTasks, cancellationToken);
                 return TesJson(new TesListTasksResponse { Tasks = pending.Select(PartTask).Where(Matches).ToList() }, viewEnum);
             }
 

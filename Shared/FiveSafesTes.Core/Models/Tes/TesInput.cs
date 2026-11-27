@@ -67,7 +67,7 @@ namespace FiveSafesTes.Core.Models.Tes
         public string? Content { get; set; }
 
         /// <summary>TES 1.1: the input may be streamed instead of copied. The federated profile refuses it.</summary>
-        [DataMember(Name = "streamable")]
+        [DataMember(Name = "streamable", EmitDefaultValue = false)]
         public bool? Streamable { get; set; }
 
         /// <summary>

@@ -451,6 +451,21 @@ namespace Submission.Api.Tests
             Assert.Single(db.AuditLogs.Where(a => a.LogType == FiveSafesTes.Core.Models.LogType.FederatedStudySubmitted));
         }
 
+        // The TES 1.1 fields are not written when unset, so a stored task's bytes do not change with the model and a retry with
+        // the same fed.request_id still matches it.
+        [Fact]
+        public async Task Stored_task_leaves_unset_tes_1_1_fields_out()
+        {
+            using var db = NewDb();
+            Assert.IsType<OkObjectResult>(await ControllerFor(db, "dare-admin").Enqueue(CodeTask()));
+
+            var stored = db.FederatedStudyVersions.Single().TesTaskJson;
+            foreach (var field in new[] { "ignore_error", "streamable", "path_prefix" })
+            {
+                Assert.DoesNotContain(field, stored);
+            }
+        }
+
         [Theory]
         [InlineData("study")]
         [InlineData("code")]

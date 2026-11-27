@@ -60,7 +60,7 @@ namespace FiveSafesTes.Core.Models.Tes
         public TesFileType Type { get; set; }
 
         /// <summary>TES 1.1: the output is every file under this prefix (a wildcard url). The federated profile refuses it.</summary>
-        [DataMember(Name = "path_prefix")]
+        [DataMember(Name = "path_prefix", EmitDefaultValue = false)]
         public string? PathPrefix { get; set; }
 
         /// <summary>

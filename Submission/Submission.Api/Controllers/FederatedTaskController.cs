@@ -30,8 +30,6 @@ namespace Submission.Api.Controllers
         private const int MaxScanRulesVersionLength = 64;
 
 
-        /// <summary>Upper bound on tasks returned to a TRE Agent in a single poll.</summary>
-        private const int MaxPendingTasks = 50;
 
         private static readonly Regex Sha256Hex = new(@"^[0-9a-f]{64}\z", RegexOptions.Compiled);
 
@@ -80,7 +78,7 @@ namespace Submission.Api.Controllers
                 return Forbid();
             }
 
-            var tasks = await FederatedHospitalTasks.PendingAsync(_DbContext, tre, MaxPendingTasks, cancellationToken);
+            var tasks = await FederatedHospitalTasks.PendingAsync(_DbContext, tre, FederatedHospitalTasks.MaxPendingTasks, cancellationToken);
             return Ok(tasks.Select(x => x.ToTesTask()).ToList());
         }
 

@@ -158,9 +158,12 @@ public sealed class SubmissionClient
     private readonly Uri baseUri;
     private readonly TokenSource token;
 
+    private readonly Uri keycloak;
+
     internal SubmissionClient(HttpClient http, StackSettings s)
     {
         this.http = http;
+        keycloak = s.Keycloak;
         baseUri = s.Submission;
         token = new TokenSource(http, s.Keycloak, "Dare-Control", "Dare-Control-API", "dev-dare-control-api-secret", "control-admin", "ControlAdmin1!");
     }
@@ -287,6 +290,16 @@ public sealed class SubmissionClient
         var request = new HttpRequestMessage(method, new Uri(baseUri, path)) { Content = content };
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await token.GetAsync());
         return await http.SendAsync(request);
+    }
+
+    /// <summary>The status of a GET on the TES routes as another user of the Dare-Control realm (password grant).</summary>
+    public async Task<int> TesStatusAsAsync(string user, string password, string path)
+    {
+        var other = new TokenSource(http, keycloak, "Dare-Control", "Dare-Control-API", "dev-dare-control-api-secret", user, password);
+        using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(baseUri, path));
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", await other.GetAsync());
+        using var response = await http.SendAsync(request);
+        return (int)response.StatusCode;
     }
 
     /// <summary>A call to the standard TES routes (/v1/...), as DAAMS makes it; <paramref name="anonymous"/> sends no token.</summary>

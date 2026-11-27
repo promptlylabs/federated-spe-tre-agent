@@ -75,4 +75,16 @@ public class TesApiTests
 
         Assert.Equal(401, status);
     }
+
+    /// <summary>
+    /// A hospital's human admin (role dare-tre-admin, not the TRE's Agent service account) gets neither a hospital's view nor
+    /// the orchestrator admin's view of every study.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_hospitals_human_admin_cannot_read_studies()
+    {
+        stack.EnsureReady();
+
+        Assert.Equal(403, await stack.Submission.TesStatusAsAsync("tre-agent-my-tre", "TreAgent1!", "/v1/tasks?view=FULL"));
+    }
 }

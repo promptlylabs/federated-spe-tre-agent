@@ -11,6 +11,9 @@ namespace Submission.Api.Services
     /// </summary>
     public static class FederatedHospitalTasks
     {
+        /// <summary>Upper bound on parts handed to a hospital in one poll.</summary>
+        public const int MaxPendingTasks = 50;
+
         public static async Task<List<FederatedTask>> PendingAsync(ApplicationDbContext db, Tre tre, int max, CancellationToken cancellationToken)
         {
             var treName = tre.Name.ToLower();
