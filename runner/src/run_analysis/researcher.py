@@ -8,6 +8,7 @@ synthetic data only) the full traceback is also printed to stderr.
 """
 
 import importlib.util
+import inspect
 import sys
 import traceback
 from pathlib import Path
@@ -32,11 +33,37 @@ def _line_in(code_path: Path, exc: BaseException) -> int | None:
     return line
 
 
-def call_site_analysis(code_path: Path, frame: pandas.DataFrame, debug: bool = False) -> object:
-    return call_function(code_path, "site_analysis", frame, debug)
+def call_site_analysis(code_path: Path, frame: pandas.DataFrame, debug: bool = False) -> tuple[object, object | None]:
+    """Calls site_analysis(df), or site_analysis(df, acro) with a federated ACRO session when it takes two positional
+    parameters. Returns what it returned and the session (None when it took one parameter)."""
+    return _call(code_path, "site_analysis", frame, debug, offer_acro=True)
 
 
 def call_function(code_path: Path, function: str, arg: object, debug: bool = False) -> object:
+    return _call(code_path, function, arg, debug, offer_acro=False)[0]
+
+
+def _takes_two_positional(func) -> bool:
+    try:
+        parameters = inspect.signature(func).parameters.values()
+    except (TypeError, ValueError):
+        return False
+    positional = (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+    return sum(p.kind in positional for p in parameters) >= 2
+
+
+def _new_acro_session():
+    """A federated session: it records evidence and applies no rules (the aggregator does). A failure here is the
+    image's, not the researcher's code."""
+    try:
+        from acro import ACRO
+
+        return ACRO(suppress=False, federated=True)
+    except Exception:
+        raise AnalysisError("internal_error", "ACRO is not available in the runner") from None
+
+
+def _call(code_path: Path, function: str, arg: object, debug: bool, offer_acro: bool) -> tuple[object, object | None]:
     name = code_path.name
     # Python records the absolute path in tracebacks and SyntaxError, so compare against it: the SPE dry run passes
     # a relative path (run-analysis analysis.py ...).
@@ -65,8 +92,9 @@ def call_function(code_path: Path, function: str, arg: object, debug: bool = Fal
         if not callable(func):
             raise AnalysisError("code_error", f"{name} has no {function} function")
 
+        session = _new_acro_session() if offer_acro and _takes_two_positional(func) else None
         try:
-            return func(arg)
+            return (func(arg) if session is None else func(arg, session)), session
         except BaseException as e:
             if debug:
                 traceback.print_exception(e, file=sys.stderr)

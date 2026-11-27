@@ -2,7 +2,7 @@ import json
 import sys
 from pathlib import Path
 
-from run_analysis import dataset
+from run_analysis import acro_evidence, dataset
 from run_analysis.errors import AnalysisError
 from run_analysis.researcher import call_function, call_site_analysis
 from run_analysis.result import check_result, write_error, write_ok
@@ -31,11 +31,23 @@ def _run(code: Path, dataset_dir: Path, out: Path, debug: bool) -> None:
             frame = dataset.read_dataset(csv_path, columns)
         except OSError as e:
             raise AnalysisError("invalid_dataset", f"the dataset could not be read ({type(e).__name__})") from None
-        result, n = check_result(call_site_analysis(code, frame, debug))
+        value, session = call_site_analysis(code, frame, debug)
+        evidence = _evidence(session) if session is not None else None
+        result, n = check_result(value, evidence=evidence)
     except AnalysisError as e:
         write_error(out, e.code, e.message, sha)
         return
-    write_ok(out, sha, n, result)
+    write_ok(out, sha, n, result, evidence)
+
+
+def _evidence(session) -> dict | None:
+    try:
+        return acro_evidence.collect(session)
+    except AnalysisError:
+        raise
+    # The session is the researcher's object while their code runs, so a failure here is reported like their code's.
+    except Exception:
+        raise AnalysisError("invalid_result", "ACRO's evidence could not be written") from None
 
 
 def _read_results(path: Path) -> list[dict]:

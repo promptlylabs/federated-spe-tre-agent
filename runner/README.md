@@ -47,8 +47,10 @@ result and stops.
 4. Check the CSV against `schema.json`: the same column names in the same
    order, and every value is of the column's type. Then convert the columns
    to those types.
-5. Import `code.py` and call `site_analysis(df)`.
-6. Check the return value (see below).
+5. Import `code.py` and call `site_analysis(df)`, or `site_analysis(df, acro)`
+   with a federated ACRO session when the function takes two positional
+   parameters (see "ACRO tables").
+6. Check the return value (see below), and collect ACRO's evidence.
 7. Write `result.json` with the SHA-256 of the CSV bytes.
 
 The researcher's file must define:
@@ -68,6 +70,48 @@ The return value must be a dict with string keys that can be written as JSON
 of people the result is based on. Its compact UTF-8 JSON must be 61,440 bytes
 (60 KiB) or less. numpy numbers and arrays are converted to plain numbers and
 lists.
+
+## ACRO tables
+
+A table built with ACRO is pooled and checked for small numbers by the
+aggregator, after the hospitals' results are combined. Values in the returned
+dict are pooled by `aggregate()` and are not checked for small numbers; the
+pooled result marks them so (see "Pooling the results" in
+`docs/federated-tasks.md`).
+
+To use ACRO, take a second parameter. The runner passes an ACRO 1.1.0 session
+in federated mode: it records the counts and sums behind each table, applies no
+rule and withholds nothing at the hospital.
+
+```python
+def site_analysis(df, acro):
+    acro.crosstab(df.region, df.sex)                                   # counts
+    acro.crosstab(df.region, df.sex, values=df.age, aggfunc="mean")    # means
+    acro.pivot_table(df, index="sex", values="age", aggfunc="sum")     # sums
+    return {"n": len(df)}
+```
+
+A function with one parameter runs as before; `acro` is never imported for it.
+
+The tables that can be pooled: `acro.crosstab` with two grouping variables, or
+`acro.pivot_table` with one (`index`, no `columns`), with one statistic out of
+`count`, `sum` and `mean`, without `margins` (the aggregator adds the totals).
+Any other ACRO output (a regression, a histogram, a median, several statistics,
+more grouping variables) fails the run with `invalid_result`, naming the
+output's position, so a table is never silently left out.
+
+The evidence is written next to `result`, one entry per table, in ACRO's order:
+
+```json
+"acro": {"tables": [
+  {"method": "crosstab", "statistic": "mean", "rows": ["north", "south"], "columns": ["F", "M"],
+   "count": [[67, 50], [2, 1]], "sum": [[3270.1, 2369.2], [101.0, 121.0]]}
+]}
+```
+
+`rows` and `columns` are the table's labels as text. `count` holds whole
+numbers; `sum` is there for `sum` and `mean` (a cell with no people has sum 0).
+The returned dict and the evidence together must be 61,440 bytes or less.
 
 ## Pooling: `aggregate(results)`
 
@@ -144,8 +188,9 @@ An error result has `datasetSha256` only when the CSV was read.
 | `invalid_schema` | `schema.json` cannot be read, is not valid, has an unknown type or names a column twice. |
 | `schema_mismatch` | The CSV columns are not the schema's, or a value is not of its column's type. |
 | `code_error` | The researcher's file could not be imported, has no `site_analysis` (or `aggregate` with `--aggregate`), or the function raised an exception (also `sys.exit`). |
-| `invalid_result` | The return value is not a dict, cannot be written as JSON, or has no valid `n`. |
-| `result_too_large` | The return value is larger than 61,440 bytes. |
+| `invalid_result` | The return value is not a dict, cannot be written as JSON, or has no valid `n`; or an ACRO output cannot be pooled (see "ACRO tables"). |
+| `result_too_large` | The return value, with its ACRO evidence, is larger than 61,440 bytes. |
+| `internal_error` | ACRO is missing from the image (only for `site_analysis(df, acro)`). The hospital's Agent reports it as `invalid_result`; the runner's message is in the Agent log. |
 
 No message contains a value from the dataset. Messages name columns, line
 numbers, types, sizes and file names. When the header differs from the
