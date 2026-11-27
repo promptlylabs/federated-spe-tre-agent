@@ -28,6 +28,9 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         /// <summary>The submitter's preferred_username, from their token at intake.</summary>
         public string? SubmittedBy { get; set; }
 
+        /// <summary>The submitter's fed.request_id, when given; unique, so a repeated submission finds this version.</summary>
+        public string? RequestId { get; set; }
+
         /// <summary>UTC; <see cref="SubmittedAt"/> plus the study timeout configured at intake. Later config changes don't move it.</summary>
         public DateTime DeadlineAt { get; set; }
 

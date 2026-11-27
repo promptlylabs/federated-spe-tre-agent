@@ -56,6 +56,9 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         /// <summary>A new version of a study was submitted while its latest version is still open.</summary>
         public const string StudyVersionOpen = "study_version_open";
 
+        /// <summary>A submission reuses a fed.request_id that was already used for a different submission.</summary>
+        public const string RequestIdConflict = "request_id_conflict";
+
         /// <summary>No version of the study exists.</summary>
         public const string StudyNotFound = "study_not_found";
     }

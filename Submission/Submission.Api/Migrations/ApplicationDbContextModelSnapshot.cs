@@ -119,6 +119,9 @@ namespace Submission.Api.Migrations
                     b.Property<DateTime?>("ReadyAt")
                         .HasColumnType("timestamp with time zone");
 
+                    b.Property<string>("RequestId")
+                        .HasColumnType("text");
+
                     b.Property<string>("Sites")
                         .IsRequired()
                         .HasColumnType("text");
@@ -146,6 +149,9 @@ namespace Submission.Api.Migrations
                     b.HasKey("Id");
 
                     b.HasIndex("Outcome");
+
+                    b.HasIndex("RequestId")
+                        .IsUnique();
 
                     b.HasIndex("VersionId")
                         .IsUnique();

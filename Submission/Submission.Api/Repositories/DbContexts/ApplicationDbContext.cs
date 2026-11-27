@@ -48,6 +48,8 @@ namespace Submission.Api.Repositories.DbContexts
                 b.Property(x => x.Outcome).HasConversion<string>().IsConcurrencyToken();
                 b.HasIndex(x => x.Outcome);
                 b.HasIndex(x => x.VersionId).IsUnique();
+                // fed.request_id: a repeated submission finds the version it created (null for submissions without one).
+                b.HasIndex(x => x.RequestId).IsUnique();
                 // A version is the audit record of what was submitted; deleting it must not erase its parts.
                 b.HasMany(x => x.Parts).WithOne(x => x.StudyVersion).HasForeignKey(x => x.StudyVersionId).IsRequired().OnDelete(DeleteBehavior.Restrict);
                 // Like FederatedTask: once saved, EF refuses to change the submitted code (ANZE-6045).

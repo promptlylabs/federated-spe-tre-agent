@@ -29,10 +29,6 @@ namespace Submission.Api.Controllers
         private const int MaxReportAttempts = 3;
         private const int MaxScanRulesVersionLength = 64;
 
-        /// <summary>Attempts at one submission when concurrent submissions of the same study keep taking the version number.</summary>
-        private const int MaxEnqueueAttempts = 3;
-        // A top-level def aggregate(…), allowing extra spaces; a byte-order mark before the first line is ignored below.
-        private static readonly Regex AggregateDefinition = new(@"^def\s+aggregate\s*\(", RegexOptions.Multiline | RegexOptions.Compiled);
 
         /// <summary>Upper bound on tasks returned to a TRE Agent in a single poll.</summary>
         private const int MaxPendingTasks = 50;
@@ -66,110 +62,7 @@ namespace Submission.Api.Controllers
         [SwaggerResponse(statusCode: 409, type: typeof(FederatedApiError), description: "")]
         public virtual async Task<IActionResult> Enqueue([FromBody] TesTask task, CancellationToken cancellationToken = default)
         {
-            var parsed = FederatedTesProfile.Parse(task, _settings.ToIntakeLimits());
-            if (!parsed.IsSuccess)
-            {
-                return Error(StatusCodes.Status400BadRequest, parsed.ErrorCode!, parsed.ErrorMessage!);
-            }
-
-            var spec = parsed.Spec!;
-            // Here, not in FederatedTesProfile.Parse: the Agent parses each hospital's part, which names one site.
-            if (spec.Sites.Count < FederatedStudyOutcomeReasons.MinimumHospitals)
-            {
-                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask,
-                    $"a study needs at least {FederatedStudyOutcomeReasons.MinimumHospitals} hospitals in fed.sites, so that no single hospital's result is released");
-            }
-
-            // The orchestrator pools the hospitals' results with the same file's aggregate(); without it every hospital
-            // would run and review the study for nothing. A function defined some other way still fails at the aggregator.
-            var code = task.Inputs?.FirstOrDefault(i => i.Path == FederatedTesProfile.CodePath)?.Content ?? "";
-            if (!AggregateDefinition.IsMatch(code.TrimStart('\uFEFF')))
-            {
-                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask,
-                    "the code has no aggregate(results) function; the orchestrator needs it to pool the hospitals' results. " +
-                    "Define it at the top level of the file, as 'def aggregate(results):' (not inside a class or another function)");
-            }
-
-            var tres = await _DbContext.Tres
-                .AsNoTracking()
-                .Where(x => spec.Sites.Contains(x.Name.ToLower()))
-                .ToListAsync(cancellationToken);
-            var tresBySite = tres.DistinctBy(x => x.Name.ToLower()).ToDictionary(x => x.Name.ToLower());
-            var missing = spec.Sites.Where(x => !tresBySite.ContainsKey(x)).ToList();
-            if (missing.Count > 0)
-            {
-                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask,
-                    $"TRE(s) {string.Join(", ", missing.Select(x => $"'{x}'"))} don't exist");
-            }
-
-            FederatedStudyFanOut.ClearServerOwnedFields(task);
-            var tesTaskJson = JsonConvert.SerializeObject(task);
-
-            for (var attempt = 0; attempt < MaxEnqueueAttempts; attempt++)
-            {
-                // Only the latest version can block: an older one is either ended or was followed by a newer submission.
-                var latest = await _DbContext.FederatedStudyVersions
-                    .AsNoTracking()
-                    .Include(x => x.Parts)
-                    .Where(x => x.StudyId == spec.StudyId)
-                    .OrderByDescending(x => x.Version)
-                    .FirstOrDefaultAsync(cancellationToken);
-                if (latest?.State == FederatedStudyVersionState.Open)
-                {
-                    var conflict = Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.StudyVersionOpen,
-                        $"version {latest.Version} of study '{spec.StudyId}' is still open; cancel it or wait for it to end");
-                    ((FederatedApiError)conflict.Value!).VersionId = latest.VersionId;
-                    return conflict;
-                }
-
-                var submittedAt = DateTime.UtcNow;
-                var version = new FederatedStudyVersion
-                {
-                    VersionId = Guid.NewGuid(),
-                    StudyId = spec.StudyId,
-                    Version = (latest?.Version ?? 0) + 1,
-                    Sites = string.Join('|', spec.Sites),
-                    CodeSha256 = spec.CodeSha256,
-                    TesTaskJson = tesTaskJson,
-                    SubmittedAt = submittedAt,
-                    SubmittedBy = User.FindFirst("preferred_username")?.Value,
-                    DeadlineAt = submittedAt.AddMinutes(_settings.StudyTimeoutMinutes)
-                };
-                foreach (var site in spec.Sites)
-                {
-                    var part = FederatedStudyFanOut.BuildPart(task, version, tresBySite[site], site);
-                    part.Operation = spec.Operation;
-                    part.Dataset = spec.Dataset;
-                    part.Round = spec.Round;
-                    version.Parts.Add(part);
-                }
-
-                _DbContext.FederatedStudyVersions.Add(version);
-                FederatedAudit.Add(_DbContext, FiveSafesTes.Core.Models.LogType.FederatedStudySubmitted, User, HttpContext,
-                    new { versionId = version.VersionId, studyId = version.StudyId, version = version.Version, codeSha256 = version.CodeSha256, sites = version.Sites });
-                try
-                {
-                    await _DbContext.SaveChangesAsync(cancellationToken);
-                }
-                catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException { SqlState: Npgsql.PostgresErrorCodes.UniqueViolation })
-                {
-                    // A concurrent submission took this version number (unique StudyId, Version): read the study again.
-                    // Any other save error (a TRE deleted meanwhile, the database down) is not a collision and fails.
-                    Log.Warning(ex, "Enqueueing version {Version} of study {StudyId} collided with another submission", version.Version, spec.StudyId);
-                    _DbContext.ChangeTracker.Clear();
-                    continue;
-                }
-
-                foreach (var part in version.Parts)
-                {
-                    await _dispatch.SendAsync(part, cancellationToken);
-                }
-
-                return Ok(new TesCreateTaskResponse { Id = version.VersionId.ToString() });
-            }
-
-            return Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.TaskBusy,
-                "the study is being submitted by other requests, try again");
+            return await new FederatedStudyIntake(_DbContext, _settings, _dispatch).SubmitAsync(task, User, HttpContext, cancellationToken);
         }
 
         [Authorize(Roles = "dare-tre-admin")]
@@ -582,51 +475,7 @@ namespace Submission.Api.Controllers
         [SwaggerResponse(statusCode: 409, type: typeof(FederatedApiError), description: "")]
         public virtual async Task<IActionResult> Cancel([FromQuery] string id, CancellationToken cancellationToken = default)
         {
-            if (!Guid.TryParse(id, out var versionId))
-            {
-                return StudyNotFound();
-            }
-
-            for (var attempt = 0; attempt < MaxReportAttempts; attempt++)
-            {
-                var version = await _DbContext.FederatedStudyVersions
-                    .Include(x => x.Parts).ThenInclude(x => x.PhaseChanges)
-                    .FirstOrDefaultAsync(x => x.VersionId == versionId, cancellationToken);
-                if (version == null)
-                {
-                    return StudyNotFound();
-                }
-
-                if (version.Outcome == FederatedStudyOutcome.Canceled)
-                {
-                    return Ok(FederatedStudyVersions.ToView(version));
-                }
-
-                if (version.Outcome is { } outcome)
-                {
-                    return Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.TaskAlreadyFinished,
-                        $"version {version.Version} of study '{version.StudyId}' already ended: {outcome.ToWire()}");
-                }
-
-                FederatedStudyVersions.RequestCancel(version, DateTime.UtcNow);
-                FederatedAudit.Add(_DbContext, FiveSafesTes.Core.Models.LogType.FederatedStudyCanceled, User, HttpContext,
-                    new { versionId = version.VersionId, studyId = version.StudyId, version = version.Version });
-                try
-                {
-                    await _DbContext.SaveChangesAsync(cancellationToken);
-                    Log.Information("Federated study version {VersionId} cancelled by {User}: now {State}", versionId,
-                        User.FindFirst("preferred_username")?.Value, version.State.ToWire());
-                    return Ok(FederatedStudyVersions.ToView(version));
-                }
-                catch (DbUpdateConcurrencyException)
-                {
-                    // An Agent report moved a part after it was read here: decide again against the phases it left.
-                    _DbContext.ChangeTracker.Clear();
-                }
-            }
-
-            return Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.TaskBusy,
-                "the study version is being updated by other reports, try again");
+            return await new FederatedStudyCancel(_DbContext).CancelAsync(id, User, HttpContext, cancellationToken);
         }
 
         /// <summary>A version of a study (the latest unless <paramref name="version"/> is given) with each hospital's progress.</summary>
