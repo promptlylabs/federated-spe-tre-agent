@@ -60,6 +60,7 @@ def test_counts_and_means_are_written_next_to_the_result(tmp_path, make_code, ma
 @pytest.mark.parametrize("call", [
     "acro.ols(df['age'], df[['age']].assign(c=1.0))",
     "acro.crosstab(df.sex, df.region, margins=True)",
+    "acro.crosstab(df.sex, df.region, margins=True, margins_name='Total')",
     "acro.pivot_table(df, index='sex', values='age', aggfunc=['mean', 'count'])",
     "acro.crosstab([df.sex, df.age], df.region)",
     "acro.pivot_table(df, index='sex', values='age', aggfunc='median')",
@@ -106,3 +107,11 @@ def test_evidence_that_is_not_a_table_of_numbers_fails(tmp_path, tables):
     with pytest.raises(AnalysisError) as e:
         read_evidence(_evidence(tmp_path, tables))
     assert e.value.code == "invalid_result" and e.value.message.startswith("ACRO output 1 ")
+
+
+def test_margins_are_recognised_by_their_sums_whatever_their_name(tmp_path):
+    # A last row and column holding the sums, as crosstab(margins=True, margins_name=...) writes them.
+    folder = _evidence(tmp_path, {"count_table": "a,x,y,Total\np,12,1,13\nq,3,20,23\nTotal,15,21,36\n"},
+                       analysis="FrequencyTable")
+    with pytest.raises(AnalysisError, match="margins are not supported"):
+        read_evidence(folder)

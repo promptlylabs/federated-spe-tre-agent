@@ -67,7 +67,7 @@ def _table(position: int, folder: Path, output: dict) -> dict:
     rows, columns, count = _read(position, method, folder, files.get("count_table"))
     if any(not float(c).is_integer() or c < 0 for row in count for c in row):
         raise _fail(position, method, "a count is not a non-negative whole number")
-    if _has_margins(rows, columns, count):
+    if _has_margins(rows, columns, count, output.get("command") or ""):
         raise _fail(position, method, "margins are not supported; the aggregator adds the totals")
     table = {"method": method, "statistic": statistic, "rows": rows, "columns": columns,
              "count": [[int(c) for c in row] for row in count]}
@@ -110,9 +110,16 @@ def _read(position: int, method: str, folder: Path, name: str | None, blank_is_n
     return rows, columns, cells
 
 
-def _has_margins(rows: list[str], columns: list[str], count: list[list[float]]) -> bool:
-    """crosstab(margins=True) adds an "All" row and column holding the sums of the others."""
-    if len(rows) < 2 or len(columns) < 2 or rows[-1] != "All" or columns[-1] != "All":
+def _has_margins(rows: list[str], columns: list[str], count: list[list[float]], command: str) -> bool:
+    """crosstab(margins=True) adds a last row and column holding the sums of the others, under any name
+    (margins_name). Recognised by that structure, not the label, and by the argument in the recorded command: pooled
+    as an ordinary category, a margin would give away the cells withheld next to it."""
+    if re.search(r"\bmargins\s*=", command):
+        return True
+    # A margin adds a row and a column to at least two categories each, and its corner holds the grand total.
+    if len(rows) < 3 or len(columns) < 3:
         return False
     body = [row[:-1] for row in count[:-1]]
-    return [sum(r) for r in body] == [row[-1] for row in count[:-1]] and [sum(c) for c in zip(*body)] == count[-1][:-1]
+    return ([sum(r) for r in body] == [row[-1] for row in count[:-1]]
+            and [sum(c) for c in zip(*body)] == count[-1][:-1]
+            and sum(map(sum, body)) == count[-1][-1])
