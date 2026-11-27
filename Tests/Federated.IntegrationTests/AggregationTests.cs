@@ -107,8 +107,8 @@ public class AggregationTests
     }
 
     /// <summary>
-    /// ANZE-6142. my-tre's dev cohort has 2 F and 1 M; other-tre releases 9 F and 3 M. Pooled: F 11 is released, M 4 is
-    /// withheld, and aggregate()'s value is marked as not checked for small numbers.
+    /// ANZE-6142. my-tre's dev cohort has 2 F and 1 M; other-tre releases 9 F and 3 M. Pooled: M 4 is withheld, and F 11
+    /// with it (else M would be the pooled n minus F); aggregate()'s value is marked as not checked for small numbers.
     /// </summary>
     [SkippableFact]
     public async Task Acro_tables_are_pooled_and_small_cells_withheld()
@@ -122,8 +122,8 @@ public class AggregationTests
         var result = JsonDocument.Parse((await stack.Results.GetPooledAsync(version.VersionId!))!).RootElement.GetProperty("result");
         var table = result.GetProperty("tables")[0];
         Assert.Equal("""["F","M"]""", table.GetProperty("rows").GetRawText());
-        Assert.Equal("[[11],[null]]", table.GetProperty("cells").GetRawText());
-        Assert.Equal("""{"minimum":10,"withheldCells":1,"valueChecked":false}""", result.GetProperty("checks").GetRawText());
+        Assert.Equal("[[null],[null]]", table.GetProperty("cells").GetRawText());
+        Assert.Equal("""{"minimum":10,"withheldCells":2,"valueChecked":false}""", result.GetProperty("checks").GetRawText());
         Assert.Equal(15, result.GetProperty("value").GetProperty("n").GetInt32());
     }
 

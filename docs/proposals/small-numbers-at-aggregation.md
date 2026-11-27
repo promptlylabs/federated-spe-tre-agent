@@ -81,7 +81,7 @@ We ran ACRO 1.1.0 on test data to confirm this behavior. ACRO 1.1.0 writes the f
 ### At the orchestrator
 
 5. **Pooling of the ACRO tables.** The orchestrator adds the evidence of the hospitals together and builds each pooled table again. The researcher's code has no part in this step.
-6. **Small-number rules on the pooled tables.** The orchestrator withholds each pooled cell that is less than the minimum, and each zero cell. It recalculates the totals without them.
+6. **Small-number rules on the pooled tables.** The orchestrator withholds each pooled cell that is less than the minimum, and each zero cell. If a table then has exactly one withheld cell, the orchestrator also withholds the smallest released cell, because the released `n` minus the other cells would give away the withheld one. It recalculates the totals without the withheld cells. It puts the labels of each table in a fixed order, so the order does not show which hospital had a category.
 7. **A pooled `n` that is less than the minimum.** The pooled `n` is the sum of the hospitals' `n`. If it is less than the minimum, the orchestrator releases no pooled result, and the study version ends with its own outcome code.
 8. **A record of what was withheld.** The pooled result lists each withheld cell and the minimum that was used.
 
@@ -98,7 +98,7 @@ A researcher does not have to use ACRO. This agrees with Dev 09: an output witho
 | ACRO tables | The orchestrator pools them from the evidence | The small-number rules (section 4, steps 6 to 8), then the DAAMS export review |
 | Other values | The researcher's `aggregate()` | The DAAMS export review only. The pooled result marks them "not checked for small numbers". |
 
-So the DAAMS reviewer knows which part of the pooled result needs the most attention. Researchers who use ACRO get automatic checks and a lighter review. ACRO cannot pool medians, standard deviations, percentiles or models. Those values go through `aggregate()`.
+So the DAAMS reviewer knows which part of the pooled result needs the most attention. Researchers who use ACRO get automatic checks against accidental disclosure. ACRO cannot pool medians, standard deviations, percentiles or models. Those values go through `aggregate()`.
 
 ## 6. Trust model
 
@@ -136,19 +136,22 @@ The orchestrator applies the minimum threshold and the zero rule to each pooled 
 |---|---|
 | A pooled cell is 10 or more | Released |
 | A pooled cell is less than 10 (for example 2 + 1 + 3 = 6), or 0 | Withheld. A mean or sum in that cell is withheld too. The totals are recalculated without it. |
+| A table has exactly one withheld cell | The smallest released cell is withheld too, so the withheld cell cannot be calculated from the pooled `n`. |
 | The pooled `n` of the study is less than the minimum | No pooled result. The study version ends with its own outcome code. |
 | Nothing fails | Released unchanged |
 
 ### Example
 
-| Region × sex | Hospital A | Hospital B | Pooled | Released |
-|---|---|---|---|---|
-| north, F | 67 | 54 | 121 | 121 |
-| north, M | 50 | 41 | 91 | 91 |
-| south, F | 2 | 9 | 11 | 11 |
-| south, M | 1 | 3 | 4 | withheld |
+| Region × sex | Hospital A | Hospital B | Hospital C | Pooled | Released |
+|---|---|---|---|---|---|
+| east, F | 0 | 11 | 0 | 11 | 11 |
+| east, M | 0 | 2 | 0 | 2 | withheld |
+| north, F | 14 | 9 | 7 | 30 | 30 |
+| north, M | 11 | 12 | 5 | 28 | 28 |
+| south, F | 3 | 4 | 5 | 12 | 12 |
+| south, M | 2 | 1 | 3 | 6 | withheld |
 
-The hospitals release their cells of 1, 2 and 3 to the orchestrator. The researcher gets "south, F = 11" and no value for "south, M".
+Each hospital releases its small cells to the orchestrator. The researcher gets "south, F = 12", although that cell is small at every hospital, and no value for "south, M" or "east, M". Two cells are withheld, so the pooled `n` does not give either of them away. The totals count the released cells only.
 
 ## 8. Change to the Dev 15 specification
 
@@ -203,7 +206,7 @@ The proposal does not protect against all disclosure. These risks stay with the 
 - **Differencing between study versions.** A researcher can submit two versions that differ by one patient and compare the pooled results. The next deliveries add a query history and a limit on runs.
 - **Disclosure from other outputs.** The orchestrator recalculates the totals of a table, but it cannot compare one table with another table.
 - **Values outside ACRO.** The code can return the counts of an ACRO table also as ordinary values. These values go through `aggregate()` and are marked "not checked". The DAAMS reviewer must check them.
-- **ACRO runs in the researcher's process.** The code can change the evidence. But the orchestrator releases only numbers that it calculates from the evidence, and the evidence is what the hospital reviewer approved.
+- **ACRO runs in the researcher's process.** The ACRO check protects against accidental disclosure, not against a researcher who wants to defeat it. The code can change the evidence, or give ACRO padded data (for example, the real rows plus invented ones) so that every pooled cell reaches the minimum, and then remove the padding from the released numbers. The researcher's code also states each hospital's `n`. Only a person who reads the code catches this: the hospital reviewer, who sees the code, and the DAAMS reviewer.
 - **One engine.** Dev 15 asks for one risk engine, shared with Dev 09. The rules of this proposal run in the aggregator. Connecting them to the risk module of Lake Admin is not in this proposal.
 
 ## 12. Open decisions
