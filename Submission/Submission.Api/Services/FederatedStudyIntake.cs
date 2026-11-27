@@ -88,7 +88,9 @@ namespace Submission.Api.Services
                         .FirstOrDefaultAsync(x => x.RequestId == requestId, cancellationToken);
                     if (earlier != null)
                     {
-                        return earlier.StudyId == spec.StudyId && earlier.CodeSha256 == spec.CodeSha256 && earlier.Sites == string.Join('|', spec.Sites)
+                        // The whole task as stored (after the server's own fields are cleared): a different dataset, image or
+                        // resources is a different submission, not a retry.
+                        return earlier.TesTaskJson == tesTaskJson
                             ? new OkObjectResult(new TesCreateTaskResponse { Id = earlier.VersionId.ToString() })
                             : Error(StatusCodes.Status409Conflict, FederatedTaskErrorCodes.RequestIdConflict,
                                 "fed.request_id was already used for a different submission");
@@ -142,9 +144,10 @@ namespace Submission.Api.Services
                 }
                 catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException { SqlState: Npgsql.PostgresErrorCodes.UniqueViolation })
                 {
-                    // A concurrent submission took this version number (unique StudyId, Version): read the study again.
+                    // A concurrent submission took this version number (unique StudyId, Version) or this fed.request_id: read again.
                     // Any other save error (a TRE deleted meanwhile, the database down) is not a collision and fails.
-                    Log.Warning(ex, "Enqueueing version {Version} of study {StudyId} collided with another submission", version.Version, spec.StudyId);
+                    Log.Warning(ex, "Enqueueing version {Version} of study {StudyId} collided with another submission on {Constraint}; reading again",
+                        version.Version, spec.StudyId, ((Npgsql.PostgresException)ex.InnerException!).ConstraintName);
                     _db.ChangeTracker.Clear();
                     continue;
                 }

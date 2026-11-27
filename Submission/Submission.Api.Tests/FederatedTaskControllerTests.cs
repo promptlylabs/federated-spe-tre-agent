@@ -394,6 +394,15 @@ namespace Submission.Api.Tests
             }
         };
 
+        /// <summary>CodeTask on another dataset: the same code, study and sites.</summary>
+        private static TesTask DatasetTask(string dataset)
+        {
+            var task = CodeTask();
+            task.Executors![0].Command = ["run-analysis", "/code/analysis.py", $"/data/{dataset}", "/outputs/result.json"];
+            task.Inputs![1] = new TesInput { Url = $"dataset://{dataset}", Path = $"/data/{dataset}", Type = TesFileType.DIRECTORYEnum };
+            return task;
+        }
+
         private static TesTask WithRequestId(TesTask task, string requestId)
         {
             task.Tags!["fed.request_id"] = requestId;
@@ -446,6 +455,9 @@ namespace Submission.Api.Tests
         [InlineData("study")]
         [InlineData("code")]
         [InlineData("sites")]
+        [InlineData("sites order")]
+        [InlineData("dataset")]
+        [InlineData("resources")]
         public async Task Reused_request_id_with_other_content_conflicts(string what)
         {
             using var db = NewDb();
@@ -458,6 +470,9 @@ namespace Submission.Api.Tests
                 : CodeTask();
             if (what == "study") other.Tags!["fed.study_id"] = "study-2";
             if (what == "sites") other.Tags!["fed.sites"] = "tre-a|tre-c";
+            if (what == "sites order") other.Tags!["fed.sites"] = "tre-b|tre-a";
+            if (what == "dataset") other = DatasetTask("cohort_2025");
+            if (what == "resources") other = CodeTask(ramGb: 4);
 
             AssertError(await ControllerFor(db, "dare-admin").Enqueue(WithRequestId(other, "r1")), 409, FederatedTaskErrorCodes.RequestIdConflict);
             Assert.Single(db.FederatedStudyVersions);

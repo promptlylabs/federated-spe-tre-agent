@@ -148,6 +148,28 @@ public class TesRoutesTests
         Assert.Equal(what == "part" ? "queued" : null, (string?)task["logs"]?[0]?["metadata"]?["phase"]);
     }
 
+    // DAAMS is close to the researcher: a released hospital part shows its phase, never its result's hash or location (a small
+    // JSON result could be guessed from its hash).
+    [Fact]
+    public async Task A_released_part_shows_no_result_details()
+    {
+        using var db = NewDb();
+        await Submit(db);
+        var part = db.FederatedTasks.First();
+        part.MoveTo(FederatedTaskPhase.Running, DateTime.UtcNow);
+        part.MoveTo(FederatedTaskPhase.WaitingForOutputApproval, DateTime.UtcNow);
+        part.MoveTo(FederatedTaskPhase.Released, DateTime.UtcNow);
+        (part.ResultBucket, part.ResultKey, part.ResultSha256) = ("federated-results", "1/x/abc.json", new string('a', 64));
+        db.SaveChanges();
+
+        var metadata = Json(await Tes(db).GetTaskAsync(part.TaskId.ToString(), "FULL", default))["logs"]![0]!["metadata"]!;
+
+        Assert.Equal("released", (string?)metadata["phase"]);
+        Assert.Null(metadata["result_sha256"]);
+        Assert.Null(metadata["result_key"]);
+        Assert.Null(metadata["result_bucket"]);
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("MINIMAL")]

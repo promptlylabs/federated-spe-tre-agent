@@ -76,7 +76,12 @@ namespace Submission.Api.Controllers
             }
 
             var result = await new FederatedStudyCancel(_db).CancelAsync(id, User, HttpContext, cancellationToken);
-            return result.StatusCode == StatusCodes.Status200OK ? Ok(new TesCancelTaskResponse()) : result;
+            return result.StatusCode switch
+            {
+                StatusCodes.Status200OK => Ok(new TesCancelTaskResponse()),
+                StatusCodes.Status404NotFound => TaskNotFound(),   // removed since the check above
+                _ => result
+            };
         }
 
         /// <summary>Submits a study version. Only federated studies (with fed.* tags) are accepted.</summary>
@@ -146,7 +151,20 @@ namespace Submission.Api.Controllers
 
             var part = await _db.FederatedTasks.AsNoTracking().Include(t => t.PhaseChanges)
                 .FirstOrDefaultAsync(t => t.TaskId == guid, cancellationToken);
-            return part == null ? TaskNotFound() : TesJson(part.ToTesTask(), viewEnum);
+            if (part == null)
+            {
+                return TaskNotFound();
+            }
+
+            // A hospital's part shows its phase, never its result's hash or location: a small JSON result could be guessed
+            // from its hash, and TES clients such as DAAMS sit close to the researcher.
+            var partTask = part.ToTesTask();
+            foreach (var key in new[] { "result_bucket", "result_key", "result_sha256" })
+            {
+                partTask.Logs?.FirstOrDefault()?.Metadata?.Remove(key);
+            }
+
+            return TesJson(partTask, viewEnum);
         }
 
         /// <summary>Study versions, newest first. Hospitals' parts are listed in their version's metadata.</summary>
@@ -185,7 +203,7 @@ namespace Submission.Api.Controllers
                 .Where(t => string.IsNullOrEmpty(namePrefix) || (t.Name ?? "").StartsWith(namePrefix, StringComparison.OrdinalIgnoreCase))
                 .ToList();
             var page = tasks.Skip(start).Take(size).ToList();
-            var next = start + size < tasks.Count
+            var next = (long)start + size < tasks.Count
                 ? Microsoft.AspNetCore.Authentication.Base64UrlTextEncoder.Encode(Encoding.UTF8.GetBytes((start + size).ToString(CultureInfo.InvariantCulture)))
                 : null;
             return TesJson(new TesListTasksResponse { Tasks = page, NextPageToken = next }, viewEnum);
