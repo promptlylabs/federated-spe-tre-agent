@@ -14,6 +14,13 @@ public static class Code
 
     public const string CountRows = "def site_analysis(df):\n    return {'n': len(df)}\n" + SumN;
 
+    /// <summary>
+    /// The people of each sex as an ACRO table (site_analysis(df, acro)): the aggregator pools it and withholds small
+    /// pooled cells. aggregate() only adds up n.
+    /// </summary>
+    public const string AcroCountBySex = "def site_analysis(df, acro):\n    acro.pivot_table(df, index='sex', values='age', aggfunc='count')\n" +
+        "    return {'n': len(df)}\n" + SumN;
+
     /// <summary>A count at each hospital whose aggregate() raises: the study fails with code_error.</summary>
     public const string AggregateRaises = "def site_analysis(df):\n    return {'n': len(df)}\n\n\ndef aggregate(results):\n    raise ValueError('no')\n";
 

@@ -113,7 +113,7 @@ public sealed class OtherTreAgent
     }
 
     /// <summary>Moves other-tre's part through running and waiting for review, then reports it COMPLETE with <paramref name="value"/>.</summary>
-    public async Task ReleaseAsync(string taskId, string studyId, JsonObject value)
+    public async Task ReleaseAsync(string taskId, string studyId, JsonObject value, JsonObject? acro = null)
     {
         foreach (var phase in new[] { "running", "waiting_for_output_approval" })
         {
@@ -129,6 +129,10 @@ public sealed class OtherTreAgent
             ["completedAt"] = DateTimeOffset.UtcNow.ToString("O"),
             ["result"] = new JsonObject { ["kind"] = "analysis", ["n"] = value["n"]!.GetValue<int>(), ["value"] = value.DeepClone() }
         };
+        if (acro != null)
+        {
+            document["result"]!["acro"] = acro.DeepClone();
+        }
         using var form = new MultipartFormDataContent
         {
             { new StringContent(taskId), "TaskId" },

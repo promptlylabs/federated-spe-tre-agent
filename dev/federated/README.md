@@ -69,7 +69,7 @@ When a study is `ready_for_aggregation`, the `aggregator` service (the Agent ima
 
 ## Try it
 
-A task runs a Python file that defines `site_analysis(df)` (see `runner/README.md`) in a locked-down `python-runner:1` container. `task.sh` sends the file inline, with its SHA-256 as `fed.code_sha256`. `code/analysis.py` returns the number of people and their mean age.
+A task runs a Python file that defines `site_analysis(df)` (see `runner/README.md`) in a locked-down `python-runner:1` container. `task.sh` sends the file inline, with its SHA-256 as `fed.code_sha256`. `code/analysis.py` returns the number of people and their mean age. `code/acro_count_by_sex.py` takes an ACRO session (`site_analysis(df, acro)`) and makes one ACRO table, which the aggregator pools and checks for small numbers (see "Small numbers in the pooled result" in `docs/federated-tasks.md`). The pooled `n` must be at least the aggregator's `SmallNumberMinimum` (10 here), so a study of the 3-row dev cohort is only pooled when the other hospital releases at least 7 people.
 
 Each `enqueue` (and `run`) creates a study version and prints its version ID; the commands that follow one hospital (`get`, `result`, `approve`, `reject`) take that hospital's task ID, which `part` prints. `cancel` takes the version ID. Every call is a new study (`study-<random>`), so runs never wait for each other's open version; set `STUDY_ID` to reuse one. The hospitals are `SITES`, `my-tre|other-tre` by default (Submission refuses fewer than 2):
 
@@ -245,9 +245,11 @@ The Agent image installs Python and a pinned Semgrep (`ScanRules/requirements.tx
 | Study versions | cancel while `my-tre` waits for review and `other-tre` is queued | version `canceling`, a new version accepted at once; `ended` once `my-tre` confirms |
 | Study versions | a study naming only `my-tre` | Enqueue refused with 400 `invalid_task` |
 | Study outcome (R2) | `my-tre`'s reviewer rejects, `other-tre` is queued | at the next sweep: outcome `incomplete`, `minimum_unreachable`; `other-tre` `canceled`; version `ended` and a new version accepted |
-| Pooling | `my-tre` releases (its reviewer approves), the test releases `other-tre`'s result | outcome `aggregated`; the pooled result in `studies/<versionId>/` has the summed `n` and the `n`-weighted mean, and its hash is `pooled_result_sha256` |
+| Pooling | `my-tre` releases (its reviewer approves), the test releases `other-tre`'s result (`n` 20, so the pooled `n` is 10 or more) | outcome `aggregated`; the pooled result in `studies/<versionId>/` has the summed `n` and the `n`-weighted mean, and its hash is `pooled_result_sha256` |
 | Pooling | as above, but `aggregate()` raises | outcome `failed`, `aggregation_error_code` `code_error`; no pooled result |
 | Pooling | code with no `aggregate` | Enqueue refused with 400 `invalid_task` |
+| Small numbers (ANZE-6142) | `code/acro_count_by_sex.py`: `my-tre` (F 2, M 1) and `other-tre` (F 9, M 3) each release an ACRO table | outcome `aggregated`; the pooled table has F 11 and M withheld (`null`), `checks.withheldCells` 1, `valueChecked` false |
+| Small numbers (ANZE-6142) | as the first Pooling row, but `other-tre` releases `n` 2 (pooled 5) | outcome `failed`, `small_numbers`; nothing is run or pooled |
 | Audit (3.4) | the pooled study above; the R2 study | `GetStudyResult` serves the pooled file and `GetStudyAudit` shows the submitter, both hospitals' phases and hashes, and the pooled hash; for R2, `incomplete`, no pooled hash, and `GetStudyResult` 404 |
 
 "Image not approved" cannot happen on this stack (Submission accepts only `python-runner:1`, and the Agent approves it); unit tests cover it.

@@ -19,14 +19,17 @@ public class AggregationTests
 
     public AggregationTests(StackFixture stack) => this.stack = stack;
 
-    /// <summary>Enqueues the code for both hospitals, releases other-tre's <paramref name="otherValue"/> and my-tre's own result, and waits for the outcome.</summary>
-    private async Task<(EnqueueOutcome Version, StudyView Ended)> PoolAsync(string code, JsonObject otherValue)
+    /// <summary>
+    /// Enqueues the code for both hospitals, releases other-tre's <paramref name="otherValue"/> (and ACRO evidence) and my-tre's own
+    /// result, and waits for the outcome. other-tre's n keeps the pooled n at 10 or more unless a test wants it below.
+    /// </summary>
+    private async Task<(EnqueueOutcome Version, StudyView Ended)> PoolAsync(string code, JsonObject otherValue, JsonObject? otherAcro = null)
     {
         var studyId = $"study-{Guid.NewGuid():N}";
         var version = await stack.Submission.EnqueueCodeAsync("cohort_2024", code, sites: StackSettings.BothHospitals, studyId: studyId);
         Assert.Equal(200, version.Status);
         var otherTaskId = (await stack.Submission.GetStudyVersionAsync(version.VersionId!)).Hospitals.Single(h => h.Tre == StackSettings.OtherTre).TaskId;
-        await stack.OtherTre.ReleaseAsync(otherTaskId, studyId, otherValue);
+        await stack.OtherTre.ReleaseAsync(otherTaskId, studyId, otherValue, otherAcro);
 
         var waiting = await Await.UntilSettledAsync(stack, version.Id!, Await.PhaseWait);
         Assert.Equal("waiting_for_output_approval", waiting.Phase);
@@ -43,7 +46,7 @@ public class AggregationTests
     {
         stack.EnsureReady();
 
-        var (version, ended) = await PoolAsync(Code.MeanAge, new JsonObject { ["n"] = 2, ["mean_age"] = 30.0 });
+        var (version, ended) = await PoolAsync(Code.MeanAge, new JsonObject { ["n"] = 20, ["mean_age"] = 30.0 });
 
         Assert.Equal("aggregated", ended.Outcome);
         var mine = JsonDocument.Parse((await stack.Submission.GetResultAsync(version.Id!))!.Bytes).RootElement.GetProperty("result").GetProperty("value");
@@ -54,8 +57,8 @@ public class AggregationTests
         var pooled = JsonDocument.Parse(pooledBytes).RootElement;
         Assert.Equal(2, pooled.GetProperty("sites").GetInt32());
         var value = pooled.GetProperty("result").GetProperty("value");
-        Assert.Equal(myN + 2, value.GetProperty("n").GetInt32());
-        Assert.Equal((myN * myMean + 2 * 30.0) / (myN + 2), value.GetProperty("mean_age").GetDouble(), 9);
+        Assert.Equal(myN + 20, value.GetProperty("n").GetInt32());
+        Assert.Equal((myN * myMean + 20 * 30.0) / (myN + 20), value.GetProperty("mean_age").GetDouble(), 9);
 
         // 3.4: the pooled result read back, hash checked, and the audit trail of how it was produced.
         var (status, served) = await stack.Submission.GetStudyResultAsync(version.VersionId!);
@@ -84,7 +87,7 @@ public class AggregationTests
     {
         stack.EnsureReady();
 
-        var (version, ended) = await PoolAsync(Code.AggregateRaises, new JsonObject { ["n"] = 2 });
+        var (version, ended) = await PoolAsync(Code.AggregateRaises, new JsonObject { ["n"] = 20 });
 
         Assert.Equal(("failed", "code_error"), (ended.Outcome, ended.AggregationErrorCode));
         // The line of aggregate() that raised (line 6 of Code.AggregateRaises), and nothing of the exception itself.
@@ -101,5 +104,37 @@ public class AggregationTests
         var outcome = await stack.Submission.EnqueueCodeAsync("cohort_2024", Code.NoAggregate);
 
         Assert.Equal((400, "invalid_task"), (outcome.Status, outcome.ErrorCode));
+    }
+
+    /// <summary>
+    /// ANZE-6142. my-tre's dev cohort has 2 F and 1 M; other-tre releases 9 F and 3 M. Pooled: F 11 is released, M 4 is
+    /// withheld, and aggregate()'s value is marked as not checked for small numbers.
+    /// </summary>
+    [SkippableFact]
+    public async Task Acro_tables_are_pooled_and_small_cells_withheld()
+    {
+        stack.EnsureReady();
+        var otherAcro = JsonNode.Parse("""{"tables":[{"method":"pivot_table","statistic":"count","rows":["F","M"],"columns":["age"],"count":[[9],[3]]}]}""")!.AsObject();
+
+        var (version, ended) = await PoolAsync(Code.AcroCountBySex, new JsonObject { ["n"] = 12 }, otherAcro);
+
+        Assert.Equal("aggregated", ended.Outcome);
+        var result = JsonDocument.Parse((await stack.Results.GetPooledAsync(version.VersionId!))!).RootElement.GetProperty("result");
+        var table = result.GetProperty("tables")[0];
+        Assert.Equal("""["F","M"]""", table.GetProperty("rows").GetRawText());
+        Assert.Equal("[[11],[null]]", table.GetProperty("cells").GetRawText());
+        Assert.Equal("""{"minimum":10,"withheldCells":1,"valueChecked":false}""", result.GetProperty("checks").GetRawText());
+        Assert.Equal(15, result.GetProperty("value").GetProperty("n").GetInt32());
+    }
+
+    [SkippableFact]
+    public async Task A_pooled_n_below_the_minimum_fails_the_study()
+    {
+        stack.EnsureReady();
+
+        var (version, ended) = await PoolAsync(Code.CountRows, new JsonObject { ["n"] = 2 });
+
+        Assert.Equal(("failed", "small_numbers"), (ended.Outcome, ended.AggregationErrorCode));
+        Assert.Null(await stack.Results.GetPooledAsync(version.VersionId!));
     }
 }
