@@ -51,16 +51,16 @@
             <h2 class="fs-5 mt-4">Code</h2>
             <pre class="border p-2 bg-light">@Model.Code</pre>
             <h2 class="fs-5 mt-4">How your result will be combined</h2>
-            @{ var aggregate = FederatedReviewFormatter.AggregateFunction(Model.Code); }
+            @{ var aggregate = FiveSafesTes.Core.Models.FederatedTasks.FederatedCode.AggregateFunction(Model.Code); }
             @if (aggregate != null)
             {
                 <pre class="border p-2 bg-light">@aggregate</pre>
             }
             else
             {
-                <p>aggregate() could not be found in the code; read it in the code above.</p>
+                <p>aggregate() could not be shown on its own: the code does not define it exactly once, or names it elsewhere. Read the code above to see how your result will be combined.</p>
             }
-            <p>The orchestrator combines your result with the other hospitals' results using this function. Tables made with ACRO are checked for small numbers after they are combined, before the researcher sees anything.</p>
+            <p>The orchestrator combines your result with the other hospitals' results using this function. Tables made with ACRO are checked for small numbers after they are combined, before the researcher sees anything. Other values in the result are not checked automatically: a reviewer at the orchestrator checks them.</p>
             <h2 class="fs-5 mt-4">Result</h2>
             <pre class="border p-2 bg-light">@FederatedReviewFormatter.PrettyPrintJson(Model.ResultContent)</pre>
             <p class="text-muted">SHA-256: @Model.ResultSha256</p>
