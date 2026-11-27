@@ -42,7 +42,8 @@ def _plain(value: object) -> object:
     raise _NotSerialisable
 
 
-def check_result(value: object, function: str = "site_analysis") -> tuple[dict, int]:
+def check_result(value: object, function: str = "site_analysis", evidence: dict | None = None) -> tuple[dict, int]:
+    """evidence is the ACRO evidence written next to the result: it shares the size limit with the dict."""
     if not isinstance(value, dict):
         raise AnalysisError("invalid_result", f"{function} must return a dict, not {type(value).__name__}")
     try:
@@ -57,21 +58,25 @@ def check_result(value: object, function: str = "site_analysis") -> tuple[dict, 
     if not isinstance(n, int) or isinstance(n, bool) or n < 0:
         raise AnalysisError("invalid_result", "n must be a non-negative integer")
     try:
-        size = len(encode(result))
+        size = len(encode(result)) + (len(encode(evidence)) if evidence is not None else 0)
     except (ValueError, RecursionError):
         # For example an int of more than 4300 digits, which Python refuses to turn into text.
         raise AnalysisError("invalid_result", "the returned dict is not JSON-serialisable") from None
     if size > MAX_RESULT_BYTES:
-        raise AnalysisError("result_too_large", f"the returned dict is {size} bytes; the limit is {MAX_RESULT_BYTES}")
+        what = "the returned dict and its ACRO evidence are" if evidence is not None else "the returned dict is"
+        raise AnalysisError("result_too_large", f"{what} {size} bytes; the limit is {MAX_RESULT_BYTES}")
     return result, n
 
 
-def write_ok(path: Path, dataset_sha256: str | None, n: int, result: dict) -> None:
-    """dataset_sha256 is None for aggregate(), which reads the hospitals' results, not a dataset."""
+def write_ok(path: Path, dataset_sha256: str | None, n: int, result: dict, acro: dict | None = None) -> None:
+    """dataset_sha256 is None for aggregate(), which reads the hospitals' results, not a dataset. acro is the ACRO
+    evidence of site_analysis(df, acro), written next to the result."""
     doc = {"status": "ok"}
     if dataset_sha256 is not None:
         doc["datasetSha256"] = dataset_sha256
     doc.update({"n": n, "result": result})
+    if acro is not None:
+        doc["acro"] = acro
     path.write_bytes(encode(doc))
 
 

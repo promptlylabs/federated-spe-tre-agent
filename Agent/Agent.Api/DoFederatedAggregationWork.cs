@@ -145,6 +145,15 @@ namespace Agent.Api
                 return;
             }
 
+            // The hospitals' own n, not aggregate()'s: a study too small to release is refused before any code runs.
+            if (PooledN(job.ResultsJson) is var pooledN && pooledN < _settings.PooledMinimum)
+            {
+                Log.Warning("Federated aggregation: study version {VersionId} pools {N} people, below the minimum of {Minimum}; it is not run",
+                    id, pooledN, _settings.PooledMinimum);
+                await _client.ReportAggregationAsync(new FederatedAggregationReport(id, FederatedAggregationPhases.Failed, FederatedTaskErrorCodes.SmallNumbers), null);
+                return;
+            }
+
             var image = task.Executors?.FirstOrDefault()?.Image;
             if (image == null || !_settings.ApprovedImages.Contains(image, StringComparer.Ordinal))
             {
@@ -190,6 +199,14 @@ namespace Agent.Api
                 [new StagedFile(CodeFile, codeStream), new StagedFile(ResultsFile, resultsStream)],
                 cpu, memory, tmp, AggregateCommand), CancellationToken.None);
             Log.Information("Federated aggregation: started pooling study version {VersionId}", id);
+        }
+
+        /// <summary>The sum of the hospitals' n (Submission checked each is a non-negative integer when it was reported).</summary>
+        private static long PooledN(string resultsJson)
+        {
+            using var results = JsonDocument.Parse(resultsJson);
+            return results.RootElement.EnumerateArray()
+                .Sum(r => r.TryGetProperty("n", out var n) && n.TryGetInt64(out var value) ? value : 0);
         }
 
         /// <summary>The failure code, or null with the pooled document.</summary>
@@ -265,6 +282,17 @@ namespace Agent.Api
                 sites = results.RootElement.GetArrayLength();
             }
 
+            // The ACRO tables are pooled here, in the aggregator's own process: the researcher's code has no part in it.
+            AcroPoolingResult tables;
+            try
+            {
+                tables = AcroPooling.Pool(job.EvidenceJson, _settings.PooledMinimum);
+            }
+            catch (AcroPoolingException e)
+            {
+                return Invalid(id, e.Message);
+            }
+
             var pooled = new FederatedPooledResultDocument
             {
                 StudyId = job.StudyId,
@@ -275,8 +303,18 @@ namespace Agent.Api
                 // When the run finished, not when it was collected: a report sent again is the same bytes, stored under the
                 // same key.
                 CompletedAt = state.FinishedAt ?? _clock.GetUtcNow(),
-                Result = new FederatedPooledResult { N = n, Value = value.Clone() }
+                Result = new FederatedPooledResult
+                {
+                    N = n, Value = value.Clone(), Tables = tables.Tables,
+                    Checks = new FederatedPooledChecks { Minimum = _settings.PooledMinimum, WithheldCells = tables.WithheldCells, ValueChecked = false }
+                }
             }.Serialize();
+
+            if (pooled.Length > FederatedResultLimits.MaxResultBytes)
+            {
+                Log.Warning("Federated aggregation: the pooled result of study version {VersionId} is {Bytes} bytes, over the limit", id, pooled.Length);
+                return (FederatedTaskErrorCodes.ResultTooLarge, null);
+            }
 
             // Checked as Submission will, so a document it would refuse fails here with a code instead of being re-sent.
             var version = new FederatedStudyVersion { VersionId = job.VersionId, StudyId = job.StudyId, Version = job.Version, CodeSha256 = job.CodeSha256 };

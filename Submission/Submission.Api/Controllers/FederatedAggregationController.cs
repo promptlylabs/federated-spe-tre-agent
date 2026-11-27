@@ -33,6 +33,7 @@ namespace Submission.Api.Controllers
             [FederatedTaskErrorCodes.CodeError] = "aggregate() could not be imported, is missing, or raised an exception",
             [FederatedTaskErrorCodes.InvalidResult] = "aggregate() returned a value the orchestrator cannot accept",
             [FederatedTaskErrorCodes.ResultTooLarge] = "aggregate() returned a result larger than the limit",
+            [FederatedTaskErrorCodes.SmallNumbers] = "the pooled result would be based on fewer people than the minimum",
             [FederatedTaskErrorCodes.Timeout] = "aggregate() ran longer than the orchestrator's limit",
             [FederatedTaskErrorCodes.OutOfMemory] = "aggregate() ran out of memory",
             [FederatedTaskErrorCodes.RunFailed] = "the pooling run ended without a result; an admin can retry",
@@ -67,10 +68,10 @@ namespace Submission.Api.Controllers
             var jobs = new List<FederatedAggregationJob>();
             foreach (var version in ready)
             {
-                string? resultsJson;
+                (string Results, string Evidence)? read;
                 try
                 {
-                    resultsJson = await ReadResultsAsync(version, cancellationToken);
+                    read = await ReadResultsAsync(version, cancellationToken);
                 }
                 catch (Exception ex) when (ex is not OperationCanceledException)
                 {
@@ -79,7 +80,7 @@ namespace Submission.Api.Controllers
                     continue;
                 }
 
-                if (resultsJson == null)
+                if (read is not { } results)
                 {
                     FederatedStudyOutcomes.Fail(version, DateTime.UtcNow, FederatedTaskErrorCodes.InternalError,
                         "a released hospital result could not be read back; an admin can retry");
@@ -104,7 +105,8 @@ namespace Submission.Api.Controllers
                     Version = version.Version,
                     TesTaskJson = version.TesTaskJson,
                     CodeSha256 = version.CodeSha256,
-                    ResultsJson = resultsJson
+                    ResultsJson = results.Results,
+                    EvidenceJson = results.Evidence
                 });
             }
 
@@ -112,13 +114,15 @@ namespace Submission.Api.Controllers
         }
 
         /// <summary>
-        /// The released hospitals' result.value, in fed.sites order, as a JSON array; null when a stored file is missing,
+        /// The released hospitals' result.value, in fed.sites order, as a JSON array, and their result.acro (null where absent)
+        /// in the same order; null when a stored file is missing,
         /// fails its hash or isn't a result document. Throws when storage is unreachable.
         /// </summary>
-        private async Task<string?> ReadResultsAsync(FederatedStudyVersion version, CancellationToken ct)
+        private async Task<(string Results, string Evidence)?> ReadResultsAsync(FederatedStudyVersion version, CancellationToken ct)
         {
             var sites = version.Sites.Split('|').ToList();
             var values = new List<string>();
+            var evidence = new List<string>();
             foreach (var part in version.Parts.Where(p => p.Phase == FederatedTaskPhase.Released).OrderBy(p => sites.IndexOf(p.TreName)))
             {
                 if (part.ResultBucket is null || part.ResultKey is null || part.ResultSha256 is null)
@@ -135,7 +139,9 @@ namespace Submission.Api.Controllers
                 try
                 {
                     using var doc = JsonDocument.Parse(bytes);
-                    values.Add(doc.RootElement.GetProperty("result").GetProperty("value").GetRawText());
+                    var result = doc.RootElement.GetProperty("result");
+                    values.Add(result.GetProperty("value").GetRawText());
+                    evidence.Add(result.TryGetProperty("acro", out var acro) ? acro.GetRawText() : "null");
                 }
                 catch (Exception ex) when (ex is JsonException or KeyNotFoundException or InvalidOperationException)
                 {
@@ -143,7 +149,7 @@ namespace Submission.Api.Controllers
                 }
             }
 
-            return "[" + string.Join(",", values) + "]";
+            return ("[" + string.Join(",", values) + "]", "[" + string.Join(",", evidence) + "]");
         }
 
         /// <summary>

@@ -104,6 +104,17 @@ EOF
   run_locked "$tmp/7in" "$tmp/7" run-analysis /in/analysis.py /in/cohort /outputs/result.json
   grep -q '"status":"ok"' "$tmp/7/result.json" || fail "libraries: $(cat "$tmp/7/result.json")"
 
+  echo "8. site_analysis(df, acro) runs locked down and writes ACRO's evidence"
+  mkdir -m 0777 "$tmp/8" "$tmp/8in"
+  cp -r "$examples/cohort" "$tmp/8in/cohort"
+  cat >"$tmp/8in/analysis.py" <<'EOF'
+def site_analysis(df, acro):
+    acro.pivot_table(df, index="sex", values="age", aggfunc="count")
+    return {"n": len(df)}
+EOF
+  run_locked "$tmp/8in" "$tmp/8" run-analysis /in/analysis.py /in/cohort /outputs/result.json
+  grep -q '"acro":{"tables":\[{"method":"pivot_table"' "$tmp/8/result.json" || fail "ACRO evidence: $(cat "$tmp/8/result.json")"
+
   echo "image checks passed"
 }
 

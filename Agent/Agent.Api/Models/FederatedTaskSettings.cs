@@ -127,6 +127,16 @@ namespace Agent.Api.Models
         /// <summary>The most scratch disk, in GB, a task may ask for.</summary>
         public double MaxDiskGb { get; set; } = 4;
 
+        /// <summary>
+        /// Aggregator only: the fewest people a pooled result, and each pooled ACRO table cell, may be based on. A study whose
+        /// hospitals' n add up to less fails with small_numbers; a pooled cell below it is withheld. Default 10, ACRO's
+        /// default threshold, until SPMS sets its own. A value below 1 is used as 1 (see <see cref="PooledMinimum"/>).
+        /// </summary>
+        public int SmallNumberMinimum { get; set; } = 10;
+
+        /// <summary>The minimum the aggregator applies: <see cref="SmallNumberMinimum"/>, at least 1.</summary>
+        public int PooledMinimum => Math.Max(1, SmallNumberMinimum);
+
         /// <summary>How many researcher-code containers may run at the same time on this Agent.</summary>
         public int MaxConcurrentRuns { get; set; } = 2;
 
@@ -176,6 +186,12 @@ namespace Agent.Api.Models
             {
                 problems.Add($"FederatedTaskSettings:ScanTimeoutSeconds is {ScanTimeoutSeconds}, so every code scan will fail and " +
                              "every code task will fail with internal_error");
+            }
+
+            if (IsAggregator && SmallNumberMinimum < 1)
+            {
+                problems.Add($"FederatedTaskSettings:SmallNumberMinimum is {SmallNumberMinimum}, so 1 is used: pooled results and " +
+                             "cells of a single person are released");
             }
 
             return problems.Count == 0 ? null : string.Join(". ", problems) + ". Set the value above 0.";

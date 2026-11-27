@@ -31,6 +31,9 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         /// <summary>A study version waited longer than AggregationTimeoutMinutes for the aggregator.</summary>
         public const string AggregationTimeout = "aggregation_timeout";
 
+        /// <summary>The hospitals' n add up to fewer people than the aggregator's small-number minimum; nothing is pooled.</summary>
+        public const string SmallNumbers = "small_numbers";
+
         /// <summary>Codes that mean the task was rejected by the input checks; every other code is a failure.</summary>
         public static readonly IReadOnlySet<string> InputCheckCodes = new HashSet<string>
         {

@@ -43,7 +43,7 @@ namespace Submission.Api.Tests
         };
 
         /// <summary>A version for tre-a and tre-b with the given outcome; each value released and stored, null for a rejected part.</summary>
-        private FederatedStudyVersion Seed(FederatedStudyOutcome? outcome, string? valueA, string? valueB)
+        private FederatedStudyVersion Seed(FederatedStudyOutcome? outcome, string? valueA, string? valueB, string? acroA = null)
         {
             var version = new FederatedStudyVersion
             {
@@ -78,7 +78,11 @@ namespace Submission.Api.Tests
                     {
                         TaskId = part.TaskId.ToString(), Tre = tre, StudyId = "study-1", Operation = "run-analysis", Dataset = "cohort_2024",
                         DatasetSha256 = new string('d', 64), CompletedAt = Ready,
-                        Result = new FederatedAnalysisResult { N = 1, Value = JsonDocument.Parse(value).RootElement.Clone() }
+                        Result = new FederatedAnalysisResult
+                        {
+                            N = 1, Value = JsonDocument.Parse(value).RootElement.Clone(),
+                            Acro = tre == "tre-a" && acroA != null ? JsonDocument.Parse(acroA).RootElement.Clone() : null
+                        }
                     });
                     part.MoveTo(FederatedTaskPhase.Released, version.SubmittedAt);
                     part.ResultBucket = _store.Bucket;
@@ -110,11 +114,17 @@ namespace Submission.Api.Tests
             Assert.Equal(code, Assert.IsType<FederatedApiError>(obj.Value).ErrorCode);
         }
 
-        private static byte[] Pooled(FederatedStudyVersion v, int sites = 2, long n = 4, string value = "{\"n\":4,\"mean_age\":35.0}") =>
+        private const string Checks = "{\"minimum\":10,\"withheldCells\":0,\"valueChecked\":false}";
+
+        private static byte[] Pooled(FederatedStudyVersion v, int sites = 2, long n = 4, string value = "{\"n\":4,\"mean_age\":35.0}",
+            string? checks = Checks) =>
             Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
             {
                 schemaVersion = 1, studyId = v.StudyId, version = v.Version, versionId = v.VersionId, codeSha256 = v.CodeSha256,
-                sites, completedAt = Ready, result = new { kind = "aggregate", n, value = JsonDocument.Parse(value).RootElement }
+                sites, completedAt = Ready,
+                result = checks == null
+                    ? (object)new { kind = "aggregate", n, value = JsonDocument.Parse(value).RootElement, tables = Array.Empty<object>() }
+                    : new { kind = "aggregate", n, value = JsonDocument.Parse(value).RootElement, tables = Array.Empty<object>(), checks = JsonDocument.Parse(checks).RootElement }
             }));
 
         private static IFormFile File(byte[] bytes) => new FormFile(new MemoryStream(bytes), 0, bytes.Length, FederatedReportFields.ResultFile, "pooled.json");
@@ -143,7 +153,8 @@ namespace Submission.Api.Tests
         [Fact]
         public async Task GetPending_hands_out_ready_versions_with_values_only()
         {
-            var ready = Seed(FederatedStudyOutcome.ReadyForAggregation, "{\"n\":3,\"mean_age\":40}", "{\"n\":1,\"mean_age\":20}");
+            const string acro = "{\"tables\":[{\"method\":\"crosstab\",\"statistic\":\"count\",\"rows\":[\"F\"],\"columns\":[\"n\"],\"count\":[[2]]}]}";
+            var ready = Seed(FederatedStudyOutcome.ReadyForAggregation, "{\"n\":3,\"mean_age\":40}", "{\"n\":1,\"mean_age\":20}", acro);
             Seed(null, "{\"n\":3}", "{\"n\":1}");
             Seed(FederatedStudyOutcome.Incomplete, "{\"n\":3}", null);
             Seed(FederatedStudyOutcome.Aggregated, "{\"n\":3}", "{\"n\":1}");
@@ -153,6 +164,8 @@ namespace Submission.Api.Tests
             Assert.Equal(ready.VersionId, job.VersionId);
             Assert.Equal(("study-1", ready.Version, ready.CodeSha256, ready.TesTaskJson), (job.StudyId, job.Version, job.CodeSha256, job.TesTaskJson));
             Assert.Equal("[{\"n\":3,\"mean_age\":40},{\"n\":1,\"mean_age\":20}]", job.ResultsJson);
+            // The ACRO evidence in the same order, null for a hospital without; the aggregator pools it, aggregate() never sees it.
+            Assert.Equal($"[{acro},null]", job.EvidenceJson);
             // aggregate() sees only ResultsJson. (The task in TesTaskJson names the hospitals; the aggregator reads the code,
             // image and limits from it and never stages it.)
             Assert.DoesNotContain("tre-", job.ResultsJson);
@@ -224,6 +237,8 @@ namespace Submission.Api.Tests
         [InlineData("sites")]
         [InlineData("n")]
         [InlineData("kind")]
+        [InlineData("no checks")]
+        [InlineData("value checked")]
         [InlineData("none")]
         public async Task Aggregated_with_a_document_that_does_not_match_is_refused(string wrong)
         {
@@ -235,6 +250,9 @@ namespace Submission.Api.Tests
                 "sites" => Pooled(version, sites: 3),
                 "n" => Pooled(version, n: 5),
                 "kind" => Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(Pooled(version)).Replace("\"aggregate\"", "\"analysis\"")),
+                // The marker that aggregate()'s values were not checked for small numbers must be there, and must say so.
+                "no checks" => Pooled(version, checks: null),
+                "value checked" => Pooled(version, checks: Checks.Replace("false", "true")),
                 _ => null
             };
 

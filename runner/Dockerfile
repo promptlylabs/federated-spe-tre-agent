@@ -6,7 +6,15 @@
 # "Base image".
 FROM --platform=linux/amd64 quay.io/opendatahub/odh-pipeline-runtime-datascience-cpu-py311-ubi9@sha256:62ceae2f54e06b7231027d1fed7392cfb7cbf5952929fc85b4342e3cb75fab75 AS base
 
-FROM base AS test
+FROM base AS acro
+# ACRO, for site_analysis(df, acro): installed with the base's versions as constraints, so no library the researcher
+# relies on moves. The test stage gets the same install.
+ARG ACRO_VERSION=1.1.0
+RUN python3 -m pip freeze > /tmp/constraints.txt \
+    && python3 -m pip install --no-cache-dir -q -c /tmp/constraints.txt "acro==${ACRO_VERSION}" \
+    && rm /tmp/constraints.txt
+
+FROM acro AS test
 RUN pip install pytest==8.3.3
 COPY src/run_analysis /opt/runner/src/run_analysis
 COPY tests /opt/runner/tests
@@ -15,7 +23,7 @@ WORKDIR /opt/runner
 ENTRYPOINT []
 CMD ["python3", "-m", "pytest", "-q", "-p", "no:cacheprovider", "tests"]
 
-FROM base AS runner
+FROM acro AS runner
 LABEL org.opencontainers.image.title="python-runner" \
       org.opencontainers.image.base.name="quay.io/opendatahub/odh-pipeline-runtime-datascience-cpu-py311-ubi9:2025a-v1.35" \
       org.opencontainers.image.base.digest="sha256:62ceae2f54e06b7231027d1fed7392cfb7cbf5952929fc85b4342e3cb75fab75"
@@ -35,6 +43,7 @@ RUN python3 -m pip uninstall -y -q uv micropipenv virtualenv pip \
          python3.11-setuptools-wheel python3-setuptools-wheel \
     && rm -f /opt/app-root/bin/pip* /opt/app-root/bin/uv /opt/app-root/bin/uvx \
          /opt/app-root/bin/micropipenv /opt/app-root/bin/virtualenv \
+    && chmod -R a-w "$(python3 -c 'import acro, os; print(os.path.dirname(acro.__file__))')" \
     && mkdir -p /opt/runner \
     && python3 /tmp/list-libraries.py > /opt/runner/libraries.txt \
     && rm /tmp/list-libraries.py

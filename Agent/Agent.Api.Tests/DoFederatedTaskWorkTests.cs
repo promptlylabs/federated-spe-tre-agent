@@ -969,7 +969,9 @@ public class DoFederatedTaskWorkTests
         Assert.Equal(T1, r.TaskId);
         Assert.Equal("study-1", r.StudyId);
         const string command = "run-analysis /code/analysis.py /data/cohort_2024 /outputs/result.json";
-        Assert.Equal($"python-runner:1 {command}", r.Code);
+        // The researcher's own code under the command, so the reviewer can read it, aggregate() included.
+        var code = client.Pending[0].Inputs!.Single(i => i.Path == "/code/analysis.py").Content;
+        Assert.Equal($"python-runner:1 {command}\n\n{code}", r.Code);
         Assert.Equal($"Federated task {T1}: {command} code sha256 {client.Pending[0].Tags!["fed.code_sha256"]}", r.Name);
         Assert.Equal(Encoding.UTF8.GetString(outputs.Files[T1]), r.ResultContent);
         Assert.Equal(new FederatedTaskSettings().OutputBucket, r.OutputBucket);

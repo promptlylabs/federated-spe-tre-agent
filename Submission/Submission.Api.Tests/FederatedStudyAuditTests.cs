@@ -161,7 +161,11 @@ namespace Submission.Api.Tests
             var pooled = new FederatedPooledResultDocument
             {
                 StudyId = "study-3", Version = 1, VersionId = version.VersionId, CodeSha256 = version.CodeSha256, Sites = 2, CompletedAt = At,
-                Result = new FederatedPooledResult { N = 4, Value = JsonDocument.Parse("{\"n\":4}").RootElement.Clone() }
+                Result = new FederatedPooledResult
+                {
+                    N = 4, Value = JsonDocument.Parse("{\"n\":4}").RootElement.Clone(), Tables = JsonDocument.Parse("[]").RootElement.Clone(),
+                    Checks = new FederatedPooledChecks { Minimum = 10 }
+                }
             }.Serialize();
 
             Assert.IsType<OkObjectResult>(await Aggregation("service-account-federated-aggregator").ReportAggregation(

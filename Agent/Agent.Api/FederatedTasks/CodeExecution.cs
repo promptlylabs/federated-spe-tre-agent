@@ -359,7 +359,12 @@ namespace Agent.Api.FederatedTasks
                 Dataset = spec.Dataset,
                 DatasetSha256 = sha256,
                 CompletedAt = _clock.GetUtcNow(),
-                Result = new FederatedAnalysisResult { Kind = "analysis", N = n, Value = value.Clone() }
+                Result = new FederatedAnalysisResult
+                {
+                    Kind = "analysis", N = n, Value = value.Clone(),
+                    // ACRO's evidence from site_analysis(df, acro), checked with the rest of the document below.
+                    Acro = root.TryGetProperty("acro", out var acro) && acro.ValueKind != JsonValueKind.Null ? acro.Clone() : null
+                }
             };
 
             // Check the document as Submission will, so a result it would refuse fails now and not after approval.

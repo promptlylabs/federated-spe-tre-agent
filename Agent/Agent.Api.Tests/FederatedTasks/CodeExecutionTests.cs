@@ -257,8 +257,28 @@ public class CodeExecutionTests
         Assert.Equal(120, doc.Result.N);
         Assert.Equal(41.2, doc.Result.Value.GetProperty("mean_age").GetDouble());
         Assert.Equal(120, doc.Result.Value.GetProperty("n").GetInt64());
+        Assert.Null(doc.Result.Acro);
         // Saved and removed by the poll, not here.
         Assert.Empty(_runner.Removed);
+    }
+
+    [Theory]
+    [InlineData("""{"tables":[{"method":"crosstab","statistic":"count","rows":["F"],"columns":["n"],"count":[[2]]}]}""", true)]
+    [InlineData("""{"tables":[{"method":"crosstab","statistic":"median","rows":["F"],"columns":["n"],"count":[[2]]}]}""", false)]
+    public async Task Ok_CarriesTheAcroEvidence(string acro, bool valid)
+    {
+        Exited($$$"""{"status":"ok","datasetSha256":"{{{CsvSha}}}","n":2,"result":{"n":2},"acro":{{{acro}}}}""");
+
+        var result = await Check();
+
+        if (valid)
+        {
+            Assert.Equal(acro, result.AnalysisDocument!.Result.Acro!.Value.GetRawText());
+        }
+        else
+        {
+            Assert.Equal(FederatedTaskErrorCodes.InvalidResult, result.ErrorCode);
+        }
     }
 
     [Fact]

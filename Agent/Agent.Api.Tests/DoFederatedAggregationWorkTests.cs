@@ -54,7 +54,8 @@ public class DoFederatedAggregationWorkTests
 
     private static string Sha(string text) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(text)));
 
-    private FederatedAggregationJob Job(string code = Code, string? codeSha = null, string? tagSha = null, string image = Image)
+    private FederatedAggregationJob Job(string code = Code, string? codeSha = null, string? tagSha = null, string image = Image,
+        string results = "[{\"n\":30,\"mean_age\":40.0},{\"n\":10,\"mean_age\":20.0}]", string evidence = "[null,null]")
     {
         var task = FederatedTesProfile.BuildCodeTask("cohort_2024", code, "study-1", "tre-a|tre-b");
         task.Executors![0].Image = image;
@@ -62,7 +63,7 @@ public class DoFederatedAggregationWorkTests
         var job = new FederatedAggregationJob
         {
             VersionId = Guid.NewGuid(), StudyId = "study-1", Version = 1, TesTaskJson = JsonConvert.SerializeObject(task),
-            CodeSha256 = codeSha ?? Sha(code), ResultsJson = "[{\"n\":3,\"mean_age\":40.0},{\"n\":1,\"mean_age\":20.0}]"
+            CodeSha256 = codeSha ?? Sha(code), ResultsJson = results, EvidenceJson = evidence
         };
         _client.Jobs.Add(job);
         return job;
@@ -84,6 +85,7 @@ public class DoFederatedAggregationWorkTests
     [InlineData("image", "image_not_approved")]
     [InlineData("scan", "unsafe_code")]
     [InlineData("scanner", "internal_error")]
+    [InlineData("small", "small_numbers")]   // pooled n 3 + 1 below the minimum of 10: aggregate() never runs
     public async Task Refuses_before_staging_anything(string what, string code)
     {
         _scanner.Result = what switch
@@ -97,6 +99,7 @@ public class DoFederatedAggregationWorkTests
             "code" => Job(codeSha: new string('0', 64)),
             "tag" => Job(tagSha: new string('0', 64)),
             "image" => Job(image: "python:3.12"),
+            "small" => Job(results: "[{\"n\":3},{\"n\":1}]"),
             _ => Job()
         };
 
@@ -165,7 +168,42 @@ public class DoFederatedAggregationWorkTests
             doc.GetProperty("codeSha256").GetString(), doc.GetProperty("sites").GetInt32()));
         Assert.Equal("aggregate", doc.GetProperty("result").GetProperty("kind").GetString());
         Assert.Equal(35.0, doc.GetProperty("result").GetProperty("value").GetProperty("mean_age").GetDouble());
+        Assert.Equal("[]", doc.GetProperty("result").GetProperty("tables").GetRawText());
+        Assert.Equal("""{"minimum":10,"withheldCells":0,"valueChecked":false}""", doc.GetProperty("result").GetProperty("checks").GetRawText());
         Assert.Equal([Id(job)], _runner.Removed);
+    }
+
+    [Fact]
+    public async Task Pools_the_acro_tables_into_the_document()
+    {
+        const string table = "{\"method\":\"crosstab\",\"statistic\":\"count\",\"rows\":[\"F\",\"M\"],\"columns\":[\"x\"],\"count\":[[9],[3]]}";
+        var job = Job(evidence: $"[{{\"tables\":[{table}]}},{{\"tables\":[{table.Replace("[[9],[3]]", "[[2],[1]]")}]}}]");
+        Exited(job, "{\"status\":\"ok\",\"n\":4,\"result\":{\"n\":4}}");
+
+        await Work().Execute();
+
+        var result = JsonDocument.Parse(_client.Reports[^1].File!).RootElement.GetProperty("result");
+        // M (4) is withheld, then F (11) with it, so M is not the pooled n minus F.
+        Assert.Equal("[[null],[null]]", result.GetProperty("tables")[0].GetProperty("cells").GetRawText());
+        Assert.Equal(2, result.GetProperty("checks").GetProperty("withheldCells").GetInt32());
+    }
+
+    [Theory]
+    [InlineData("mismatch", "invalid_result")]
+    [InlineData("too large", "result_too_large")]
+    public async Task Pooling_problems_fail_the_study(string what, string code)
+    {
+        var job = what == "mismatch"
+            ? Job(evidence: "[{\"tables\":[{\"method\":\"crosstab\",\"statistic\":\"count\",\"rows\":[\"F\"],\"columns\":[\"x\"],\"count\":[[20]]}]},null]")
+            : Job();
+        // aggregate()'s 65,400 bytes fit its own run's limit but not the pooled document's.
+        Exited(job, what == "mismatch" ? "{\"status\":\"ok\",\"n\":4,\"result\":{\"n\":4}}"
+            : $"{{\"status\":\"ok\",\"n\":4,\"result\":{{\"n\":4,\"pad\":\"{new string('x', 65400)}\"}}}}");
+
+        await Work().Execute();
+
+        Assert.Equal((FederatedAggregationPhases.Failed, code), Last());
+        Assert.Null(_client.Reports[^1].File);
     }
 
     [Fact]

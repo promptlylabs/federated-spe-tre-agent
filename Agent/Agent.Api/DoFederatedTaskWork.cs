@@ -498,7 +498,7 @@ namespace Agent.Api
                     taskId, outcome.StatusCode, outcome.ErrorCode);
         }
 
-        /// <summary>What the reviewer sees in the Egress app: the study, the code that ran and the result itself.</summary>
+        /// <summary>What the reviewer sees in the Egress app: the study, the image and command, the researcher's code and the result itself.</summary>
         private EgressRegistration Registration(TesTask task, string storeKey, byte[] bytes, string sha)
         {
             var executor = task.Executors?.FirstOrDefault();
@@ -511,11 +511,15 @@ namespace Agent.Api
             // The reviewer also sees which code produced the result. The parsed hash, checked against the code, is
             // used, never the raw tag.
             var codeSha = parsed.IsSuccess ? $" code sha256 {parsed.Spec!.CodeSha256}" : string.Empty;
+            // The researcher's code itself, under the command, so the reviewer reads what ran, aggregate() included (the Egress
+            // page shows aggregate() on its own too).
+            var source = task.Inputs?.FirstOrDefault(i => i.Path == FederatedTesProfile.CodePath)?.Content;
+            var code = $"{executor?.Image} {command}".Trim() + (string.IsNullOrEmpty(source) ? "" : $"\n\n{source}");
             return new EgressRegistration(
                 storeKey,
                 $"Federated task {storeKey}: {command}{codeSha}",
                 studyId,
-                $"{executor?.Image} {command}".Trim(),
+                code,
                 System.Text.Encoding.UTF8.GetString(bytes),
                 sha,
                 _settings.OutputBucket);

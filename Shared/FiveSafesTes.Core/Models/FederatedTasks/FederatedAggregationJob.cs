@@ -16,6 +16,12 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
 
         public string CodeSha256 { get; set; } = string.Empty;
         public string ResultsJson { get; set; } = "[]";
+
+        /// <summary>
+        /// Each released hospital's <c>result.acro</c> (ACRO evidence), or null for a hospital without, as a JSON array in
+        /// the same order as <see cref="ResultsJson"/>. The aggregator pools it itself; aggregate() never sees it.
+        /// </summary>
+        public string EvidenceJson { get; set; } = "[]";
     }
 
     /// <summary>
@@ -43,7 +49,8 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             FederatedTaskErrorCodes.InvalidTask, FederatedTaskErrorCodes.ImageNotApproved, FederatedTaskErrorCodes.UnsafeCode,
             FederatedTaskErrorCodes.CodeError,
             FederatedTaskErrorCodes.InvalidResult, FederatedTaskErrorCodes.ResultTooLarge, FederatedTaskErrorCodes.Timeout,
-            FederatedTaskErrorCodes.OutOfMemory, FederatedTaskErrorCodes.RunFailed, FederatedTaskErrorCodes.InternalError
+            FederatedTaskErrorCodes.OutOfMemory, FederatedTaskErrorCodes.RunFailed, FederatedTaskErrorCodes.InternalError,
+            FederatedTaskErrorCodes.SmallNumbers
         };
     }
 }
