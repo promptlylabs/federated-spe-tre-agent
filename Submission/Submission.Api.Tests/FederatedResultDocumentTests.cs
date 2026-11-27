@@ -99,6 +99,57 @@ public class FederatedResultDocumentTests
         Assert.Contains("dataset", result.Message);
     }
 
+    private const string CountTable =
+        "{\"method\":\"crosstab\",\"statistic\":\"count\",\"rows\":[\"F\",\"M\"],\"columns\":[\"n\",\"s\"],\"count\":[[1,1],[1,0]]}";
+    private const string MeanTable =
+        "{\"method\":\"crosstab\",\"statistic\":\"mean\",\"rows\":[\"F\"],\"columns\":[\"n\"],\"count\":[[2]],\"sum\":[[70.5]]}";
+
+    public static TheoryData<string, string?> AcroCases()
+    {
+        var label = new string('x', 1025);
+        return new TheoryData<string, string?>
+        {
+            { $"{{\"tables\":[{CountTable},{MeanTable}]}}", null },
+            { "{\"tables\":[]}", null },
+            { $"{{\"tables\":[{CountTable.Replace("\"count\",\"rows\"", "\"median\",\"rows\"")}]}}", "result.acro.tables[0].statistic" },
+            { $"{{\"tables\":[{CountTable.Replace("\"crosstab\"", "\"ols\"")}]}}", "result.acro.tables[0].method" },
+            { $"{{\"tables\":[{CountTable.Replace("[[1,1],[1,0]]", "[[1,1],[1]]")}]}}", "result.acro.tables[0].count" },
+            { $"{{\"tables\":[{CountTable.Replace("[[1,1],[1,0]]", "[[1,1],[1,-1]]")}]}}", "result.acro.tables[0].count" },
+            { $"{{\"tables\":[{CountTable.Replace("[[1,1],[1,0]]", "[[1,1],[1,0.5]]")}]}}", "result.acro.tables[0].count" },
+            { $"{{\"tables\":[{MeanTable.Replace(",\"sum\":[[70.5]]", "")}]}}", "result.acro.tables[0].sum" },
+            { $"{{\"tables\":[{CountTable.Replace("]]}", "]],\"sum\":[[1,1],[1,0]]}")}]}}", "result.acro.tables[0].sum" },
+            { $"{{\"tables\":[{CountTable.Replace("\"F\",\"M\"", $"\"F\",\"{label}\"")}]}}", "result.acro.tables[0].rows" },
+            { $"{{\"tables\":[{string.Join(",", Enumerable.Repeat(CountTable, 65))}]}}", "result.acro.tables" },
+            { $"{{\"tables\":[{CountTable.Replace("]]}", "]],\"other\":1}")}]}}", "result.acro.tables[0]" },
+            { "{\"tables\":{}}", "result.acro.tables" },
+        };
+    }
+
+    [Theory]
+    [MemberData(nameof(AcroCases))]
+    public void Validate_checks_the_acro_evidence(string acro, string? field)
+    {
+        var result = Validate(Json(result: AnalysisResult.Replace("}}", $"}},\"acro\":{acro}}}")));
+
+        if (field is null)
+        {
+            Assert.True(result.IsValid, result.Message);
+            Assert.Equal(acro, result.AnalysisDocument!.Result.Acro!.Value.GetRawText());
+        }
+        else
+        {
+            Assert.False(result.IsValid);
+            Assert.Contains($"'{field}'", result.Message);
+            Assert.DoesNotContain("xxx", result.Message);
+        }
+    }
+
+    [Fact]
+    public void Serialize_leaves_out_acro_when_there_is_none()
+    {
+        Assert.DoesNotContain("acro", Encoding.UTF8.GetString(FederatedResultDocumentJson.SerializeAnalysis(Doc())));
+    }
+
     [Theory]
     [InlineData("taskId")]
     [InlineData("tre")]

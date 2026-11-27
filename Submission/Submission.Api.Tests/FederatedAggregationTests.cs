@@ -43,7 +43,7 @@ namespace Submission.Api.Tests
         };
 
         /// <summary>A version for tre-a and tre-b with the given outcome; each value released and stored, null for a rejected part.</summary>
-        private FederatedStudyVersion Seed(FederatedStudyOutcome? outcome, string? valueA, string? valueB)
+        private FederatedStudyVersion Seed(FederatedStudyOutcome? outcome, string? valueA, string? valueB, string? acroA = null)
         {
             var version = new FederatedStudyVersion
             {
@@ -78,7 +78,11 @@ namespace Submission.Api.Tests
                     {
                         TaskId = part.TaskId.ToString(), Tre = tre, StudyId = "study-1", Operation = "run-analysis", Dataset = "cohort_2024",
                         DatasetSha256 = new string('d', 64), CompletedAt = Ready,
-                        Result = new FederatedAnalysisResult { N = 1, Value = JsonDocument.Parse(value).RootElement.Clone() }
+                        Result = new FederatedAnalysisResult
+                        {
+                            N = 1, Value = JsonDocument.Parse(value).RootElement.Clone(),
+                            Acro = tre == "tre-a" && acroA != null ? JsonDocument.Parse(acroA).RootElement.Clone() : null
+                        }
                     });
                     part.MoveTo(FederatedTaskPhase.Released, version.SubmittedAt);
                     part.ResultBucket = _store.Bucket;
@@ -143,7 +147,8 @@ namespace Submission.Api.Tests
         [Fact]
         public async Task GetPending_hands_out_ready_versions_with_values_only()
         {
-            var ready = Seed(FederatedStudyOutcome.ReadyForAggregation, "{\"n\":3,\"mean_age\":40}", "{\"n\":1,\"mean_age\":20}");
+            const string acro = "{\"tables\":[{\"method\":\"crosstab\",\"statistic\":\"count\",\"rows\":[\"F\"],\"columns\":[\"n\"],\"count\":[[2]]}]}";
+            var ready = Seed(FederatedStudyOutcome.ReadyForAggregation, "{\"n\":3,\"mean_age\":40}", "{\"n\":1,\"mean_age\":20}", acro);
             Seed(null, "{\"n\":3}", "{\"n\":1}");
             Seed(FederatedStudyOutcome.Incomplete, "{\"n\":3}", null);
             Seed(FederatedStudyOutcome.Aggregated, "{\"n\":3}", "{\"n\":1}");
@@ -153,6 +158,8 @@ namespace Submission.Api.Tests
             Assert.Equal(ready.VersionId, job.VersionId);
             Assert.Equal(("study-1", ready.Version, ready.CodeSha256, ready.TesTaskJson), (job.StudyId, job.Version, job.CodeSha256, job.TesTaskJson));
             Assert.Equal("[{\"n\":3,\"mean_age\":40},{\"n\":1,\"mean_age\":20}]", job.ResultsJson);
+            // The ACRO evidence in the same order, null for a hospital without; the aggregator pools it, aggregate() never sees it.
+            Assert.Equal($"[{acro},null]", job.EvidenceJson);
             // aggregate() sees only ResultsJson. (The task in TesTaskJson names the hospitals; the aggregator reads the code,
             // image and limits from it and never stages it.)
             Assert.DoesNotContain("tre-", job.ResultsJson);

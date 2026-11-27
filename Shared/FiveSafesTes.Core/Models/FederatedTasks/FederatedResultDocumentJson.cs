@@ -119,6 +119,12 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
                 return Invalid("field 'result.n' does not match result.value.n");
             }
 
+            if (result.TryGetProperty("acro", out var acro) && acro.ValueKind != JsonValueKind.Null
+                && FederatedAcroEvidence.Validate(acro) is { } acroProblem)
+            {
+                return Invalid(acroProblem);
+            }
+
             FederatedAnalysisResultDocument? doc;
             try
             {

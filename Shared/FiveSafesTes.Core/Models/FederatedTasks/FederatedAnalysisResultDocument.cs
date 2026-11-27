@@ -21,11 +21,18 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         public FederatedAnalysisResult Result { get; set; } = new();
     }
 
-    /// <summary>What site_analysis returned: <see cref="Value"/> is its dict, <see cref="N"/> its n.</summary>
+    /// <summary>What site_analysis returned: <see cref="Value"/> is its dict, <see cref="N"/> its n, <see cref="Acro"/> its ACRO evidence.</summary>
     public sealed class FederatedAnalysisResult
     {
         public string Kind { get; set; } = "analysis";
         public long N { get; set; }
         public JsonElement Value { get; set; }
+
+        /// <summary>
+        /// ACRO's evidence when the code used site_analysis(df, acro): the counts (and sums) behind each table, which the
+        /// aggregator pools and checks for small numbers. Shape checked by <see cref="FederatedAcroEvidence.Validate"/>.
+        /// </summary>
+        [System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+        public JsonElement? Acro { get; set; }
     }
 }
