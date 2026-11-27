@@ -43,6 +43,20 @@ public class TesRoutesTests
             }
         };
 
+    /// <summary>The TES controller as a hospital's Agent calls it: its Keycloak client, as GetAgentTre reads it.</summary>
+    private static TaskServiceApiController Hospital(ApplicationDbContext db, string tre) =>
+        new(db, new FederatedTaskSettings(), new AgentPollDispatch())
+        {
+            ControllerContext = new ControllerContext
+            {
+                HttpContext = new DefaultHttpContext
+                {
+                    User = new ClaimsPrincipal(new ClaimsIdentity(
+                        [new Claim("azp", tre + "-client"), new Claim("preferred_username", "service-account-" + tre + "-client")], "test"))
+                }
+            }
+        };
+
     private static TesTask Study(string studyId = "study-1", string name = "cohort study")
     {
         var task = FederatedTesProfile.BuildCodeTask("cohort_2024", Code, studyId, "tre-a|tre-b");
@@ -69,8 +83,9 @@ public class TesRoutesTests
     }
 
     [Fact]
-    public void Every_route_but_service_info_needs_the_admin_role()
+    public void Routes_need_the_admin_role_or_for_reading_a_hospitals_login()
     {
+        var reads = new[] { nameof(TaskServiceApiController.ListTasks), nameof(TaskServiceApiController.GetTaskAsync) };
         foreach (var action in typeof(TaskServiceApiController).GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
         {
             var roles = action.GetCustomAttribute<AuthorizeAttribute>()?.Roles;
@@ -80,9 +95,47 @@ public class TesRoutesTests
             }
             else
             {
-                Assert.Equal("dare-control-admin", roles);
+                Assert.Equal(reads.Contains(action.Name) ? "dare-control-admin,dare-tre-admin" : "dare-control-admin", roles);
             }
         }
+    }
+
+    // A hospital fetches its work with the standard ListTasks: its own unfinished parts, never another hospital's, never a
+    // study version.
+    [Fact]
+    public async Task A_hospital_lists_only_its_own_pending_parts()
+    {
+        using var db = NewDb();
+        await Submit(db, "study-1");
+        await Submit(db, "study-2");
+        var mine = db.FederatedTasks.Where(t => t.TreName == "tre-a").Select(t => t.TaskId.ToString()).ToList();
+
+        var list = Json(await Hospital(db, "tre-a").ListTasks(null, null, null, "FULL", default));
+
+        Assert.Equal(mine.Order(), list["tasks"]!.Select(t => (string)t["id"]!).Order());
+        Assert.All(list["tasks"]!, t => Assert.Equal("tre-a", (string?)t["tags"]!["fed.sites"]));
+        Assert.Null((string?)list["next_page_token"]);
+    }
+
+    [Theory]
+    [InlineData("own part", 200)]
+    [InlineData("other hospital's part", 404)]
+    [InlineData("version", 404)]
+    public async Task A_hospital_reads_only_its_own_parts(string what, int status)
+    {
+        using var db = NewDb();
+        var version = await Submit(db);
+        var id = what switch
+        {
+            "own part" => db.FederatedTasks.Single(t => t.TreName == "tre-a").TaskId.ToString(),
+            "other hospital's part" => db.FederatedTasks.Single(t => t.TreName == "tre-b").TaskId.ToString(),
+            _ => version.ToString()
+        };
+
+        var result = await Hospital(db, "tre-a").GetTaskAsync(id, "BASIC", default);
+
+        if (status == 404) AssertError(result, 404, FederatedTaskErrorCodes.TaskNotFound);
+        else Assert.Equal(id, (string?)Json(result)["id"]);
     }
 
     [Fact]

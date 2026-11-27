@@ -28,6 +28,12 @@ namespace Submission.Api.Controllers
     public class TaskServiceApiController : ControllerBase
     {
         private const string AdminRole = "dare-control-admin";
+
+        /// <summary>Reading: an orchestrator admin (study versions) or a hospital's Agent (its own parts only).</summary>
+        private const string ReadRoles = "dare-control-admin,dare-tre-admin";
+
+        /// <summary>Upper bound on parts handed to a hospital in one ListTasks, as FederatedTask/GetPendingTasksForTre.</summary>
+        private const int MaxPendingTasks = 50;
         private const int DefaultPageSize = 256;
 
         private static readonly Dictionary<TesView, JsonSerializerSettings> TesJsonSerializerSettings = new()
@@ -122,9 +128,9 @@ namespace Submission.Api.Controllers
             TesResourcesSupportedBackendParameters = []
         });
 
-        /// <summary>A study version by its id, or one hospital's part by its task id.</summary>
+        /// <summary>A study version by its id, or one hospital's part by its task id; a hospital's Agent reads only its own parts.</summary>
         [HttpGet]
-        [Authorize(Roles = AdminRole)]
+        [Authorize(Roles = ReadRoles)]
         [Route("/v1/tasks/{id}")]
         [SwaggerOperation("GetTask")]
         [SwaggerResponse(statusCode: 200, type: typeof(TesTask), description: "")]
@@ -142,6 +148,15 @@ namespace Submission.Api.Controllers
                 return TaskNotFound();
             }
 
+            // A hospital's Agent reads only its own parts; everything else is not found for it.
+            var hospital = ControllerHelpers.GetAgentTre(User, _db);
+            if (hospital != null)
+            {
+                var own = await _db.FederatedTasks.AsNoTracking().Include(t => t.PhaseChanges)
+                    .FirstOrDefaultAsync(t => t.TaskId == guid && t.TreId == hospital.Id, cancellationToken);
+                return own == null ? TaskNotFound() : TesJson(PartTask(own), viewEnum);
+            }
+
             var version = await _db.FederatedStudyVersions.AsNoTracking().Include(v => v.Parts)
                 .FirstOrDefaultAsync(v => v.VersionId == guid, cancellationToken);
             if (version != null)
@@ -156,20 +171,15 @@ namespace Submission.Api.Controllers
                 return TaskNotFound();
             }
 
-            // A hospital's part shows its phase, never its result's hash or location: a small JSON result could be guessed
-            // from its hash, and TES clients such as DAAMS sit close to the researcher.
-            var partTask = part.ToTesTask();
-            foreach (var key in new[] { "result_bucket", "result_key", "result_sha256" })
-            {
-                partTask.Logs?.FirstOrDefault()?.Metadata?.Remove(key);
-            }
-
-            return TesJson(partTask, viewEnum);
+            return TesJson(PartTask(part), viewEnum);
         }
 
-        /// <summary>Study versions, newest first. Hospitals' parts are listed in their version's metadata.</summary>
+        /// <summary>
+        /// For an admin, study versions, newest first (hospitals' parts are in their version's metadata). For a hospital's
+        /// Agent, its own pending parts: how a hospital fetches its work with a standard TES call.
+        /// </summary>
         [HttpGet]
-        [Authorize(Roles = AdminRole)]
+        [Authorize(Roles = ReadRoles)]
         [Route("/v1/tasks")]
         [SwaggerOperation("ListTasks")]
         [SwaggerResponse(statusCode: 200, type: typeof(TesListTasksResponse), description: "")]
@@ -186,6 +196,14 @@ namespace Submission.Api.Controllers
             {
                 return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask,
                     "page_size must be more than 0 and less than 2048; it defaults to 256");
+            }
+
+            // A hospital's Agent: its pending parts, most urgent first, as it polls for work (at most 50, one page).
+            var hospital = ControllerHelpers.GetAgentTre(User, _db);
+            if (hospital != null)
+            {
+                var pending = await FederatedHospitalTasks.PendingAsync(_db, hospital, MaxPendingTasks, cancellationToken);
+                return TesJson(new TesListTasksResponse { Tasks = pending.Select(PartTask).ToList() }, viewEnum);
             }
 
             var start = 0;
@@ -207,6 +225,21 @@ namespace Submission.Api.Controllers
                 ? Microsoft.AspNetCore.Authentication.Base64UrlTextEncoder.Encode(Encoding.UTF8.GetBytes((start + size).ToString(CultureInfo.InvariantCulture)))
                 : null;
             return TesJson(new TesListTasksResponse { Tasks = page, NextPageToken = next }, viewEnum);
+        }
+
+        /// <summary>
+        /// A hospital's part as a TES task, without its result's hash or location: a small JSON result could be guessed from
+        /// its hash, and TES clients such as DAAMS sit close to the researcher. A hospital's own Agent never needs them.
+        /// </summary>
+        private static TesTask PartTask(FederatedTask part)
+        {
+            var task = part.ToTesTask();
+            foreach (var key in new[] { "result_bucket", "result_key", "result_sha256" })
+            {
+                task.Logs?.FirstOrDefault()?.Metadata?.Remove(key);
+            }
+
+            return task;
         }
 
         private static bool TryReadToken(string token, out int start)

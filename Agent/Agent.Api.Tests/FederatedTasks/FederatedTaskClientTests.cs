@@ -197,13 +197,14 @@ public class FederatedTaskClientTests
     [Fact]
     public async Task GetPending_deserializes_tes_tasks_with_bearer_token()
     {
-        var handler = new StubHandler(HttpStatusCode.OK, "[{\"id\":\"t1\",\"state\":\"QUEUED\"}]");
+        // The standard TES ListTasks response: the hospital's pending parts, filtered by its login.
+        var handler = new StubHandler(HttpStatusCode.OK, "{\"tasks\":[{\"id\":\"t1\",\"state\":\"QUEUED\"}]}");
 
         var tasks = await Client(handler).GetPendingAsync();
 
         Assert.Equal("t1", Assert.Single(tasks).Id);
         Assert.Equal("fake-token", handler.Request!.Headers.Authorization!.Parameter);
-        Assert.Equal("http://submission/api/FederatedTask/GetPendingTasksForTre", handler.Request.RequestUri!.ToString());
+        Assert.Equal("http://submission/v1/tasks?view=FULL", handler.Request.RequestUri!.ToString());
     }
 
     private sealed class ThrowingTokens : IFederatedTokenSource

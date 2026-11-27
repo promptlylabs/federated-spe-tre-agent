@@ -80,27 +80,7 @@ namespace Submission.Api.Controllers
                 return Forbid();
             }
 
-            var treName = tre.Name.ToLower();
-
-            // The Agent refuses tasks whose fed.sites is not its own name and leaves them as they are. Tasks enqueued under a
-            // name the TRE no longer has would stay unfinished forever and fill the list, so they are not handed out;
-            // except a canceling task, which the Agent cleans up before any name check (the rename sweep skips it too).
-            // ToTesTask reads the history. Without the Include, lazy loading would run one query per task.
-            var tasks = await _DbContext.FederatedTasks
-                .AsNoTracking()
-                .Include(x => x.PhaseChanges)
-                .Where(x => x.TreId == tre.Id && (x.TreName == treName || x.Phase == FederatedTaskPhase.Canceling))
-                .Where(FederatedTaskPhases.IsUnfinishedTask)
-                // Cancelled first (the hospital cleans up), then running (the Agent may need to resume it), then
-                // queued, then waiting: waiting tasks are only polled for their approval outcome, so they must not
-                // crowd out tasks that need action.
-                .OrderBy(x => x.Phase == FederatedTaskPhase.Canceling ? 0
-                    : x.Phase == FederatedTaskPhase.Running ? 1
-                    : x.Phase == FederatedTaskPhase.Queued ? 2 : 3)
-                .ThenBy(x => x.SubmittedAt)
-                .Take(MaxPendingTasks)
-                .ToListAsync(cancellationToken);
-
+            var tasks = await FederatedHospitalTasks.PendingAsync(_DbContext, tre, MaxPendingTasks, cancellationToken);
             return Ok(tasks.Select(x => x.ToTesTask()).ToList());
         }
 
