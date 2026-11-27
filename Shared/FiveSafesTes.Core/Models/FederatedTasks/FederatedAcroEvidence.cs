@@ -92,6 +92,12 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
                 return $"field '{at}.{name}' must be 1 to {MaxLabels} labels of at most {FederatedResultLimits.MaxStringLength} characters";
             }
 
+            // Two rows or columns with one label would be added into one pooled cell.
+            if (labels.EnumerateArray().Select(l => l.GetString()).Distinct(StringComparer.Ordinal).Count() != labels.GetArrayLength())
+            {
+                return $"field '{at}.{name}' has a label twice";
+            }
+
             return null;
         }
 

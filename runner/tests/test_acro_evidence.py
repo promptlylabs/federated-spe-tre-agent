@@ -115,3 +115,13 @@ def test_margins_are_recognised_by_their_sums_whatever_their_name(tmp_path):
                        analysis="FrequencyTable")
     with pytest.raises(AnalysisError, match="margins are not supported"):
         read_evidence(folder)
+
+
+def test_a_session_that_ends_the_run_while_finalising_is_an_invalid_result(tmp_path, make_code, make_dataset):
+    doc = _run(tmp_path, make_code, make_dataset,
+               "def site_analysis(df, acro):\n"
+               "    def finalise(*args, **kwargs):\n"
+               "        raise SystemExit(0)\n"
+               "    acro.finalise = finalise\n"
+               "    return {'n': len(df)}\n")
+    assert (doc["status"], doc["code"]) == ("error", "invalid_result")

@@ -45,8 +45,9 @@ def _evidence(session) -> dict | None:
         return acro_evidence.collect(session)
     except AnalysisError:
         raise
-    # The session is the researcher's object while their code runs, so a failure here is reported like their code's.
-    except Exception:
+    # The session is the researcher's object while their code runs, so a failure here is reported like their code's,
+    # sys.exit included (as in researcher.py).
+    except BaseException:
         raise AnalysisError("invalid_result", "ACRO's evidence could not be written") from None
 
 

@@ -122,6 +122,7 @@ public class FederatedResultDocumentTests
             { $"{{\"tables\":[{string.Join(",", Enumerable.Repeat(CountTable, 65))}]}}", "result.acro.tables" },
             { $"{{\"tables\":[{CountTable.Replace("]]}", "]],\"other\":1}")}]}}", "result.acro.tables[0]" },
             { "{\"tables\":{}}", "result.acro.tables" },
+            { $"{{\"tables\":[{CountTable.Replace("\"F\",\"M\"", "\"F\",\"F\"")}]}}", "result.acro.tables[0].rows" },
         };
     }
 

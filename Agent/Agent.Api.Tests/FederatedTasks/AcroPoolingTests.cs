@@ -107,6 +107,8 @@ public class AcroPoolingTests
         Evidence(Hospital(Table("count", Sexes, Age, [[20], [20]])), Hospital()),
         Evidence(Hospital(Table("count", Sexes, Age, [[20], [20]])), Hospital(Table("sum", Sexes, Age, [[20], [20]], [[1.0], [1.0]]))),
         Evidence(Hospital(Table("count", Sexes, Age, [[20], [20]])), Hospital(Table("count", Sexes, Age, [[20], [20]], method: "crosstab"))),
+        // Two finite sums whose total is not a number JSON can hold.
+        Evidence(Hospital(Table("sum", Sexes, Age, [[20], [20]], [[1e308], [1.0]])), Hospital(Table("sum", Sexes, Age, [[20], [20]], [[1e308], [1.0]]))),
     };
 
     [Theory]

@@ -197,7 +197,7 @@ This proposal changes layer 1. It keeps layers 2 and 3.
 - An automatic check that `aggregate()` does not release one hospital's values unchanged.
 - The number of hospitals in the study, and ACRO's view of each table, in the Egress app.
 - The history of the queries of a study and a limit on runs per study, against differencing (Dev 15 RF-OUT-02 and RF-OUT-03).
-- The SPE tools: the dry run before submission and the templates use ACRO.
+- The SPE templates (`analysis.py` and the notebook) show how to use ACRO. The dry run before submission already gives the code a federated session, as the hospital does.
 
 ## 11. Limits
 

@@ -84,6 +84,11 @@ namespace Agent.Api.FederatedTasks
                 }
             }
 
+            if (sums.Cast<double>().Any(v => !double.IsFinite(v)))
+            {
+                throw new AcroPoolingException($"ACRO table {position + 1} has sums too large to add up");
+            }
+
             var withheldCells = new bool[rows.Count, columns.Count];
             for (var r = 0; r < rows.Count; r++)
             {
