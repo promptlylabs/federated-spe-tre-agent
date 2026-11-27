@@ -238,6 +238,8 @@ services:
       TreKeyCloakSettings__MetadataAddress: http://keycloak:8080/realms/tre-test/.well-known/openid-configuration
       FederatedTaskSettings__Role: Aggregator
       FederatedTaskSettings__ApprovedImages: "python-runner:1"
+      # Pooled results and pooled ACRO cells based on fewer people are withheld (ANZE-6142).
+      FederatedTaskSettings__SmallNumberMinimum: "10"
       FederatedTaskSettings__MaxRunMinutes: "5"
       JobSettings__federatedTaskSchedule: "1"
       JobSettings__syncSchedule: "0"

@@ -143,6 +143,20 @@ public class FederatedTaskSettingsTests
         Assert.Equal(["other:1"], settings.ApprovedImages);
     }
 
+    [Theory]
+    [InlineData(null, 10, false)]
+    [InlineData(5, 5, false)]
+    [InlineData(0, 1, true)]
+    [InlineData(-3, 1, true)]
+    public void SmallNumberMinimum_is_at_least_1(int? configured, int used, bool problem)
+    {
+        var settings = new FederatedTaskSettings { Role = FederatedTaskSettings.AggregatorRole };
+        if (configured is { } value) settings.SmallNumberMinimum = value;
+
+        Assert.Equal(used, settings.PooledMinimum);
+        Assert.Equal(problem, settings.RunSettingsProblem()?.Contains("SmallNumberMinimum") == true);
+    }
+
     [Fact]
     public void RunSettingsProblem_NullForDefaults() =>
         Assert.Null(new FederatedTaskSettings().RunSettingsProblem());

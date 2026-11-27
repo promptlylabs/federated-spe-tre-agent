@@ -33,6 +33,7 @@ namespace Submission.Api.Controllers
             [FederatedTaskErrorCodes.CodeError] = "aggregate() could not be imported, is missing, or raised an exception",
             [FederatedTaskErrorCodes.InvalidResult] = "aggregate() returned a value the orchestrator cannot accept",
             [FederatedTaskErrorCodes.ResultTooLarge] = "aggregate() returned a result larger than the limit",
+            [FederatedTaskErrorCodes.SmallNumbers] = "the pooled result would be based on fewer people than the minimum",
             [FederatedTaskErrorCodes.Timeout] = "aggregate() ran longer than the orchestrator's limit",
             [FederatedTaskErrorCodes.OutOfMemory] = "aggregate() ran out of memory",
             [FederatedTaskErrorCodes.RunFailed] = "the pooling run ended without a result; an admin can retry",

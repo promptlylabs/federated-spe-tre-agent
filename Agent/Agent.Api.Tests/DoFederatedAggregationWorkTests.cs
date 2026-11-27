@@ -54,7 +54,8 @@ public class DoFederatedAggregationWorkTests
 
     private static string Sha(string text) => Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(text)));
 
-    private FederatedAggregationJob Job(string code = Code, string? codeSha = null, string? tagSha = null, string image = Image)
+    private FederatedAggregationJob Job(string code = Code, string? codeSha = null, string? tagSha = null, string image = Image,
+        string results = "[{\"n\":30,\"mean_age\":40.0},{\"n\":10,\"mean_age\":20.0}]")
     {
         var task = FederatedTesProfile.BuildCodeTask("cohort_2024", code, "study-1", "tre-a|tre-b");
         task.Executors![0].Image = image;
@@ -62,7 +63,7 @@ public class DoFederatedAggregationWorkTests
         var job = new FederatedAggregationJob
         {
             VersionId = Guid.NewGuid(), StudyId = "study-1", Version = 1, TesTaskJson = JsonConvert.SerializeObject(task),
-            CodeSha256 = codeSha ?? Sha(code), ResultsJson = "[{\"n\":3,\"mean_age\":40.0},{\"n\":1,\"mean_age\":20.0}]"
+            CodeSha256 = codeSha ?? Sha(code), ResultsJson = results
         };
         _client.Jobs.Add(job);
         return job;
@@ -84,6 +85,7 @@ public class DoFederatedAggregationWorkTests
     [InlineData("image", "image_not_approved")]
     [InlineData("scan", "unsafe_code")]
     [InlineData("scanner", "internal_error")]
+    [InlineData("small", "small_numbers")]   // pooled n 3 + 1 below the minimum of 10: aggregate() never runs
     public async Task Refuses_before_staging_anything(string what, string code)
     {
         _scanner.Result = what switch
@@ -97,6 +99,7 @@ public class DoFederatedAggregationWorkTests
             "code" => Job(codeSha: new string('0', 64)),
             "tag" => Job(tagSha: new string('0', 64)),
             "image" => Job(image: "python:3.12"),
+            "small" => Job(results: "[{\"n\":3},{\"n\":1}]"),
             _ => Job()
         };
 

@@ -145,6 +145,15 @@ namespace Agent.Api
                 return;
             }
 
+            // The hospitals' own n, not aggregate()'s: a study too small to release is refused before any code runs.
+            if (PooledN(job.ResultsJson) is var pooledN && pooledN < _settings.PooledMinimum)
+            {
+                Log.Warning("Federated aggregation: study version {VersionId} pools {N} people, below the minimum of {Minimum}; it is not run",
+                    id, pooledN, _settings.PooledMinimum);
+                await _client.ReportAggregationAsync(new FederatedAggregationReport(id, FederatedAggregationPhases.Failed, FederatedTaskErrorCodes.SmallNumbers), null);
+                return;
+            }
+
             var image = task.Executors?.FirstOrDefault()?.Image;
             if (image == null || !_settings.ApprovedImages.Contains(image, StringComparer.Ordinal))
             {
@@ -190,6 +199,14 @@ namespace Agent.Api
                 [new StagedFile(CodeFile, codeStream), new StagedFile(ResultsFile, resultsStream)],
                 cpu, memory, tmp, AggregateCommand), CancellationToken.None);
             Log.Information("Federated aggregation: started pooling study version {VersionId}", id);
+        }
+
+        /// <summary>The sum of the hospitals' n (Submission checked each is a non-negative integer when it was reported).</summary>
+        private static long PooledN(string resultsJson)
+        {
+            using var results = JsonDocument.Parse(resultsJson);
+            return results.RootElement.EnumerateArray()
+                .Sum(r => r.TryGetProperty("n", out var n) && n.TryGetInt64(out var value) ? value : 0);
         }
 
         /// <summary>The failure code, or null with the pooled document.</summary>

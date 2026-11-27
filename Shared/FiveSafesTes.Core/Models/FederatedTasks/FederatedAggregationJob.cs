@@ -49,7 +49,8 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             FederatedTaskErrorCodes.InvalidTask, FederatedTaskErrorCodes.ImageNotApproved, FederatedTaskErrorCodes.UnsafeCode,
             FederatedTaskErrorCodes.CodeError,
             FederatedTaskErrorCodes.InvalidResult, FederatedTaskErrorCodes.ResultTooLarge, FederatedTaskErrorCodes.Timeout,
-            FederatedTaskErrorCodes.OutOfMemory, FederatedTaskErrorCodes.RunFailed, FederatedTaskErrorCodes.InternalError
+            FederatedTaskErrorCodes.OutOfMemory, FederatedTaskErrorCodes.RunFailed, FederatedTaskErrorCodes.InternalError,
+            FederatedTaskErrorCodes.SmallNumbers
         };
     }
 }
