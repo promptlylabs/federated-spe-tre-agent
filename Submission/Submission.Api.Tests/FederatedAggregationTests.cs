@@ -114,11 +114,17 @@ namespace Submission.Api.Tests
             Assert.Equal(code, Assert.IsType<FederatedApiError>(obj.Value).ErrorCode);
         }
 
-        private static byte[] Pooled(FederatedStudyVersion v, int sites = 2, long n = 4, string value = "{\"n\":4,\"mean_age\":35.0}") =>
+        private const string Checks = "{\"minimum\":10,\"withheldCells\":0,\"valueChecked\":false}";
+
+        private static byte[] Pooled(FederatedStudyVersion v, int sites = 2, long n = 4, string value = "{\"n\":4,\"mean_age\":35.0}",
+            string? checks = Checks) =>
             Encoding.UTF8.GetBytes(JsonSerializer.Serialize(new
             {
                 schemaVersion = 1, studyId = v.StudyId, version = v.Version, versionId = v.VersionId, codeSha256 = v.CodeSha256,
-                sites, completedAt = Ready, result = new { kind = "aggregate", n, value = JsonDocument.Parse(value).RootElement }
+                sites, completedAt = Ready,
+                result = checks == null
+                    ? (object)new { kind = "aggregate", n, value = JsonDocument.Parse(value).RootElement, tables = Array.Empty<object>() }
+                    : new { kind = "aggregate", n, value = JsonDocument.Parse(value).RootElement, tables = Array.Empty<object>(), checks = JsonDocument.Parse(checks).RootElement }
             }));
 
         private static IFormFile File(byte[] bytes) => new FormFile(new MemoryStream(bytes), 0, bytes.Length, FederatedReportFields.ResultFile, "pooled.json");
@@ -231,6 +237,8 @@ namespace Submission.Api.Tests
         [InlineData("sites")]
         [InlineData("n")]
         [InlineData("kind")]
+        [InlineData("no checks")]
+        [InlineData("value checked")]
         [InlineData("none")]
         public async Task Aggregated_with_a_document_that_does_not_match_is_refused(string wrong)
         {
@@ -242,6 +250,9 @@ namespace Submission.Api.Tests
                 "sites" => Pooled(version, sites: 3),
                 "n" => Pooled(version, n: 5),
                 "kind" => Encoding.UTF8.GetBytes(Encoding.UTF8.GetString(Pooled(version)).Replace("\"aggregate\"", "\"analysis\"")),
+                // The marker that aggregate()'s values were not checked for small numbers must be there, and must say so.
+                "no checks" => Pooled(version, checks: null),
+                "value checked" => Pooled(version, checks: Checks.Replace("false", "true")),
                 _ => null
             };
 

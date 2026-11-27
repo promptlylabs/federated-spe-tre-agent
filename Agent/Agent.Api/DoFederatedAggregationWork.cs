@@ -282,6 +282,17 @@ namespace Agent.Api
                 sites = results.RootElement.GetArrayLength();
             }
 
+            // The ACRO tables are pooled here, in the aggregator's own process: the researcher's code has no part in it.
+            AcroPoolingResult tables;
+            try
+            {
+                tables = AcroPooling.Pool(job.EvidenceJson, _settings.PooledMinimum);
+            }
+            catch (AcroPoolingException e)
+            {
+                return Invalid(id, e.Message);
+            }
+
             var pooled = new FederatedPooledResultDocument
             {
                 StudyId = job.StudyId,
@@ -292,8 +303,18 @@ namespace Agent.Api
                 // When the run finished, not when it was collected: a report sent again is the same bytes, stored under the
                 // same key.
                 CompletedAt = state.FinishedAt ?? _clock.GetUtcNow(),
-                Result = new FederatedPooledResult { N = n, Value = value.Clone() }
+                Result = new FederatedPooledResult
+                {
+                    N = n, Value = value.Clone(), Tables = tables.Tables,
+                    Checks = new FederatedPooledChecks { Minimum = _settings.PooledMinimum, WithheldCells = tables.WithheldCells, ValueChecked = false }
+                }
             }.Serialize();
+
+            if (pooled.Length > FederatedResultLimits.MaxResultBytes)
+            {
+                Log.Warning("Federated aggregation: the pooled result of study version {VersionId} is {Bytes} bytes, over the limit", id, pooled.Length);
+                return (FederatedTaskErrorCodes.ResultTooLarge, null);
+            }
 
             // Checked as Submission will, so a document it would refuse fails here with a code instead of being re-sent.
             var version = new FederatedStudyVersion { VersionId = job.VersionId, StudyId = job.StudyId, Version = job.Version, CodeSha256 = job.CodeSha256 };

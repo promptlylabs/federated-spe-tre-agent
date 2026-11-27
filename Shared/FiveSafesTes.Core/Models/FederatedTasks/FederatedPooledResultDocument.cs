@@ -3,7 +3,8 @@ using System.Text.Json;
 namespace FiveSafesTes.Core.Models.FederatedTasks
 {
     /// <summary>
-    /// The pooled result of a study version: what the researcher's aggregate() returned. <see cref="Sites"/> is how many
+    /// The pooled result of a study version: what the researcher's aggregate() returned, the pooled ACRO tables and the
+    /// small-number checks applied. <see cref="Sites"/> is how many
     /// hospital results went in, never which. Stored under <c>studies/&lt;versionId&gt;/&lt;sha256&gt;.json</c>.
     /// </summary>
     public sealed class FederatedPooledResultDocument
@@ -76,6 +77,16 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
                 return "field 'result.n' does not match result.value.n";
             }
 
+            if (doc.Result.Tables.ValueKind != JsonValueKind.Array)
+            {
+                return "field 'result.tables' must be an array";
+            }
+
+            if (doc.Result.Checks is not { Minimum: >= 1, WithheldCells: >= 0, ValueChecked: false })
+            {
+                return "field 'result.checks' must give the minimum, the withheld cells and valueChecked false";
+            }
+
             if (doc.VersionId != version.VersionId || doc.StudyId != version.StudyId || doc.Version != version.Version
                 || doc.CodeSha256 != version.CodeSha256)
             {
@@ -95,6 +106,26 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
     {
         public string Kind { get; set; } = "aggregate";
         public long N { get; set; }
+
+        /// <summary>What aggregate() returned. Not checked for small numbers (<see cref="FederatedPooledChecks.ValueChecked"/>).</summary>
         public JsonElement Value { get; set; }
+
+        /// <summary>The pooled ACRO tables, with the cells below the minimum withheld (null); [] when there are none.</summary>
+        public JsonElement Tables { get; set; }
+
+        public FederatedPooledChecks? Checks { get; set; }
+    }
+
+    /// <summary>The small-number checks the aggregator applied to the pooled result.</summary>
+    public sealed class FederatedPooledChecks
+    {
+        /// <summary>The fewest people a pooled cell (and the pooled result) may be based on.</summary>
+        public int Minimum { get; set; }
+
+        /// <summary>How many cells of the pooled ACRO tables were withheld.</summary>
+        public int WithheldCells { get; set; }
+
+        /// <summary>Always false: aggregate()'s values are not checked for small numbers; a person reviews them.</summary>
+        public bool ValueChecked { get; set; }
     }
 }
