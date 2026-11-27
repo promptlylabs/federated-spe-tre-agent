@@ -50,6 +50,28 @@ namespace Data_Egress_UI.Helpers
             return rows;
         }
 
+        /// <summary>
+        /// The researcher's aggregate() function, for the "How your result will be combined" block: from the line that starts
+        /// with "def aggregate(" up to the next non-blank line at column 0 that is not a comment or decorator. Null when the
+        /// code has no such line. The full code is shown above it, so a function this misses is still reviewable.
+        /// </summary>
+        public static string? AggregateFunction(string? code)
+        {
+            if (string.IsNullOrEmpty(code)) return null;
+            var lines = code.Replace("\r\n", "\n").Split('\n');
+            var start = Array.FindIndex(lines, l => l.StartsWith("def aggregate(", StringComparison.Ordinal));
+            if (start < 0) return null;
+            var end = start + 1;
+            while (end < lines.Length)
+            {
+                var line = lines[end];
+                if (line.Length > 0 && !char.IsWhiteSpace(line[0]) && line[0] != '#' && line[0] != '@') break;
+                end++;
+            }
+
+            return string.Join("\n", lines[start..end]).TrimEnd();
+        }
+
         /// <summary>True when the orchestrator sent no study details and no data permit.</summary>
         public static bool NothingProvided(FederatedStudy? study) =>
             study == null || StudyRows(study).Count == 0;
