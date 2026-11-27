@@ -28,6 +28,8 @@ public class AcroPoolingTests
     private static readonly string[] Sexes = ["F", "M"];
     private static readonly string[] Age = ["age"];
 
+    private static readonly string[] ThreeSexes = ["F", "M", "X"];
+
     public static TheoryData<string, string, string, int> Cases() => new()
     {
         {
@@ -37,17 +39,33 @@ public class AcroPoolingTests
             0
         },
         {
-            "withheld",
+            // The pooled n is released, so a table's only withheld cell would be n minus the released cells: the smallest
+            // released cell (F 11) is withheld with it.
+            "one withheld, so a second",
             Evidence(Hospital(Table("count", Sexes, Age, [[2], [1]])), Hospital(Table("count", Sexes, Age, [[9], [3]]))),
-            """[{"method":"pivot_table","statistic":"count","rows":["F","M"],"columns":["age"],"cells":[[11],[null]],"rowTotals":[11,null],"columnTotals":[11],"total":11}]""",
-            1
+            """[{"method":"pivot_table","statistic":"count","rows":["F","M"],"columns":["age"],"cells":[[null],[null]],"rowTotals":[null,null],"columnTotals":[null],"total":null}]""",
+            2
         },
         {
+            "two withheld, none more",
+            Evidence(Hospital(Table("count", ThreeSexes, Age, [[20], [1], [2]])), Hospital(Table("count", ThreeSexes, Age, [[15], [3], [1]]))),
+            """[{"method":"pivot_table","statistic":"count","rows":["F","M","X"],"columns":["age"],"cells":[[35],[null],[null]],"rowTotals":[35,null,null],"columnTotals":[35],"total":35}]""",
+            2
+        },
+        {
+            // Sorted, not in the order the hospitals listed them ("east" last would show the first hospital had none). south
+            // (5) is withheld, then east (15), the smallest released cell, so south is not n minus the rest.
             "labels differ",
             Evidence(Hospital(Table("count", ["north", "south"], ["x"], [[20], [3]], method: "crosstab")),
-                Hospital(Table("count", ["north", "east"], ["x"], [[20], [15]], method: "crosstab"))),
-            """[{"method":"crosstab","statistic":"count","rows":["north","south","east"],"columns":["x"],"cells":[[40],[null],[15]],"rowTotals":[40,null,15],"columnTotals":[55],"total":55}]""",
-            1
+                Hospital(Table("count", ["east", "north", "south"], ["x"], [[15], [20], [2]], method: "crosstab"))),
+            """[{"method":"crosstab","statistic":"count","rows":["east","north","south"],"columns":["x"],"cells":[[null],[40],[null]],"rowTotals":[null,40,null],"columnTotals":[40],"total":40}]""",
+            2
+        },
+        {
+            "numeric labels sort as numbers",
+            Evidence(Hospital(Table("count", ["10", "9"], ["x"], [[20], [20]])), Hospital(Table("count", ["100"], ["x"], [[20]]))),
+            """[{"method":"pivot_table","statistic":"count","rows":["9","10","100"],"columns":["x"],"cells":[[20],[20],[20]],"rowTotals":[20,20,20],"columnTotals":[60],"total":60}]""",
+            0
         },
         {
             "all withheld",
@@ -57,15 +75,17 @@ public class AcroPoolingTests
         },
         {
             "mean",
-            Evidence(Hospital(Table("mean", Sexes, Age, [[2], [1]], [[60.0], [50.0]])), Hospital(Table("mean", Sexes, Age, [[9], [3]], [[270.0], [90.0]]))),
-            """[{"method":"pivot_table","statistic":"mean","rows":["F","M"],"columns":["age"],"cells":[[30.0],[null]]}]""",
-            1
+            Evidence(Hospital(Table("mean", ThreeSexes, Age, [[20], [1], [2]], [[600.0], [50.0], [80.0]])),
+                Hospital(Table("mean", ThreeSexes, Age, [[15], [3], [1]], [[450.0], [90.0], [40.0]]))),
+            """[{"method":"pivot_table","statistic":"mean","rows":["F","M","X"],"columns":["age"],"cells":[[30.0],[null],[null]]}]""",
+            2
         },
         {
             "sum",
-            Evidence(Hospital(Table("sum", Sexes, Age, [[2], [1]], [[60.0], [50.0]])), Hospital(Table("sum", Sexes, Age, [[9], [3]], [[270.0], [90.0]]))),
-            """[{"method":"pivot_table","statistic":"sum","rows":["F","M"],"columns":["age"],"cells":[[330.0],[null]],"rowTotals":[330.0,null],"columnTotals":[330.0],"total":330.0}]""",
-            1
+            Evidence(Hospital(Table("sum", ThreeSexes, Age, [[20], [1], [2]], [[600.0], [50.0], [80.0]])),
+                Hospital(Table("sum", ThreeSexes, Age, [[15], [3], [1]], [[450.0], [90.0], [40.0]]))),
+            """[{"method":"pivot_table","statistic":"sum","rows":["F","M","X"],"columns":["age"],"cells":[[1050.0],[null],[null]],"rowTotals":[1050.0,null,null],"columnTotals":[1050.0],"total":1050.0}]""",
+            2
         },
         { "no evidence", Evidence(null, null), "[]", 0 },
     };

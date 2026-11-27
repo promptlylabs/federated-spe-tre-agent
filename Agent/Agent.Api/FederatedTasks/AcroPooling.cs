@@ -11,9 +11,10 @@ namespace Agent.Api.FederatedTasks
 
     /// <summary>
     /// Pools the hospitals' ACRO evidence (see FederatedAcroEvidence) in the aggregator's own process, with no researcher
-    /// code: for each table, the union of the hospitals' labels (a label missing at a hospital counts 0 there), the summed
+    /// code: for each table, the union of the hospitals' labels, sorted (a label missing at a hospital counts 0 there), the summed
     /// counts and sums, and means as pooled sum over pooled count. A cell whose pooled count is below the minimum is
-    /// withheld (null), with its statistic. Count and sum tables get row, column and grand totals over the released cells
+    /// withheld (null), with its statistic; a table never keeps exactly one withheld cell (secondary suppression: the smallest
+    /// released cell is withheld too). Count and sum tables get row, column and grand totals over the released cells
     /// only (null when none is released), as ACRO recalculates margins; mean tables get none.
     /// </summary>
     public static class AcroPooling
@@ -83,13 +84,36 @@ namespace Agent.Api.FederatedTasks
                 }
             }
 
+            var withheldCells = new bool[rows.Count, columns.Count];
+            for (var r = 0; r < rows.Count; r++)
+            {
+                for (var c = 0; c < columns.Count; c++)
+                {
+                    withheldCells[r, c] = counts[r, c] < minimum;
+                }
+            }
+
+            // Secondary suppression: the pooled n is released, so a table with exactly one withheld cell would give it away
+            // (n minus the released cells, when the table covers everyone). The smallest released cell is withheld with it.
+            if (withheldCells.Cast<bool>().Count(w => w) == 1)
+            {
+                var smallest = Enumerable.Range(0, rows.Count).SelectMany(r => Enumerable.Range(0, columns.Count).Select(c => (r, c)))
+                    .Where(rc => !withheldCells[rc.r, rc.c])
+                    .OrderBy(rc => counts[rc.r, rc.c]).ThenBy(rc => rc.r).ThenBy(rc => rc.c)
+                    .Cast<(int r, int c)?>().FirstOrDefault();
+                if (smallest is { } cell)
+                {
+                    withheldCells[cell.r, cell.c] = true;
+                }
+            }
+
             var withheld = 0;
             var cells = new double?[rows.Count, columns.Count];
             for (var r = 0; r < rows.Count; r++)
             {
                 for (var c = 0; c < columns.Count; c++)
                 {
-                    if (counts[r, c] < minimum)
+                    if (withheldCells[r, c])
                     {
                         withheld++;
                         continue;
@@ -139,9 +163,18 @@ namespace Agent.Api.FederatedTasks
         private static List<string> Labels(JsonElement table, string name) =>
             table.GetProperty(name).EnumerateArray().Select(l => l.GetString()!).ToList();
 
-        /// <summary>The labels of all hospitals, each once, in the order first seen (hospitals in fed.sites order).</summary>
-        private static List<string> Union(List<JsonElement> parts, string name) =>
-            parts.SelectMany(p => Labels(p, name)).Distinct(StringComparer.Ordinal).ToList();
+        /// <summary>
+        /// The labels of all hospitals, each once, sorted: as numbers when every label is one, else ordinally. Never in the
+        /// order the hospitals listed them, which would show which hospital had a category.
+        /// </summary>
+        private static List<string> Union(List<JsonElement> parts, string name)
+        {
+            var labels = parts.SelectMany(p => Labels(p, name)).Distinct(StringComparer.Ordinal).ToList();
+            var numeric = labels.All(l => double.TryParse(l, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out _));
+            return numeric
+                ? labels.OrderBy(l => double.Parse(l, System.Globalization.CultureInfo.InvariantCulture)).ThenBy(l => l, StringComparer.Ordinal).ToList()
+                : labels.OrderBy(l => l, StringComparer.Ordinal).ToList();
+        }
 
         private static JsonElement ToElement(JsonArray tables) => JsonSerializer.SerializeToElement(tables);
     }

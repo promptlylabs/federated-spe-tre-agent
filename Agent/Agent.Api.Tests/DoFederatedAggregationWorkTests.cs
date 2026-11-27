@@ -183,8 +183,9 @@ public class DoFederatedAggregationWorkTests
         await Work().Execute();
 
         var result = JsonDocument.Parse(_client.Reports[^1].File!).RootElement.GetProperty("result");
-        Assert.Equal("[[11],[null]]", result.GetProperty("tables")[0].GetProperty("cells").GetRawText());
-        Assert.Equal(1, result.GetProperty("checks").GetProperty("withheldCells").GetInt32());
+        // M (4) is withheld, then F (11) with it, so M is not the pooled n minus F.
+        Assert.Equal("[[null],[null]]", result.GetProperty("tables")[0].GetProperty("cells").GetRawText());
+        Assert.Equal(2, result.GetProperty("checks").GetProperty("withheldCells").GetInt32());
     }
 
     [Theory]
