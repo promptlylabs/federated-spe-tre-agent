@@ -40,14 +40,15 @@ namespace Agent.Api.FederatedTasks
 
         public async Task<List<TesTask>> GetPendingAsync()
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, Url("/api/FederatedTask/GetPendingTasksForTre"));
+            // The standard TES ListTasks: with this Agent's login, Submission lists this hospital's pending parts.
+            using var request = new HttpRequestMessage(HttpMethod.Get, Url("/v1/tasks?view=FULL"));
             await Authorize(request);
 
             using var response = await _httpClientFactory.CreateClient().SendAsync(request);
             response.EnsureSuccessStatusCode();
 
             var body = await response.Content.ReadAsStringAsync();
-            return JsonConvert.DeserializeObject<List<TesTask>>(body) ?? new List<TesTask>();
+            return JsonConvert.DeserializeObject<TesListTasksResponse>(body)?.Tasks ?? new List<TesTask>();
         }
 
         public async Task<FederatedReportOutcome> ReportAsync(FederatedTaskResultReport report, byte[]? resultFile)

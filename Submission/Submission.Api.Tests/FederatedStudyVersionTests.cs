@@ -1,5 +1,8 @@
 using FiveSafesTes.Core.Models.FederatedTasks;
+using FiveSafesTes.Core.Models.Tes;
 using Microsoft.EntityFrameworkCore;
+using Newtonsoft.Json;
+using Submission.Api.Services;
 using Submission.Api.Repositories.DbContexts;
 using Xunit;
 
@@ -24,6 +27,61 @@ namespace Submission.Api.Tests
         public void State_FollowsOutcomeAndParts(FederatedStudyOutcome? outcome, FederatedStudyVersionState expected, params FederatedTaskPhase[] phases)
         {
             Assert.Equal(expected, VersionWith(outcome, phases).State);
+        }
+
+        [Theory]
+        [InlineData(null, null, false, TesState.RUNNINGEnum)]
+        [InlineData(FederatedStudyOutcome.Incomplete, null, false, TesState.CANCELINGEnum)]
+        [InlineData(FederatedStudyOutcome.ReadyForAggregation, null, true, TesState.RUNNINGEnum)]
+        [InlineData(FederatedStudyOutcome.Aggregated, null, true, TesState.COMPLETEEnum)]
+        [InlineData(FederatedStudyOutcome.Failed, "code_error", true, TesState.EXECUTORERROREnum)]
+        [InlineData(FederatedStudyOutcome.Failed, "small_numbers", true, TesState.EXECUTORERROREnum)]
+        [InlineData(FederatedStudyOutcome.Failed, "run_failed", true, TesState.SYSTEMERROREnum)]
+        [InlineData(FederatedStudyOutcome.Failed, "aggregation_timeout", true, TesState.SYSTEMERROREnum)]
+        [InlineData(FederatedStudyOutcome.Incomplete, null, true, TesState.CANCELEDEnum)]
+        [InlineData(FederatedStudyOutcome.Canceled, null, true, TesState.CANCELEDEnum)]
+        public void Version_state_maps_to_TES(FederatedStudyOutcome? outcome, string? code, bool partsFinal, TesState expected)
+        {
+            var version = VersionWith(outcome, FederatedTaskPhase.Released,
+                partsFinal ? FederatedTaskPhase.Canceled : FederatedTaskPhase.Canceling);
+            version.Sites = "tre-a|tre-b";
+            version.AggregationErrorCode = code;
+
+            Assert.Equal(expected, FederatedStudyVersions.ToTesTask(version).State);
+        }
+
+        [Fact]
+        public void Version_task_carries_its_hospitals_and_no_result()
+        {
+            var submitted = FederatedTesProfile.BuildCodeTask("cohort_2024", "def site_analysis(df):\n    return {'n': 1}\n", "study-1", "tre-a|tre-b");
+            var a = new FederatedTask { TaskId = Guid.NewGuid(), TreName = "tre-a", Phase = FederatedTaskPhase.Released, ResultSha256 = new string('a', 64) };
+            var b = new FederatedTask { TaskId = Guid.NewGuid(), TreName = "tre-b", Phase = FederatedTaskPhase.RejectedAtOutputApproval };
+            var version = new FederatedStudyVersion
+            {
+                VersionId = Guid.NewGuid(), StudyId = "study-1", Version = 3, Sites = "tre-a|tre-b", SubmittedAt = Submitted,
+                DeadlineAt = Submitted.AddDays(7), TesTaskJson = JsonConvert.SerializeObject(submitted),
+                Outcome = FederatedStudyOutcome.Aggregated, OutcomeReason = "all_final", OutcomeAt = Submitted.AddHours(1),
+                PooledResultSha256 = new string('p', 64), Parts = [b, a]
+            };
+
+            var task = FederatedStudyVersions.ToTesTask(version);
+
+            Assert.Equal(version.VersionId.ToString(), task.Id);
+            Assert.Equal(submitted.Tags, task.Tags);
+            Assert.Equal(submitted.Inputs![0].Content, task.Inputs![0].Content);
+            Assert.Equal(Submitted, task.CreationTime);
+            var metadata = task.Logs![0].Metadata!;
+            Assert.Equal("study-1", metadata["study_id"]);
+            Assert.Equal("3", metadata["version"]);
+            Assert.Equal("ended", metadata["version_state"]);
+            Assert.Equal("aggregated", metadata["outcome"]);
+            Assert.Equal(new string('p', 64), metadata["pooled_result_sha256"]);
+            Assert.Equal(a.TaskId.ToString(), metadata["hospital.tre-a.task_id"]);
+            Assert.Equal("released", metadata["hospital.tre-a.phase"]);
+            Assert.Equal("rejected_at_output_approval", metadata["hospital.tre-b.phase"]);
+            // The hospitals in fed.sites order, and nothing about any result but the pooled hash.
+            Assert.True(metadata.Keys.ToList().IndexOf("hospital.tre-a.task_id") < metadata.Keys.ToList().IndexOf("hospital.tre-b.task_id"));
+            Assert.DoesNotContain(metadata, kv => kv.Value == new string('a', 64));
         }
 
         public static TheoryData<bool, FederatedTaskPhase[], FederatedStudyOutcome?, string?, FederatedTaskPhase[]> DecideCases => new()

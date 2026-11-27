@@ -89,6 +89,10 @@ public class FederatedCodeTaskProfileTests
             "executor env, workdir, stdin, stdout and stderr must not be set" },
         { "workdir set", t => t.Executors[0].Workdir = "/tmp",
             "executor env, workdir, stdin, stdout and stderr must not be set" },
+        // TES 1.1 fields: each would change how the run behaves or where its output goes.
+        { "ignore_error set", t => t.Executors[0].IgnoreError = true, "executor ignore_error must not be set" },
+        { "streamable input", t => t.Inputs[1].Streamable = true, "inputs must not be streamable" },
+        { "output path_prefix", t => t.Outputs[0].PathPrefix = "/outputs/", "task must have exactly one output, /outputs/result.json" },
         { "three inputs", t => t.Inputs.Add(new TesInput { Path = "/code/other.py", Type = TesFileType.FILEEnum, Content = "x" }),
             "task must have one code input and one dataset input" },
         { "no code input", t => t.Inputs[0].Path = "/code/main.py",

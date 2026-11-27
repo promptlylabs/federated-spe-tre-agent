@@ -394,6 +394,105 @@ namespace Submission.Api.Tests
             }
         };
 
+        /// <summary>CodeTask on another dataset: the same code, study and sites.</summary>
+        private static TesTask DatasetTask(string dataset)
+        {
+            var task = CodeTask();
+            task.Executors![0].Command = ["run-analysis", "/code/analysis.py", $"/data/{dataset}", "/outputs/result.json"];
+            task.Inputs![1] = new TesInput { Url = $"dataset://{dataset}", Path = $"/data/{dataset}", Type = TesFileType.DIRECTORYEnum };
+            return task;
+        }
+
+        private static TesTask WithRequestId(TesTask task, string requestId)
+        {
+            task.Tags!["fed.request_id"] = requestId;
+            return task;
+        }
+
+        [Theory]
+        [InlineData("a", true)]
+        [InlineData("daams-2026-11-27:req.42_x", true)]
+        [InlineData("", false)]
+        [InlineData("a b", false)]
+        [InlineData("é", false)]
+        [InlineData(null, false)]   // 129 characters, built below
+        [InlineData("128", true)]   // 128 characters, built below
+        public async Task Request_id_tag_is_checked(string? requestId, bool accepted)
+        {
+            using var db = NewDb();
+            requestId = requestId switch { null => new string('a', 129), "128" => new string('a', 128), _ => requestId };
+
+            var result = await ControllerFor(db, "dare-admin").Enqueue(WithRequestId(CodeTask(), requestId));
+
+            if (accepted)
+            {
+                Assert.IsType<OkObjectResult>(result);
+                Assert.Equal(requestId, db.FederatedStudyVersions.Single().RequestId);
+            }
+            else
+            {
+                Assert.Contains("fed.request_id", AssertError(result, 400, FederatedTaskErrorCodes.InvalidTask).ErrorMessage);
+                Assert.Empty(db.FederatedStudyVersions);
+            }
+        }
+
+        // A client that retries after a timeout gets the study it already created, even though that version is still open
+        // (which would otherwise be refused as study_version_open), and nothing is stored or audited twice.
+        [Fact]
+        public async Task Repeated_request_id_returns_the_same_version_while_it_is_open()
+        {
+            using var db = NewDb();
+
+            var first = EnqueuedVersionId(await ControllerFor(db, "dare-admin").Enqueue(WithRequestId(CodeTask(), "r1")));
+            var again = EnqueuedVersionId(await ControllerFor(db, "dare-admin").Enqueue(WithRequestId(CodeTask(), "r1")));
+
+            Assert.Equal(first, again);
+            Assert.Single(db.FederatedStudyVersions);
+            Assert.Single(db.AuditLogs.Where(a => a.LogType == FiveSafesTes.Core.Models.LogType.FederatedStudySubmitted));
+        }
+
+        // The TES 1.1 fields are not written when unset, so a stored task's bytes do not change with the model and a retry with
+        // the same fed.request_id still matches it.
+        [Fact]
+        public async Task Stored_task_leaves_unset_tes_1_1_fields_out()
+        {
+            using var db = NewDb();
+            Assert.IsType<OkObjectResult>(await ControllerFor(db, "dare-admin").Enqueue(CodeTask()));
+
+            var stored = db.FederatedStudyVersions.Single().TesTaskJson;
+            foreach (var field in new[] { "ignore_error", "streamable", "path_prefix" })
+            {
+                Assert.DoesNotContain(field, stored);
+            }
+        }
+
+        [Theory]
+        [InlineData("study")]
+        [InlineData("code")]
+        [InlineData("sites")]
+        [InlineData("sites order")]
+        [InlineData("dataset")]
+        [InlineData("resources")]
+        public async Task Reused_request_id_with_other_content_conflicts(string what)
+        {
+            using var db = NewDb();
+            db.Tres.Add(NewTre(3, "tre-c", "tre-c-admin", "tre-c-client"));
+            db.SaveChanges();
+            Assert.IsType<OkObjectResult>(await ControllerFor(db, "dare-admin").Enqueue(WithRequestId(CodeTask(), "r1")));
+
+            var other = what == "code"
+                ? CodeTask(code: Code + "\n# changed\n")
+                : CodeTask();
+            if (what == "study") other.Tags!["fed.study_id"] = "study-2";
+            if (what == "sites") other.Tags!["fed.sites"] = "tre-a|tre-c";
+            if (what == "sites order") other.Tags!["fed.sites"] = "tre-b|tre-a";
+            if (what == "dataset") other = DatasetTask("cohort_2025");
+            if (what == "resources") other = CodeTask(ramGb: 4);
+
+            AssertError(await ControllerFor(db, "dare-admin").Enqueue(WithRequestId(other, "r1")), 409, FederatedTaskErrorCodes.RequestIdConflict);
+            Assert.Single(db.FederatedStudyVersions);
+        }
+
         [Fact]
         public async Task Enqueue_valid_code_task_is_stored_queued()
         {

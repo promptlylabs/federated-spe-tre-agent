@@ -38,6 +38,17 @@ namespace Submission.Api.Models
         /// </summary>
         public int AggregationTimeoutMinutes { get; set; } = 1440;
 
+        /// <summary>TES service-info: this deployment's id, in reverse domain name format. Set it per deployment.</summary>
+        public string ServiceId { get; set; } = "local.federated-spe.tes";
+
+        /// <summary>TES service-info: the organization that runs this service, and its web address.</summary>
+        public string OrganizationName { get; set; } = "Federated SPE (development)";
+
+        public string OrganizationUrl { get; set; } = "http://localhost";
+
+        /// <summary>TES service-info: the version of this deployment.</summary>
+        public string ServiceVersion { get; set; } = "0.1.0";
+
         /// <summary>Settings that would make intake behave wrongly; Submission refuses to start with any.</summary>
         public IReadOnlyList<string> Problems()
         {

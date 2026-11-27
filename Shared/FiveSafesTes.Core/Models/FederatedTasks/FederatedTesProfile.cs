@@ -19,6 +19,12 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
         public const string CodeSha256Tag = "fed.code_sha256";
         public const string RoundTag = "fed.round";
 
+        /// <summary>Optional: the submitter's key that makes a submission idempotent. 1–128 of [A-Za-z0-9._:-].</summary>
+        public const string RequestIdTag = "fed.request_id";
+
+        private static readonly System.Text.RegularExpressions.Regex RequestIdPattern =
+            new(@"^[A-Za-z0-9._:-]{1,128}\z", System.Text.RegularExpressions.RegexOptions.Compiled);
+
         // Code tasks: the researcher's file, run by run-analysis in an approved runner image.
         public const string RunAnalysisCommand = "run-analysis";
         public const string CodePath = "/code/analysis.py";
@@ -70,6 +76,10 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             if (executor.Env is { Count: > 0 } || !string.IsNullOrEmpty(executor.Workdir) || !string.IsNullOrEmpty(executor.Stdin)
                 || !string.IsNullOrEmpty(executor.Stdout) || !string.IsNullOrEmpty(executor.Stderr))
                 return Fail(FederatedTaskErrorCodes.InvalidTask, "executor env, workdir, stdin, stdout and stderr must not be set");
+            if (executor.IgnoreError == true)
+                return Fail(FederatedTaskErrorCodes.InvalidTask, "executor ignore_error must not be set");
+            if (task.Inputs?.Any(i => i?.Streamable == true) == true)
+                return Fail(FederatedTaskErrorCodes.InvalidTask, "inputs must not be streamable");
             if (task.Volumes is { Count: > 0 })
                 return Fail(FederatedTaskErrorCodes.InvalidTask, "task must not declare volumes");
 
@@ -111,7 +121,7 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
 
             // Outputs: the one file the result may leave in, with a url that points nowhere.
             if (task.Outputs is not { Count: 1 } || task.Outputs[0] is not { } output
-                || output.Path != ResultPath || output.Type != TesFileType.FILEEnum)
+                || output.Path != ResultPath || output.Type != TesFileType.FILEEnum || !string.IsNullOrEmpty(output.PathPrefix))
                 return Fail(FederatedTaskErrorCodes.InvalidTask, $"task must have exactly one output, {ResultPath}");
             if (output.Url != ResultUrl)
                 return Fail(FederatedTaskErrorCodes.InvalidTask, $"the output url must be {ResultUrl}");
@@ -141,7 +151,16 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
             if (tags.TryGetValue(RoundTag, out var round) && round != "1")
                 return Fail(FederatedTaskErrorCodes.InvalidTask, $"tag '{RoundTag}' must be 1: a study version runs one round");
 
-            var spec = new FederatedTaskSpec(RunAnalysisCommand, dataset, studyId, sites, codeSha) { Round = 1 };
+            string? requestId = null;
+            if (tags.TryGetValue(RequestIdTag, out var requested))
+            {
+                if (requested is null || !RequestIdPattern.IsMatch(requested))
+                    return Fail(FederatedTaskErrorCodes.InvalidTask,
+                        $"tag '{RequestIdTag}' must be 1 to 128 letters, digits or the characters . _ : -");
+                requestId = requested;
+            }
+
+            var spec = new FederatedTaskSpec(RunAnalysisCommand, dataset, studyId, sites, codeSha) { Round = 1, RequestId = requestId };
             return new FederatedTaskParseResult(spec, null, null);
         }
 

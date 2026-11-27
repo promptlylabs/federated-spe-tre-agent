@@ -1,565 +1,311 @@
-﻿using Microsoft.AspNetCore.Mvc;
-using Newtonsoft.Json;
-using System.ComponentModel.DataAnnotations;
+﻿using System.ComponentModel.DataAnnotations;
+using System.Globalization;
 using System.Text;
-using Swashbuckle.AspNetCore.Annotations;
-using Serilog;
-using EasyNetQ;
-using FiveSafesTes.Core.Models;
-using FiveSafesTes.Core.Models.Enums;
+using FiveSafesTes.Core.Models.FederatedTasks;
 using FiveSafesTes.Core.Models.Tes;
-using FiveSafesTes.Core.Rabbit;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
+using Newtonsoft.Json;
 using Submission.Api.Attributes;
 using Submission.Api.ContractResolvers;
+using Submission.Api.Models;
 using Submission.Api.Repositories.DbContexts;
 using Submission.Api.Services;
-using Submission.Api.Services.Contract;
+using Swashbuckle.AspNetCore.Annotations;
 
 namespace Submission.Api.Controllers
 {
+    /// <summary>
+    /// The GA4GH TES API (1.1) for federated studies, for TES clients such as DAAMS (ANZE-6134). A task here is a study
+    /// version: CreateTask submits one (the same rules as FederatedTask/Enqueue), GetTask and ListTasks show it with a
+    /// standard TES state, CancelTask cancels it. GetTask also shows one hospital's part by its task id. The 5S-TES native
+    /// tasks are not served (docs/5s-tes-fork.md). No response contains result content.
+    /// </summary>
     [ApiExplorerSettings(GroupName = "ga4gh-tes")]
-    [Route("api/[controller]")]
     [ApiController]
     public class TaskServiceApiController : ControllerBase
     {
+        private const string AdminRole = "dare-control-admin";
 
+        /// <summary>Reading: an orchestrator admin (study versions) or a hospital's Agent (its own parts only).</summary>
+        private const string ReadRoles = "dare-control-admin,dare-tre-admin";
+        private const int DefaultPageSize = 256;
 
-        private readonly IKeyCloakService _IKeyCloakService;
-        private readonly ApplicationDbContext _DbContext;
-        private readonly IBus _rabbit;
-        protected readonly IHttpContextAccessor _httpContextAccessor;
         private static readonly Dictionary<TesView, JsonSerializerSettings> TesJsonSerializerSettings = new()
         {
-            {
-                TesView.MINIMAL,
-                new JsonSerializerSettings { ContractResolver = MinimalTesTaskContractResolver.Instance }
-            },
+            { TesView.MINIMAL, new JsonSerializerSettings { ContractResolver = MinimalTesTaskContractResolver.Instance } },
             { TesView.BASIC, new JsonSerializerSettings { ContractResolver = BasicTesTaskContractResolver.Instance } },
             { TesView.FULL, new JsonSerializerSettings { ContractResolver = FullTesTaskContractResolver.Instance } }
         };
 
-        private readonly IKeycloakTokenApiHelper _iKeycloakTokenApiHelper;
+        private readonly ApplicationDbContext _db;
+        private readonly FederatedTaskSettings _settings;
+        private readonly IFederatedTaskDispatch _dispatch;
 
-        /// <summary>
-        /// Contruct a <see cref="TaskServiceApiController"/>
-        /// </summary>
-        /// <param name="repository">The main <see cref="ApplicationDbContext"/> database repository</param>
-        /// <param name="rabbit">The main <see cref="IBus"/> easynet q sender</param>
-        public TaskServiceApiController(ApplicationDbContext repository, IBus rabbit, IHttpContextAccessor httpContextAccessor, 
-            IKeycloakTokenApiHelper iKeycloakTokenApiHelper, IKeyCloakService iKeyCloakService)
+        public TaskServiceApiController(ApplicationDbContext db, FederatedTaskSettings settings, IFederatedTaskDispatch dispatch)
         {
-            _DbContext = repository;
-            _rabbit = rabbit;
-            _httpContextAccessor = httpContextAccessor;
-            _iKeycloakTokenApiHelper = iKeycloakTokenApiHelper;
-            _IKeyCloakService = iKeyCloakService;
+            _db = db;
+            _settings = settings;
+            _dispatch = dispatch;
         }
-        
-        /// <summary>
-        /// Cancel a task
-        /// </summary>
-        /// <param name="id">The id of the <see cref="TesTask"/> to cancel</param>
-        /// <param name="cancellationToken">A<see cref="CancellationToken"/> for controlling the lifetime of the asynchronous operation.</param>
-        /// <response code="200"></response>
+
+        /// <summary>Cancels a study version; a hospital's part is cancelled through its version.</summary>
         [HttpPost]
-        [Authorize]
+        [Authorize(Roles = AdminRole)]
         [Route("/v1/tasks/{id}:cancel")]
         [ValidateModelState]
         [SwaggerOperation("CancelTask")]
-        [SwaggerResponse(statusCode: 200, type: typeof(object), description: "")]
-        public virtual async Task<IActionResult> CancelTask([FromRoute] [Required] string id,
-            CancellationToken cancellationToken)
+        [SwaggerResponse(statusCode: 200, type: typeof(TesCancelTaskResponse), description: "")]
+        [SwaggerResponse(statusCode: 400, type: typeof(FederatedApiError), description: "")]
+        [SwaggerResponse(statusCode: 404, type: typeof(FederatedApiError), description: "")]
+        [SwaggerResponse(statusCode: 409, type: typeof(FederatedApiError), description: "")]
+        public virtual async Task<IActionResult> CancelTask([FromRoute][Required] string id, CancellationToken cancellationToken)
         {
-            try { 
-
-            var sub = _DbContext.Submissions.FirstOrDefault(x => x.Parent == null && x.TesId == id);
-            if (sub== null)
+            if (!Guid.TryParse(id, out var guid))
             {
-                return BadRequest("Invalid TesID");
+                return TaskNotFound();
             }
 
-            var allsubs = sub.Children;
-            allsubs.Add(sub);
-           
-            foreach (var asub in allsubs)
+            if (!await _db.FederatedStudyVersions.AnyAsync(v => v.VersionId == guid, cancellationToken))
             {
-                var newstart = DateTime.Now.ToUniversalTime();
-                
-                asub.TesJson = SetTesTaskStateToCancelled(asub.TesJson, asub.Id);
-
-                    if (asub.Parent == null)
-                    {
-                        UpdateSubmissionStatus.UpdateStatusNoSave(sub, StatusType.CancellingChildren, "");
-
-                    }
-                    else
-                    {
-                        UpdateSubmissionStatus.UpdateStatusNoSave(sub, StatusType.RequestCancellation, "");
-
-                    }
-                }
-
-            await _DbContext.SaveChangesAsync(cancellationToken);
-            
-
-
-            return StatusCode(200, new TesCancelTaskResponse());
+                var part = await _db.FederatedTasks.AsNoTracking().Include(t => t.StudyVersion)
+                    .FirstOrDefaultAsync(t => t.TaskId == guid, cancellationToken);
+                return part == null
+                    ? TaskNotFound()
+                    : Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask,
+                        $"task {id} is one hospital's part of study version {part.StudyVersion.VersionId}; cancel the version");
             }
-            catch (Exception ex)
+
+            var result = await new FederatedStudyCancel(_db).CancelAsync(id, User, HttpContext, cancellationToken);
+            return result.StatusCode switch
             {
-                Log.Error(ex, "{Function} Crashed", "CancelTESTask");
-                throw;
-            }
+                StatusCodes.Status200OK => Ok(new TesCancelTaskResponse()),
+                StatusCodes.Status404NotFound => TaskNotFound(),   // removed since the check above
+                _ => result
+            };
         }
 
-        private string SetTesTaskStateToCancelled(string testaskstr, int subid)
-        {
-            try { 
-            var tesTask = JsonConvert.DeserializeObject<TesTask>(testaskstr);
-            if (tesTask.State == TesState.COMPLETEEnum ||
-                tesTask.State == TesState.EXECUTORERROREnum ||
-                tesTask.State == TesState.SYSTEMERROREnum)
-            {
-                Log.Information("{Function} Task {id} for subId {SubID} cannot be canceled because it is in {State} state.", "SetTesTaskStateToCancelled", tesTask.Id, subid, tesTask.State.ToString());
-            }
-            else if (tesTask.State != TesState.CANCELEDEnum)
-            {
-                Log.Information("{Function} Canceling task {id} for subID {SubID}", "SetTesTaskStateToCancelled", tesTask.Id, subid);
-                tesTask.State = TesState.CANCELEDEnum;
-
-            }
-
-            return JsonConvert.SerializeObject(tesTask);
-            }
-            catch (Exception ex)
-            {
-                Log.Error(ex, "{Function} Crashed", "SetTESTaskStateToCancelled");
-                throw;
-            }
-        }
-
-        /// <summary>
-        /// Create a new task                               
-        /// </summary>
-        /// <param name="tesTask">The <see cref="TesTask"/> to add to the repository</param>
-        /// <param name="cancellationToken">A <see cref="CancellationToken"/> for controlling the lifetime of the asynchronous operation.</param>
-        /// <response code="200"></response>
+        /// <summary>Submits a study version. Only federated studies (with fed.* tags) are accepted.</summary>
         [HttpPost]
-        [Authorize]
+        [Authorize(Roles = AdminRole)]
         [Route("/v1/tasks")]
         [ValidateModelState]
         [SwaggerOperation("CreateTask")]
         [SwaggerResponse(statusCode: 200, type: typeof(TesCreateTaskResponse), description: "")]
-        public virtual async Task<IActionResult> CreateTaskAsync([FromBody] TesTask tesTask,
-            CancellationToken cancellationToken)
+        [SwaggerResponse(statusCode: 400, type: typeof(FederatedApiError), description: "")]
+        [SwaggerResponse(statusCode: 409, type: typeof(FederatedApiError), description: "")]
+        public virtual async Task<IActionResult> CreateTaskAsync([FromBody] TesTask tesTask, CancellationToken cancellationToken)
         {
-            Log.Information($"/v1/tasks route successfully entered");
-
-            try
+            if (tesTask.Tags?.Keys.Any(k => k.Equals(FederatedTesProfile.SitesTag, StringComparison.OrdinalIgnoreCase)) != true)
             {
-                var usersName = (from x in User.Claims where x.Type == "preferred_username" select x.Value).First();
-
-                var user = _DbContext.Users.FirstOrDefault(x => x.Name.ToLower() == usersName.ToLower());
-
-                if (user == null)
-                {
-                    return BadRequest(
-                        "User " + usersName + " doesn't exist");
-                }
-
-                if (!string.IsNullOrWhiteSpace(tesTask.Id))
-                {
-                    return BadRequest(
-                        "Id should not be included by the client in the request; the server is responsible for generating a unique Id.");
-                }
-
-                if (string.IsNullOrWhiteSpace(tesTask.Executors?.FirstOrDefault()?.Image))
-                {
-                    return BadRequest("Docker container image name is required.");
-                }
-
-                foreach (var input in tesTask.Inputs ?? Enumerable.Empty<TesInput>())
-                {
-                    if (!input.Path.StartsWith('/'))
-                    {
-                        return BadRequest("Input paths in the container must be absolute paths.");
-                    }
-                }
-
-                foreach (var output in tesTask.Outputs ?? Enumerable.Empty<TesOutput>())
-                {
-                    if (!output.Path.StartsWith('/'))
-                    {
-                        return BadRequest("Output paths in the container must be absolute paths.");
-                    }
-                }
-
-
-
-
-                if (tesTask?.Resources?.BackendParameters is not null)
-                {
-                    var keys = tesTask.Resources.BackendParameters.Keys.Select(k => k).ToList();
-
-                    if (keys.Count > 1 && keys.Select(k => k?.ToLowerInvariant()).Distinct().Count() != keys.Count)
-                    {
-                        return BadRequest("Duplicate backend_parameters were specified");
-                    }
-
-
-
-
-                    keys = tesTask.Resources.BackendParameters.Keys.Select(k => k).ToList();
-
-                    // Backends shall log system warnings if a key is passed that is unsupported.
-                    var unsupportedKeys = keys.Except(Enum.GetNames(typeof(TesResources.SupportedBackendParameters)))
-                        .ToList();
-
-                    if (unsupportedKeys.Count > 0)
-                    {
-                        Log.Warning(
-                            "{Function }Unsupported keys were passed to TesResources.backend_parameters: {Keys}",
-                            "CreateTaskAsync", string.Join(",", unsupportedKeys));
-                    }
-
-                    // If backend_parameters_strict equals true, backends should fail the task if any key / values are unsupported
-                    if (tesTask.Resources?.BackendParametersStrict == true
-                        && unsupportedKeys.Count > 0)
-                    {
-                        return BadRequest(
-                            $"backend_parameters_strict is set to true and unsupported backend_parameters were specified: {string.Join(",", unsupportedKeys)}");
-                    }
-
-
-                }
-
-
-
-                var exec = tesTask.Executors.First();
-                //TODO: Implement IsDockerThere
-                if (!IsDockerThere(exec.Image))
-                {
-                    return BadRequest("Crate Location " + exec.Image + " doesn't exist");
-                }
-
-                //TODO: External containers need copying over and change image loc
-
-                var project = tesTask.Tags.Where(x => x.Key.ToLower() == "project").Select(x => x.Value)
-                    .FirstOrDefault();
-                if (string.IsNullOrWhiteSpace(project))
-                {
-                    return BadRequest("Tags must contain key project.");
-                }
-                var trestr = tesTask.Tags.Where(x => x.Key.ToLower() == "tres").Select(x => x.Value).FirstOrDefault();
-                List<string> tres = new List<string>();
-                if (!string.IsNullOrWhiteSpace(trestr))
-                {
-                    tres = trestr.Split('|').Select(x => x.ToLower()).ToList();
-                }
-                var dbproj = _DbContext.Projects.FirstOrDefault(x => x.Name.ToLower() == project.ToLower());
-
-                if (dbproj == null)
-                {
-                    return BadRequest("Project " + project + " doesn't exist.");
-                }
-
-                // Reject if current time is past the project's end date
-                if (DateTime.UtcNow > dbproj.EndDate.ToUniversalTime())
-                {
-                    return BadRequest($"Project '{project}' has ended (end date: {dbproj.EndDate:yyyy-MM-dd}). Cannot create new tasks.");
-                }
-
-                if (!IsUserOnProject(dbproj, usersName))
-                {
-                    return BadRequest("User " + User.Identity.Name + "isn't on project " + project + ".");
-                }
-
-                if (tres.Count > 0 && !AreTresOnProject(dbproj, tres))
-                {
-                    return BadRequest("One or more of the tres are not authorised for this project " + project + ".");
-                }
-
-                var dbtres = new List<Tre>();
-                if (tres.Count == 0)
-                {
-                    dbtres = dbproj.Tres;
-                }
-                else
-                {
-                    foreach (var tre in tres)
-                    {
-                        dbtres.Add(dbproj.Tres.First(x => x.Name.ToLower() == tre.ToLower()));
-                    }
-                }
-
-                if (dbtres.Count == 0)
-                {
-                    return BadRequest("No valid tres for this project " + project + ".");
-                }
-
-                var Token = HttpContext.Request.Headers["Authorization"].FirstOrDefault();
-                Token = Token.Replace("Bearer ", "");
-                var sub = new FiveSafesTes.Core.Models.Submission()
-                {
-                    DockerInputLocation = tesTask.Executors.First().Image,
-                    Project = dbproj,
-                    StartTime = DateTime.Now.ToUniversalTime(),
-                    Status = StatusType.SubmissionReceived,
-                    LastStatusUpdate = DateTime.Now.ToUniversalTime(),
-                    SubmittedBy = user,
-                    TesName = tesTask.Name,
-                    SourceCrate = tesTask.Executors.First().Image,
-                    QueryToken = Token
-                };
-
-
-                _DbContext.Submissions.Add(sub);
-                await _DbContext.SaveChangesAsync(cancellationToken);
-                tesTask.Id = sub.Id.ToString();
-                sub.TesId = tesTask.Id;
-                var tesstring = JsonConvert.SerializeObject(tesTask);
-                sub.TesJson = tesstring;
-                await _DbContext.SaveChangesAsync(cancellationToken);
-
-
-                try
-                {
-
-                    //Send to rabbit q to processed async
-                    var exch = _rabbit.Advanced.ExchangeDeclare(ExchangeConstants.Submission, "topic");
-
-                    _rabbit.Advanced.Publish(exch, RoutingConstants.ProcessSub, false, new Message<int>(sub.Id));
-                    await ControllerHelpers.AddAuditLog(LogType.CreateSubmission, user, dbproj, null, sub, null, _httpContextAccessor, User, _DbContext);
-
-                    
-                    Log.Debug("{Function} Creating task with id {Id} state {State}", "CreateTaskAsync", tesTask.Id,
-                        tesTask.State);
-
-                }
-                catch (Exception ex)
-                {
-                    UpdateSubmissionStatus.UpdateStatusNoSave(sub, StatusType.Failed, ex.Message);
-                    await _DbContext.SaveChangesAsync(cancellationToken);
-
-                   
-                    throw;
-
-                }
-            }
-            catch (Exception ex)
-            {
-                Log.Error(ex, "{Function} Crashed", "CreateTESTaskAsync");
-                throw;
+                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask,
+                    $"this TES service accepts federated studies only (tags {FederatedTesProfile.SitesTag}, {FederatedTesProfile.StudyIdTag}, {FederatedTesProfile.CodeSha256Tag})");
             }
 
-
-            return StatusCode(200, new TesCreateTaskResponse { Id = tesTask.Id });
-
+            return await new FederatedStudyIntake(_db, _settings, _dispatch).SubmitAsync(tesTask, User, HttpContext, cancellationToken);
         }
 
-        private bool AreTresOnProject(Project project, List<string> tres)
-        {
-            try { 
-            var projends = project.Tres.Select(x => x.Name.ToLower()).ToList();
-            foreach (var tre in tres)
-            {
-                if (! projends.Contains(tre))
-                {
-                    return false;
-                }
-            }
-            return true;
-            }
-            catch (Exception ex)
-            {
-                Log.Error(ex, "{Function} Crashed", "AreTRESonProject");
-                throw;
-            }
-        }
-
-        private bool IsDockerThere(string dockerloc)
-        {
-            //TODO: Implement this
-            return true;
-        }
-
-        private bool IsUserOnProject(Project project, string username)
-        {
-            try 
-            { 
-                // To match the username's case-insensitive in KeyCloak and DB
-                return project.Users.Any(x => x.Name.ToLower() == username.ToLower());
-            }
-            catch (Exception ex)
-            {
-                Log.Error(ex, "{Function} Crashed", "IsUserOnProject_TES");
-                throw;
-            }
-        }
-
-        /// <summary>
-        /// GetServiceInfo provides information about the service, such as storage details, resource availability, and  other documentation.
-        /// </summary>
-        /// <response code="200"></response>
+        /// <summary>The service and the federated profile it accepts: what a TES client reads first.</summary>
         [AllowAnonymous]
         [HttpGet]
         [Route("/v1/service-info")]
-        [ValidateModelState]
         [SwaggerOperation("GetServiceInfo")]
         [SwaggerResponse(statusCode: 200, type: typeof(TesServiceInfo), description: "")]
-        public virtual IActionResult GetServiceInfo()
+        public virtual IActionResult GetServiceInfo() => StatusCode(StatusCodes.Status200OK, new TesServiceInfo
         {
-            try { 
-            var serviceInfo = new TesServiceInfo
-            {
-                Name = "5S-TES",
-                Doc = string.Empty,
-                Storage = new List<string>(){ "s3://" },
-                TesResourcesSupportedBackendParameters =
-                    Enum.GetNames(typeof(TesResources.SupportedBackendParameters)).ToList()
-            };
+            Id = _settings.ServiceId,
+            Name = "SPMS federated TES",
+            Type = new TesServiceType(),
+            Description = "GA4GH TES 1.1, federated studies only. A task is a study version: required tags " +
+                  $"{FederatedTesProfile.SitesTag} (2 or more hospitals, separated by '|'), {FederatedTesProfile.StudyIdTag} and " +
+                  $"{FederatedTesProfile.CodeSha256Tag}; optional {FederatedTesProfile.RequestIdTag} (makes the submission " +
+                  $"idempotent) and {FederatedTesProfile.RoundTag}. Pooled results only; no task returns a hospital's result. " +
+                  "Hospital nodes fetch their parts with ListTasks and their own login. See docs/federated-tasks.md, \"The TES API\", " +
+                  "and docs/node-contract.md.",
+            Organization = new TesServiceOrganization { Name = _settings.OrganizationName, Url = _settings.OrganizationUrl },
+            Version = _settings.ServiceVersion,
+            Storage = [],
+            TesResourcesSupportedBackendParameters = []
+        });
 
-            Log.Information(
-                "{Function} Name: {Name} Doc: {Doc} Storage: {Storage} TesResourcesSupportedBackendParameters: {Params}",
-                "GetServiceInfo", serviceInfo.Name, serviceInfo.Doc, serviceInfo.Storage,
-                string.Join(",", serviceInfo.TesResourcesSupportedBackendParameters));
-            return StatusCode(200, serviceInfo);
-            }
-            catch (Exception ex)
-            {
-                Log.Error(ex, "{Function} Crashed", "GetServiceInfo");
-                throw;
-            }
-        }
-
-        /// <summary>
-        /// Get a task. TaskView is requested as such: \&quot;v1/tasks/{id}?view&#x3D;FULL\&quot;
-        /// </summary>
-        /// <param name="id">The id of the <see cref="TesTask"/> to get</param>
-        /// <param name="view">OPTIONAL. Affects the fields included in the returned Task messages. See TaskView below.   - MINIMAL: Task message will include ONLY the fields:   Task.Id   Task.State  - BASIC: Task message will include all fields EXCEPT:   Task.ExecutorLog.stdout   Task.ExecutorLog.stderr   Input.content   TaskLog.system_logs  - FULL: Task message includes all fields.</param>
-        /// <param name="cancellationToken">A<see cref="CancellationToken"/> for controlling the lifetime of the asynchronous operation.</param>
-        /// <response code="200"></response>
+        /// <summary>A study version by its id, or one hospital's part by its task id; a hospital's Agent reads only its own parts.</summary>
         [HttpGet]
-        [AllowAnonymous]
+        [Authorize(Roles = ReadRoles)]
         [Route("/v1/tasks/{id}")]
-        [ValidateModelState]
         [SwaggerOperation("GetTask")]
         [SwaggerResponse(statusCode: 200, type: typeof(TesTask), description: "")]
-        public virtual async Task<IActionResult> GetTaskAsync([FromRoute] [Required] string id, [FromQuery] string view,
+        [SwaggerResponse(statusCode: 404, type: typeof(FederatedApiError), description: "")]
+        public virtual async Task<IActionResult> GetTaskAsync([FromRoute][Required] string id, [FromQuery] string? view,
             CancellationToken cancellationToken)
         {
-            try { 
-
-            var sub = _DbContext.Submissions.FirstOrDefault(x => x.ParentId == null && x.TesId == id);
-            if (sub == null)
+            if (ParseView(view) is not { } viewEnum)
             {
-                return BadRequest("Invalid ID.");
+                return BadView();
             }
 
-            var tesobj = JsonConvert.DeserializeObject<TesTask>(sub.TesJson);
-            return TesJsonResult(tesobj, view);
-            }
-            catch (Exception ex)
+            if (!Guid.TryParse(id, out var guid))
             {
-                Log.Error(ex, "{Function} Crashed", "GetTesTaskAsync");
-                throw;
+                return TaskNotFound();
             }
+
+            // A hospital's Agent reads only its own parts; everything else is not found for it. Any other caller must be an
+            // orchestrator admin: a hospital's human admin (dare-tre-admin, not the Agent's service account) gets nothing. A
+            // token with both roles that resolves to a hospital gets the hospital's view.
+            var hospital = ControllerHelpers.GetAgentTre(User, _db);
+            if (hospital == null && !User.IsInRole(AdminRole))
+            {
+                return Forbid();
+            }
+
+            if (hospital != null)
+            {
+                var own = await _db.FederatedTasks.AsNoTracking().Include(t => t.PhaseChanges)
+                    .FirstOrDefaultAsync(t => t.TaskId == guid && t.TreId == hospital.Id, cancellationToken);
+                return own == null ? TaskNotFound() : TesJson(PartTask(own), viewEnum);
+            }
+
+            var version = await _db.FederatedStudyVersions.AsNoTracking().Include(v => v.Parts)
+                .FirstOrDefaultAsync(v => v.VersionId == guid, cancellationToken);
+            if (version != null)
+            {
+                return TesJson(FederatedStudyVersions.ToTesTask(version), viewEnum);
+            }
+
+            var part = await _db.FederatedTasks.AsNoTracking().Include(t => t.PhaseChanges)
+                .FirstOrDefaultAsync(t => t.TaskId == guid, cancellationToken);
+            if (part == null)
+            {
+                return TaskNotFound();
+            }
+
+            return TesJson(PartTask(part), viewEnum);
         }
 
         /// <summary>
-        /// List tasks. TaskView is requested as such: \&quot;v1/tasks?view&#x3D;BASIC\&quot;
+        /// For an admin, study versions, newest first (hospitals' parts are in their version's metadata). For a hospital's
+        /// Agent, its own pending parts: how a hospital fetches its work with a standard TES call.
         /// </summary>
-        /// <param name="namePrefix">OPTIONAL. Filter the list to include tasks where the name matches this prefix. If unspecified, no task name filtering is done.</param>
-        /// <param name="pageSize">OPTIONAL. Number of tasks to return in one page. Must be less than 2048. Defaults to 256.</param>
-        /// <param name="pageToken">OPTIONAL. Page token is used to retrieve the next page of results. If unspecified, returns the first page of results. See ListTasksResponse.next_page_token</param>
-        /// <param name="view">OPTIONAL. Affects the fields included in the returned Task messages. See TaskView below.   - MINIMAL: Task message will include ONLY the fields:   Task.Id   Task.State  - BASIC: Task message will include all fields EXCEPT:   Task.ExecutorLog.stdout   Task.ExecutorLog.stderr   Input.content   TaskLog.system_logs  - FULL: Task message includes all fields.</param>
-        /// <param name="cancellationToken">A<see cref="CancellationToken"/> for controlling the lifetime of the asynchronous operation.</param>
-        /// <response code="200"></response>
         [HttpGet]
-        [AllowAnonymous]
+        [Authorize(Roles = ReadRoles)]
         [Route("/v1/tasks")]
-        [ValidateModelState]
         [SwaggerOperation("ListTasks")]
         [SwaggerResponse(statusCode: 200, type: typeof(TesListTasksResponse), description: "")]
-        public virtual async Task<IActionResult> ListTasks([FromQuery] string namePrefix, [FromQuery] long? pageSize,
-            [FromQuery] string pageToken, [FromQuery] string view, CancellationToken cancellationToken)
+        public virtual async Task<IActionResult> ListTasks([FromQuery(Name = "name_prefix")] string? namePrefix,
+            [FromQuery(Name = "page_size")] long? pageSize, [FromQuery(Name = "page_token")] string? pageToken,
+            [FromQuery] string? view, CancellationToken cancellationToken, [FromQuery] string? state = null,
+            [FromQuery(Name = "tag_key")] string[]? tagKey = null, [FromQuery(Name = "tag_value")] string[]? tagValue = null)
         {
-            try { 
-            var decodedPageToken =
-                pageToken is not null ? Encoding.UTF8.GetString(Microsoft.AspNetCore.Authentication.Base64UrlTextEncoder.Decode(pageToken)) : null;
-
-            if (pageSize < 1 || pageSize > 2047)
+            if (ParseView(view) is not { } viewEnum)
             {
-                Log.Error("{Function} pageSize invalid {pageSize}", "ListTasks", pageSize);
-                return BadRequest("If provided, pageSize must be greater than 0 and less than 2048. Defaults to 256.");
+                return BadView();
             }
 
-            var pageSizeInt = pageSize.HasValue ? (int)pageSize : 256;
-
-            var initsubs = _DbContext.Submissions.Where(x =>
-                x.Parent == null && (string.IsNullOrWhiteSpace(namePrefix) ||
-                                     x.TesName.ToLower().StartsWith(namePrefix.ToLower())));
-            var count = initsubs.Count();
-
-            var start = string.IsNullOrWhiteSpace(decodedPageToken) ? 0 : int.Parse(decodedPageToken, System.Globalization.CultureInfo.InvariantCulture);
-            var continuation = (pageSizeInt > start + count) ? (start + count).ToString("G", System.Globalization.CultureInfo.InvariantCulture) : null;
-            var finalList = await Task.FromResult((continuation, _DbContext.Submissions.Skip(start).Take(pageSizeInt).Where(x =>
-                x.Parent == null && (string.IsNullOrWhiteSpace(namePrefix) ||
-                                     x.TesName.ToLower().StartsWith(namePrefix.ToLower())))));
-
-            var tesTasks = finalList.Item2.Where(x => !string.IsNullOrWhiteSpace(x.TesJson))
-                .Select(x => JsonConvert.DeserializeObject<TesTask>(x.TesJson)).OfType<TesTask>();
-
-
-            var nextPageToken = finalList.continuation;
-            var encodedNextPageToken = nextPageToken is not null ? Microsoft.AspNetCore.Authentication.Base64UrlTextEncoder.Encode(Encoding.UTF8.GetBytes(nextPageToken)) : null;
-            var response = new TesListTasksResponse { Tasks = tesTasks.ToList(), NextPageToken = encodedNextPageToken };
-
-            return TesJsonResult(response, view);
-            }
-            catch (Exception ex)
+            if (pageSize is < 1 or > 2047)
             {
-                Log.Error(ex, "{Function} Crashed", "ListTasks");
-                throw;
+                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask,
+                    "page_size must be more than 0 and less than 2048; it defaults to 256");
             }
+
+            TesState? stateFilter = null;
+            if (!string.IsNullOrEmpty(state))
+            {
+                stateFilter = TesStates.FromWire(state);
+                if (stateFilter == null)
+                {
+                    return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "state is not a TES state");
+                }
+            }
+
+            // TES 1.1: tag_key and tag_value are zipped; a key without a value (or with an empty one) matches any value.
+            var tagFilters = (tagKey ?? []).Select((key, i) => (Key: key, Value: tagValue is { } v && i < v.Length ? v[i] : null)).ToList();
+            bool Matches(TesTask t) =>
+                (stateFilter == null || t.State == stateFilter)
+                && tagFilters.All(f => t.Tags != null && t.Tags.TryGetValue(f.Key, out var value) && (string.IsNullOrEmpty(f.Value) || value == f.Value));
+
+            // A hospital's Agent: its pending parts, most urgent first, as it polls for work (at most 50, one page; the state
+            // and tag filters apply to those). Any other caller must be an orchestrator admin, as in GetTask.
+            var hospital = ControllerHelpers.GetAgentTre(User, _db);
+            if (hospital == null && !User.IsInRole(AdminRole))
+            {
+                return Forbid();
+            }
+
+            if (hospital != null)
+            {
+                var pending = await FederatedHospitalTasks.PendingAsync(_db, hospital, FederatedHospitalTasks.MaxPendingTasks, cancellationToken);
+                return TesJson(new TesListTasksResponse { Tasks = pending.Select(PartTask).Where(Matches).ToList() }, viewEnum);
+            }
+
+            var start = 0;
+            if (!string.IsNullOrEmpty(pageToken) && !TryReadToken(pageToken, out start))
+            {
+                return Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask, "page_token is not a token this service gave");
+            }
+
+            var size = (int)(pageSize ?? DefaultPageSize);
+            // The name lives in the stored task, so the prefix is applied after reading. The PoC has few versions.
+            var versions = await _db.FederatedStudyVersions.AsNoTracking().Include(v => v.Parts)
+                .OrderByDescending(v => v.SubmittedAt).ThenByDescending(v => v.Id)
+                .ToListAsync(cancellationToken);
+            var tasks = versions.Select(FederatedStudyVersions.ToTesTask)
+                .Where(t => string.IsNullOrEmpty(namePrefix) || (t.Name ?? "").StartsWith(namePrefix, StringComparison.OrdinalIgnoreCase))
+                .Where(Matches)
+                .ToList();
+            var page = tasks.Skip(start).Take(size).ToList();
+            var next = (long)start + size < tasks.Count
+                ? Microsoft.AspNetCore.Authentication.Base64UrlTextEncoder.Encode(Encoding.UTF8.GetBytes((start + size).ToString(CultureInfo.InvariantCulture)))
+                : null;
+            return TesJson(new TesListTasksResponse { Tasks = page, NextPageToken = next }, viewEnum);
         }
 
-        private static FiveSafesTes.Core.Models.Submission Clone(FiveSafesTes.Core.Models.Submission obj)
+        /// <summary>
+        /// A hospital's part as a TES task, without its result's hash or location: a small JSON result could be guessed from
+        /// its hash, and TES clients such as DAAMS sit close to the researcher. A hospital's own Agent never needs them.
+        /// </summary>
+        private static TesTask PartTask(FederatedTask part)
         {
-            try { 
-            if (ReferenceEquals(obj, null)) return default;
-
-            return JsonConvert.DeserializeObject<FiveSafesTes.Core.Models.Submission>(JsonConvert.SerializeObject(obj), new JsonSerializerSettings { ObjectCreationHandling = ObjectCreationHandling.Replace });
-            }
-            catch (Exception ex)
+            var task = part.ToTesTask();
+            foreach (var key in new[] { "result_bucket", "result_key", "result_sha256" })
             {
-                Log.Error(ex, "{Function} Crashed", "SubmissionClone");
-                throw;
+                task.Logs?.FirstOrDefault()?.Metadata?.Remove(key);
             }
+
+            return task;
         }
 
-        private IActionResult TesJsonResult(object value, string view)
+        private static bool TryReadToken(string token, out int start)
         {
-            
-            TesView viewEnum;
-
+            start = 0;
             try
             {
-                viewEnum = string.IsNullOrEmpty(view) ? TesView.MINIMAL : Enum.Parse<TesView>(view, true);
+                var text = Encoding.UTF8.GetString(Microsoft.AspNetCore.Authentication.Base64UrlTextEncoder.Decode(token));
+                return int.TryParse(text, NumberStyles.None, CultureInfo.InvariantCulture, out start);
             }
-            catch
+            catch (FormatException)
             {
-                Log.Error("{Function }Invalid view parameter value. If provided, it must be one of: {Names}",
-                    "TesJsonResult", string.Join(", ", Enum.GetNames(typeof(TesView))));
-                return BadRequest(
-                    $"Invalid view parameter value. If provided, it must be one of: {string.Join(", ", Enum.GetNames(typeof(TesView)))}");
+                return false;
             }
-
-            var jsonResult = new JsonResult(value, TesJsonSerializerSettings[viewEnum]) { StatusCode = 200 };
-
-            return jsonResult;
         }
+
+        private static TesView? ParseView(string? view) =>
+            string.IsNullOrEmpty(view) ? TesView.MINIMAL
+            : Enum.TryParse<TesView>(view, true, out var parsed) && Enum.IsDefined(parsed) ? parsed
+            : null;
+
+        private ObjectResult BadView() =>
+            Error(StatusCodes.Status400BadRequest, FederatedTaskErrorCodes.InvalidTask,
+                $"view must be one of: {string.Join(", ", Enum.GetNames<TesView>())}");
+
+        private static JsonResult TesJson(object value, TesView view) =>
+            new(value, TesJsonSerializerSettings[view]) { StatusCode = StatusCodes.Status200OK };
+
+        private static ObjectResult TaskNotFound() =>
+            Error(StatusCodes.Status404NotFound, FederatedTaskErrorCodes.TaskNotFound, "task not found");
+
+        private static ObjectResult Error(int status, string code, string message) =>
+            new(new FederatedApiError { ErrorCode = code, ErrorMessage = message }) { StatusCode = status };
 
         private enum TesView
         {
@@ -569,4 +315,3 @@ namespace Submission.Api.Controllers
         }
     }
 }
-

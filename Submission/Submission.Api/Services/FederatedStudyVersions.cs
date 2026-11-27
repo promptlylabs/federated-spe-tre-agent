@@ -1,4 +1,6 @@
 using FiveSafesTes.Core.Models.FederatedTasks;
+using FiveSafesTes.Core.Models.Tes;
+using Newtonsoft.Json;
 
 namespace Submission.Api.Services
 {
@@ -46,6 +48,72 @@ namespace Submission.Api.Services
                     })
                     .ToList()
             };
+        }
+
+        /// <summary>
+        /// Failures of the researcher's code: EXECUTOR_ERROR. Any other aggregation failure (the task, the image, the run,
+        /// the platform) is SYSTEM_ERROR.
+        /// </summary>
+        private static readonly HashSet<string> ResearcherCodeFailures =
+        [
+            FederatedTaskErrorCodes.CodeError, FederatedTaskErrorCodes.InvalidResult, FederatedTaskErrorCodes.ResultTooLarge,
+            FederatedTaskErrorCodes.Timeout, FederatedTaskErrorCodes.OutOfMemory, FederatedTaskErrorCodes.UnsafeCode,
+            FederatedTaskErrorCodes.SmallNumbers
+        ];
+
+        /// <summary>
+        /// The version as one GA4GH TES task, for TES clients such as DAAMS: the task as submitted, a standard TES state
+        /// (docs/federated-tasks.md, "Reading a study") and, in metadata, the outcome and each hospital's task id and phase in
+        /// fed.sites order. The parts must be loaded. Never any result content: only the pooled result's hash.
+        /// </summary>
+        public static TesTask ToTesTask(FederatedStudyVersion version)
+        {
+            var task = (string.IsNullOrEmpty(version.TesTaskJson) ? null : JsonConvert.DeserializeObject<TesTask>(version.TesTaskJson)) ?? new TesTask();
+            task.Id = version.VersionId.ToString();
+            task.State = TesStateOf(version);
+            task.CreationTime = DateTime.SpecifyKind(version.SubmittedAt, DateTimeKind.Utc);
+
+            var metadata = new Dictionary<string, string>
+            {
+                ["study_id"] = version.StudyId,
+                ["version"] = version.Version.ToString(System.Globalization.CultureInfo.InvariantCulture),
+                ["version_state"] = version.State.ToWire(),
+                ["deadline_at"] = DateTime.SpecifyKind(version.DeadlineAt, DateTimeKind.Utc).ToString("O")
+            };
+            Add(metadata, "outcome", version.Outcome?.ToWire());
+            Add(metadata, "outcome_reason", version.OutcomeReason);
+            Add(metadata, "outcome_message", version.OutcomeMessage);
+            Add(metadata, "outcome_at", Utc(version.OutcomeAt)?.ToString("O"));
+            Add(metadata, "error_code", version.Outcome == FederatedStudyOutcome.Failed ? version.AggregationErrorCode : null);
+            Add(metadata, "pooled_result_sha256", version.PooledResultSha256);
+            var sites = version.Sites.Split('|').ToList();
+            foreach (var part in version.Parts.OrderBy(p => sites.IndexOf(p.TreName)))
+            {
+                metadata[$"hospital.{part.TreName}.task_id"] = part.TaskId.ToString();
+                metadata[$"hospital.{part.TreName}.phase"] = FederatedTaskPhases.ToWire(part.Phase);
+            }
+
+            task.Logs = [new TesTaskLog { Metadata = metadata }];
+            return task;
+        }
+
+        private static TesState TesStateOf(FederatedStudyVersion version) => version.State switch
+        {
+            FederatedStudyVersionState.Open => TesState.RUNNINGEnum,
+            FederatedStudyVersionState.Canceling => TesState.CANCELINGEnum,
+            _ => version.Outcome switch
+            {
+                FederatedStudyOutcome.ReadyForAggregation => TesState.RUNNINGEnum,
+                FederatedStudyOutcome.Aggregated => TesState.COMPLETEEnum,
+                FederatedStudyOutcome.Failed when version.AggregationErrorCode is { } code && ResearcherCodeFailures.Contains(code) => TesState.EXECUTORERROREnum,
+                FederatedStudyOutcome.Failed => TesState.SYSTEMERROREnum,
+                _ => TesState.CANCELEDEnum
+            }
+        };
+
+        private static void Add(Dictionary<string, string> metadata, string key, string? value)
+        {
+            if (!string.IsNullOrEmpty(value)) metadata[key] = value;
         }
 
         /// <summary>

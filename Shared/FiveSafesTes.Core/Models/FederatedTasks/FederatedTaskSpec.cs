@@ -21,6 +21,12 @@ namespace FiveSafesTes.Core.Models.FederatedTasks
 
         /// <summary>The round of the study version this task belongs to (<c>fed.round</c>). Always 1 in the PoC.</summary>
         public int Round { get; init; } = 1;
+
+        /// <summary>
+        /// The submitter's key for this submission (<c>fed.request_id</c>), when given: a repeat with the same key returns
+        /// the study version it created instead of a second one.
+        /// </summary>
+        public string? RequestId { get; init; }
     }
 
     /// <summary>

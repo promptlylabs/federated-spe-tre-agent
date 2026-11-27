@@ -77,6 +77,10 @@ namespace FiveSafesTes.Core.Models.Tes
         [DataMember(Name = "env")]
         public Dictionary<string, string>? Env { get; set; }
 
+        /// <summary>TES 1.1: continue with the next executor when this one fails. The federated profile refuses it.</summary>
+        [DataMember(Name = "ignore_error", EmitDefaultValue = false)]
+        public bool? IgnoreError { get; set; }
+
         /// <summary>
         /// Returns the string presentation of the object
         /// </summary>
